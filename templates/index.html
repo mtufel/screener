@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crypto 2-Stage FVG Screener & Backtester (IST)</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            dark: {
+              900: '#0b0f19',
+              800: '#111827',
+              750: '#151e32',
+              700: '#1f293d',
+              600: '#374151',
+            },
+            bullish: {
+              DEFAULT: '#10b981',
+              light: '#34d399',
+              dark: '#059669',
+              bg: 'rgba(16, 185, 129, 0.12)',
+            },
+            bearish: {
+              DEFAULT: '#ef4444',
+              light: '#f87171',
+              dark: '#dc2626',
+              bg: 'rgba(239, 68, 68, 0.12)',
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #e2e8f0;
+    }
+    .glow-bullish {
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
+    }
+    .glow-bearish {
+      box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0b0f19;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #2d3748;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #4a5568;
+    }
+  </style>
+</head>
+<body class="min-h-screen font-sans antialiased selection:bg-indigo-500 selection:text-white flex flex-col">
+
+  <!-- Top Navbar -->
+  <header class="border-b border-dark-700/80 bg-dark-800/80 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <!-- Logo & Brand -->
+      <div class="flex items-center space-x-3">
+        <div class="h-10 w-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+          <i class="fa-solid fa-chart-candlestick text-white text-lg"></i>
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <span class="font-extrabold text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+              FVG SCREENER
+            </span>
+            <span class="px-2 py-0.5 text-xs font-semibold rounded-md bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-mono">
+              2-STAGE PRO
+            </span>
+          </div>
+          <p class="text-xs text-slate-400">4H Zone + LTF Retrace Engine & Backtester (IST)</p>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs (Live Scanner vs Historical Backtest) -->
+      <div class="flex items-center space-x-1 p-1 rounded-xl bg-dark-900 border border-dark-700">
+        <button
+          onclick="switchNavTab('live')"
+          id="navTabLive"
+          class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all bg-indigo-600 text-white shadow-sm flex items-center space-x-1.5"
+        >
+          <i class="fa-solid fa-tower-broadcast text-xs"></i>
+          <span>Live Scanner</span>
+        </button>
+        <button
+          onclick="switchNavTab('backtest')"
+          id="navTabBacktest"
+          class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5"
+        >
+          <i class="fa-solid fa-clock-rotate-left text-xs"></i>
+          <span>Historical Backtest</span>
+        </button>
+      </div>
+
+      <!-- Live Clock & Actions -->
+      <div class="flex items-center space-x-3">
+        <div class="hidden lg:flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-dark-900 border border-dark-700 font-mono text-xs text-slate-300">
+          <i class="fa-regular fa-clock text-indigo-400"></i>
+          <span id="liveIstClock">--:--:-- IST</span>
+        </div>
+
+        <button
+          onclick="testTelegramAlert()"
+          id="btnTestTelegram"
+          class="hidden md:inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-slate-300 border border-dark-600 transition-colors"
+          title="Send test message to Telegram"
+        >
+          <i class="fa-brands fa-telegram text-sky-400 text-sm"></i>
+          <span>Test Alert</span>
+        </button>
+
+        <button
+          onclick="triggerManualScan()"
+          id="btnScanNow"
+          class="inline-flex items-center space-x-2 px-4 py-2 text-sm font-semibold rounded-lg bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white shadow-lg shadow-indigo-600/30 active:scale-95 transition-all"
+        >
+          <i id="scanIcon" class="fa-solid fa-arrows-rotate text-xs"></i>
+          <span id="scanBtnText">Scan Now</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 1: LIVE SCANNER VIEW -->
+    <!-- ===================================================================== -->
+    <div id="liveView" class="space-y-8">
+      <!-- KPI Stats Grid -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Target Markets Card -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-2">
+            <span>TARGET MARKETS</span>
+            <i class="fa-solid fa-coins text-indigo-400"></i>
+          </div>
+          <div class="flex items-baseline space-x-2">
+            <span id="statUniverse" class="text-3xl font-extrabold text-white font-mono">--</span>
+            <span id="statUniverseLabel" class="text-xs text-indigo-400 font-semibold font-mono">BTC, ETH, GOLD</span>
+          </div>
+          <p id="statUniverseSub" class="text-xs text-slate-400 mt-2 flex items-center">
+            <i class="fa-solid fa-shield-halved text-emerald-400 mr-1.5"></i> Custom Targets Active
+          </p>
+        </div>
+
+        <!-- Activated Trades Card -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-2">
+            <span>ACTIVATED TRADES</span>
+            <i class="fa-solid fa-rocket text-emerald-400"></i>
+          </div>
+          <div class="flex items-baseline space-x-2">
+            <span id="statActivated" class="text-3xl font-extrabold text-emerald-400 font-mono">0</span>
+            <span class="text-xs text-slate-400">In Retrace Zone</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Entry triggered with 1R-3R TPs</p>
+        </div>
+
+        <!-- Pending Retrace Card -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-2">
+            <span>PENDING RETRACE</span>
+            <i class="fa-solid fa-hourglass-half text-amber-400"></i>
+          </div>
+          <div class="flex items-baseline space-x-2">
+            <span id="statPending" class="text-3xl font-extrabold text-amber-400 font-mono">0</span>
+            <span class="text-xs text-slate-400">LTF FVG Formed</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Waiting for price pullback</p>
+        </div>
+
+        <!-- Last Scan Metric -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-2">
+            <span>LAST SCAN (IST)</span>
+            <i class="fa-regular fa-clock text-sky-400"></i>
+          </div>
+          <div class="flex items-baseline space-x-2">
+            <span id="statScanInterval" class="text-2xl font-extrabold text-sky-400 font-mono truncate">15m</span>
+          </div>
+          <p id="statLastScanTime" class="text-xs text-slate-400 mt-2 truncate font-mono">Never</p>
+        </div>
+      </div>
+
+      <!-- Controls & Strategy Configuration Toolbar -->
+      <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-dark-800/60 p-4 rounded-3xl border border-dark-700/60 backdrop-blur-sm">
+        <!-- Stage Filters & Direction Filters -->
+        <div class="flex flex-wrap items-center gap-3">
+          <!-- Stage Tabs -->
+          <div class="flex items-center space-x-1 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60">
+            <button
+              onclick="setStageFilter('ALL')"
+              id="stageTabAll"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm"
+            >
+              All (<span id="countStageAll">0</span>)
+            </button>
+            <button
+              onclick="setStageFilter('ACTIVATED')"
+              id="stageTabActivated"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-emerald-400"
+            >
+              🚀 Activated (<span id="countStageActivated">0</span>)
+            </button>
+            <button
+              onclick="setStageFilter('PENDING_RETRACE')"
+              id="stageTabPending"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-amber-400"
+            >
+              ⏳ Pending (<span id="countStagePending">0</span>)
+            </button>
+          </div>
+
+          <!-- 4H Selection Mode Switcher -->
+          <div class="flex items-center space-x-1.5 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60 text-xs">
+            <span class="px-2 text-[10px] font-bold uppercase text-slate-400 font-mono">4H Mode:</span>
+            <button
+              onclick="setHtfMode('ANY_VALID')"
+              id="htfModeAny"
+              class="px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]"
+            >
+              Any Valid 4H
+            </button>
+            <button
+              onclick="setHtfMode('MOST_RECENT')"
+              id="htfModeRecent"
+              class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+            >
+              Recent 4H Only
+            </button>
+          </div>
+
+          <!-- Lower Timeframe Selector (1m, 5m, 15m) -->
+          <div class="flex items-center space-x-1 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60 text-xs">
+            <span class="px-2 text-[10px] font-bold uppercase text-slate-400 font-mono">LTF:</span>
+            <button
+              onclick="setLiveLtf('1m')"
+              id="ltfBtn1m"
+              class="px-2 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+            >
+              1m
+            </button>
+            <button
+              onclick="setLiveLtf('5m')"
+              id="ltfBtn5m"
+              class="px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]"
+            >
+              5m
+            </button>
+            <button
+              onclick="setLiveLtf('15m')"
+              id="ltfBtn15m"
+              class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+            >
+              15m
+            </button>
+          </div>
+        </div>
+
+        <!-- Search & Auto-Refresh -->
+        <div class="flex items-center space-x-3">
+          <div class="relative flex-1 sm:w-56">
+            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+            <input
+              type="text"
+              id="searchInput"
+              placeholder="Search coin (e.g. BTC)..."
+              oninput="renderSetups()"
+              class="w-full bg-dark-900/80 border border-dark-700/80 rounded-xl pl-9 pr-3.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors font-mono"
+            />
+          </div>
+
+          <div class="flex items-center space-x-2 text-xs text-slate-400 bg-dark-900/80 px-3 py-1.5 rounded-xl border border-dark-700/80">
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="autoRefreshToggle" checked class="sr-only peer" />
+              <div class="w-8 h-4 bg-dark-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+            </label>
+            <span class="hidden md:inline">Live Sync</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Setups Cards Grid -->
+      <div id="setupsContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"></div>
+
+      <!-- Empty State for Live View -->
+      <div id="emptyState" class="hidden py-16 text-center bg-dark-800/40 rounded-3xl border border-dark-700/60 border-dashed">
+        <div class="h-16 w-16 mx-auto mb-4 rounded-2xl bg-dark-750 flex items-center justify-center text-slate-500">
+          <i class="fa-solid fa-chart-simple text-2xl"></i>
+        </div>
+        <h3 class="text-base font-semibold text-slate-300">No Setups Matching Filter</h3>
+        <p class="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+          Currently watching 4H FVG zones and waiting for new LTF FVG formation & retrace. The engine will notify you in IST!
+        </p>
+        <button onclick="triggerManualScan()" class="mt-4 px-4 py-2 text-xs font-semibold rounded-lg bg-dark-700 hover:bg-dark-600 text-indigo-400 border border-dark-600">
+          Run Immediate Scan
+        </button>
+      </div>
+    </div>
+
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 2: HISTORICAL BACKTEST VIEW -->
+    <!-- ===================================================================== -->
+    <div id="backtestView" class="hidden space-y-8">
+      <!-- Backtest Configuration Bar -->
+      <div class="p-6 rounded-3xl bg-dark-800/90 border border-dark-700/80 shadow-lg">
+        <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+          <div>
+            <h3 class="text-lg font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-clock-rotate-left text-indigo-400"></i>
+              <span>Historical 2-Stage FVG Backtester (IST)</span>
+            </h3>
+            <p class="text-xs text-slate-400 mt-1">
+              Simulates 4H FVG cache invalidation, LTF formation, and retrace entry with 1R-3R forward outcomes.
+            </p>
+          </div>
+
+          <!-- Controls Grid -->
+          <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+            <!-- Coin Selector -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Asset</label>
+              <select id="btSymbol" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="BTC" selected>BTC (Bitcoin)</option>
+                <option value="ETH">ETH (Ethereum)</option>
+                <option value="GOLD">GOLD / PAXG (Gold Spot)</option>
+                <option value="SILVER">SILVER (Silver Spot / Perp)</option>
+                <option value="WTIOIL">WTIOIL (WTI Crude Oil)</option>
+                <option value="SOL">SOL (Solana)</option>
+                <option value="AVAX">AVAX (Avalanche)</option>
+                <option value="BNB">BNB (Binance Coin)</option>
+                <option value="DOGE">DOGE (Dogecoin)</option>
+                <option value="SUI">SUI (Sui Network)</option>
+              </select>
+            </div>
+
+            <!-- Lower Timeframe (1m, 5m, 15m) -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Lower Timeframe</label>
+              <select id="btLtf" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="1m">1m FVG</option>
+                <option value="5m" selected>5m FVG</option>
+                <option value="15m">15m FVG</option>
+              </select>
+            </div>
+
+            <!-- 4H Mode -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">4H Mode</label>
+              <select id="btHtfMode" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="ANY_VALID" selected>Any Valid 4H</option>
+                <option value="MOST_RECENT">Recent 4H Only</option>
+              </select>
+            </div>
+
+            <!-- Preset Duration -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Preset / Custom</label>
+              <select id="btPreset" onchange="handlePresetChange()" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="7">Last 7 Days</option>
+                <option value="14" selected>Last 14 Days</option>
+                <option value="30">Last 30 Days</option>
+                <option value="60">Last 60 Days</option>
+                <option value="90">Last 90 Days</option>
+                <option value="180">Last 180 Days</option>
+                <option value="custom">Custom Dates</option>
+              </select>
+            </div>
+
+            <!-- Start Date Picker -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Start Date (IST)</label>
+              <input type="date" id="btStartDate" class="bg-dark-900 border border-dark-700 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono" />
+            </div>
+
+            <!-- End Date Picker -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">End Date (IST)</label>
+              <input type="date" id="btEndDate" class="bg-dark-900 border border-dark-700 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono" />
+            </div>
+
+            <!-- Target R:R -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Target R:R (TP)</label>
+              <select id="btRR" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="1.0">1:1.0 R:R</option>
+                <option value="1.5">1:1.5 R:R</option>
+                <option value="2.0" selected>1:2.0 R:R</option>
+                <option value="3.0">1:3.0 R:R</option>
+              </select>
+            </div>
+
+            <!-- Position Mode -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Position Mode</label>
+              <select id="btSinglePos" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="true" selected>Single Position (1 at a time)</option>
+                <option value="false">Allow Concurrent / Overlapping</option>
+              </select>
+            </div>
+
+            <!-- Run Button -->
+            <div class="pt-4 lg:pt-0">
+              <button
+                onclick="runBacktest()"
+                id="btnRunBacktest"
+                class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/30 transition-all flex items-center space-x-2 active:scale-95"
+              >
+                <i id="btIcon" class="fa-solid fa-play text-xs"></i>
+                <span id="btBtnText">Run Backtest</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Backtest Summary Metrics Grid -->
+      <div id="btMetricsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <!-- Win Rate -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="text-slate-400 text-xs font-medium mb-1">STRATEGY WIN RATE</div>
+          <div class="flex items-baseline space-x-2">
+            <span id="btWinRate" class="text-2xl font-extrabold text-emerald-400 font-mono">--%</span>
+          </div>
+          <p id="btWinLossSub" class="text-xs text-slate-400 mt-2 font-mono">-- Wins / -- Losses</p>
+        </div>
+
+        <!-- Total Trades -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="text-slate-400 text-xs font-medium mb-1">TOTAL SETUPS</div>
+          <div class="flex items-baseline space-x-2">
+            <span id="btTotalTrades" class="text-2xl font-extrabold text-white font-mono">--</span>
+            <span class="text-xs text-slate-400">Setups</span>
+          </div>
+          <p id="btOpenTradesSub" class="text-xs text-slate-400 mt-2 font-mono">-- Open positions</p>
+        </div>
+
+        <!-- Profit Factor & Net R -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="text-slate-400 text-xs font-medium mb-1">PROFIT FACTOR & NET R</div>
+          <div class="flex items-baseline space-x-2">
+            <span id="btProfitFactor" class="text-2xl font-extrabold text-indigo-400 font-mono">--</span>
+            <span id="btNetR" class="text-xs text-emerald-400 font-semibold font-mono">(+0.0 R)</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Gross profit / loss ratio</p>
+        </div>
+
+        <!-- SL Points (Min / Avg / Max) -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="text-slate-400 text-xs font-medium mb-1">SL RISK (PTS)</div>
+          <div class="flex items-baseline space-x-2">
+            <span id="btAvgSl" class="text-2xl font-extrabold text-amber-400 font-mono">-- pts</span>
+          </div>
+          <p id="btSlMinMaxSub" class="text-xs text-slate-400 mt-2 font-mono truncate" title="Min / Max SL distance">Min: -- | Max: --</p>
+        </div>
+
+        <!-- TP Points (Min / Avg / Max) -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="text-slate-400 text-xs font-medium mb-1">TP REWARD (PTS)</div>
+          <div class="flex items-baseline space-x-2">
+            <span id="btAvgTp" class="text-2xl font-extrabold text-emerald-400 font-mono">-- pts</span>
+          </div>
+          <p id="btTpMinMaxSub" class="text-xs text-slate-400 mt-2 font-mono truncate" title="Min / Max TP distance">Min: -- | Max: --</p>
+        </div>
+
+        <!-- MFE Excursion & Duration -->
+        <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700/80 shadow-md">
+          <div class="text-slate-400 text-xs font-medium mb-1">AVG MFE % / DURATION</div>
+          <div class="flex items-baseline space-x-2">
+            <span id="btAvgMfe" class="text-2xl font-extrabold text-sky-400 font-mono">--%</span>
+          </div>
+          <p id="btMfeMinMaxSub" class="text-xs text-slate-400 mt-2 font-mono truncate" title="Min / Max MFE & Trade Duration">MFE: -- to -- | Avg: -- hrs</p>
+        </div>
+      </div>
+
+      <!-- Historical Trade Log Table -->
+      <div class="p-6 rounded-3xl bg-dark-800/90 border border-dark-700/80 shadow-md overflow-hidden">
+        <div class="flex items-center justify-between mb-4">
+          <h4 class="text-sm font-bold text-white flex items-center space-x-2">
+            <i class="fa-solid fa-list-check text-indigo-400"></i>
+            <span>Historical Setup Log & Trade Outcomes (IST)</span>
+          </h4>
+          <span id="btLogCount" class="text-xs font-mono text-slate-400">0 Setups Recorded</span>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs text-slate-300">
+            <thead class="bg-dark-900/80 text-[11px] uppercase font-bold text-slate-400 border-b border-dark-700 font-mono">
+              <tr>
+                <th class="py-3 px-3">FVG Formed (IST)</th>
+                <th class="py-3 px-3">Entry Time (IST)</th>
+                <th class="py-3 px-3">Market</th>
+                <th class="py-3 px-3">TF</th>
+                <th class="py-3 px-3">Direction</th>
+                <th class="py-3 px-3">Entry Price</th>
+                <th class="py-3 px-3">Stop Loss (Risk Pts)</th>
+                <th class="py-3 px-3">Take Profit (Gain Pts)</th>
+                <th class="py-3 px-3">Outcome</th>
+                <th class="py-3 px-3">Return (R)</th>
+                <th class="py-3 px-3">MFE (%)</th>
+                <th class="py-3 px-3">Duration</th>
+                <th class="py-3 px-3 text-center">Chart</th>
+              </tr>
+            </thead>
+            <tbody id="btTableBody" class="divide-y divide-dark-700/50 font-mono">
+              <tr>
+                <td colspan="13" class="py-8 text-center text-slate-500">
+                  Select an asset and click "Run Backtest" to evaluate historical performance. Hover over any trade to view chart.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Strategy Rule Cheat-Sheet -->
+    <div class="p-6 rounded-3xl bg-dark-800/40 border border-dark-700/60">
+      <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4 flex items-center space-x-2">
+        <i class="fa-solid fa-circle-info text-indigo-400"></i>
+        <span>2-Stage Strategy Execution Rules</span>
+      </h4>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs text-slate-400">
+        <div class="p-4 rounded-xl bg-dark-900/60 border border-dark-700/50">
+          <div class="font-semibold text-slate-200 mb-1.5 flex items-center">
+            <span class="h-2 w-2 rounded-full bg-indigo-400 mr-2"></span>
+            1. 4H FVG Cache & Invalidation
+          </div>
+          <p>
+            Maintains active 4H FVGs on finished candles. Automatically purges FVGs if price breaks past (below bottom for Bullish, above top for Bearish).
+          </p>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900/60 border border-dark-700/50">
+          <div class="font-semibold text-slate-200 mb-1.5 flex items-center">
+            <span class="h-2 w-2 rounded-full bg-amber-400 mr-2"></span>
+            2. Stage 1: Setup Formed
+          </div>
+          <p>
+            When price enters 4H FVG, watches for a new 1m/5m/15m FVG in the same direction. Alert 1 is dispatched to prepare for entry.
+          </p>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900/60 border border-dark-700/50">
+          <div class="font-semibold text-slate-200 mb-1.5 flex items-center">
+            <span class="h-2 w-2 rounded-full bg-emerald-400 mr-2"></span>
+            3. Stage 2: Trade Activation
+          </div>
+          <p>
+            Once price retraces back into the new LTF FVG, the trade triggers with SL at candle extremes and 1R, 1.5R, 2R, 3R TP targets!
+          </p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
+    <div class="flex items-center space-x-3 px-4 py-3 rounded-xl bg-dark-800 border border-dark-600 shadow-2xl text-xs text-white">
+      <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400 text-sm"></i>
+      <span id="toastMsg">Notification message</span>
+    </div>
+  </div>
+
+  <!-- JavaScript Client Logic -->
+  <script>
+    let rawSetups = [];
+    let currentStageFilter = 'ALL';
+    let currentLiveLtf = '5m';
+    let currentHtfMode = 'ANY_VALID';
+    let isScanning = false;
+    let isBacktesting = false;
+
+    function updateLiveClock() {
+      const now = new Date();
+      const istString = now.toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true
+      });
+      const clockEl = document.getElementById('liveIstClock');
+      if (clockEl) clockEl.innerText = `${istString} IST`;
+    }
+    setInterval(updateLiveClock, 1000);
+    updateLiveClock();
+
+    function formatNumber(num) {
+      if (num === undefined || num === null) return '--';
+      if (num >= 1000) {
+        return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      } else if (num >= 1) {
+        return num.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+      } else if (num >= 0.0001) {
+        return num.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 });
+      } else {
+        return num.toLocaleString('en-US', { minimumFractionDigits: 8, maximumFractionDigits: 8 });
+      }
+    }
+
+    function showToast(msg, type = 'success') {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toastMsg');
+      const toastIcon = document.getElementById('toastIcon');
+
+      toastMsg.innerText = msg;
+      if (type === 'success') {
+        toastIcon.className = 'fa-solid fa-circle-check text-emerald-400 text-sm';
+      } else if (type === 'error') {
+        toastIcon.className = 'fa-solid fa-circle-exclamation text-rose-400 text-sm';
+      } else {
+        toastIcon.className = 'fa-solid fa-circle-info text-sky-400 text-sm';
+      }
+
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      setTimeout(() => {
+        toast.classList.add('translate-y-20', 'opacity-0');
+      }, 4000);
+    }
+
+    function switchNavTab(tab) {
+      const liveView = document.getElementById('liveView');
+      const backtestView = document.getElementById('backtestView');
+      const navLive = document.getElementById('navTabLive');
+      const navBt = document.getElementById('navTabBacktest');
+
+      if (tab === 'live') {
+        liveView.classList.remove('hidden');
+        backtestView.classList.add('hidden');
+        navLive.className = 'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all bg-indigo-600 text-white shadow-sm flex items-center space-x-1.5';
+        navBt.className = 'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5';
+      } else {
+        liveView.classList.add('hidden');
+        backtestView.classList.remove('hidden');
+        navBt.className = 'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all bg-indigo-600 text-white shadow-sm flex items-center space-x-1.5';
+        navLive.className = 'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5';
+      }
+    }
+
+    function setLiveLtf(ltf) {
+      currentLiveLtf = ltf;
+      ['ltfBtn1m', 'ltfBtn5m', 'ltfBtn15m'].forEach(id => {
+        document.getElementById(id).className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+      });
+      const activeBtnId = ltf === '1m' ? 'ltfBtn1m' : (ltf === '5m' ? 'ltfBtn5m' : 'ltfBtn15m');
+      document.getElementById(activeBtnId).className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+
+      showToast(`Switched Lower Timeframe to ${ltf}. Scanning...`, 'info');
+      triggerManualScan();
+    }
+
+    function setHtfMode(mode) {
+      currentHtfMode = mode;
+      const btnAny = document.getElementById('htfModeAny');
+      const btnRecent = document.getElementById('htfModeRecent');
+
+      if (mode === 'ANY_VALID') {
+        btnAny.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+        btnRecent.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+      } else {
+        btnRecent.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+        btnAny.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+      }
+
+      showToast(`Switched 4H Mode to ${mode}. Scanning...`, 'info');
+      triggerManualScan();
+    }
+
+    function setStageFilter(stage) {
+      currentStageFilter = stage;
+      ['stageTabAll', 'stageTabActivated', 'stageTabPending'].forEach(id => {
+        document.getElementById(id).className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-white';
+      });
+
+      if (stage === 'ALL') {
+        document.getElementById('stageTabAll').className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm';
+      } else if (stage === 'ACTIVATED') {
+        document.getElementById('stageTabActivated').className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-emerald-600 text-white shadow-sm';
+      } else if (stage === 'PENDING_RETRACE') {
+        document.getElementById('stageTabPending').className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-amber-600 text-white shadow-sm';
+      }
+
+      renderSetups();
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.universe_count !== undefined) {
+          document.getElementById('statUniverse').innerText = data.universe_count;
+        }
+        if (data.coins_whitelist) {
+          document.getElementById('statUniverseLabel').innerText = data.coins_whitelist;
+          document.getElementById('statUniverseSub').innerHTML = '<i class="fa-solid fa-shield-halved text-emerald-400 mr-1.5"></i> Custom Targets Active';
+        }
+        document.getElementById('statScanInterval').innerText = `${data.scan_interval_minutes}m`;
+        document.getElementById('statActivated').innerText = data.activated_count || 0;
+        document.getElementById('statPending').innerText = data.pending_count || 0;
+
+        if (data.last_scan_time_ist) {
+          document.getElementById('statLastScanTime').innerText = data.last_scan_time_ist;
+        }
+
+        if (data.last_scan_setups) {
+          rawSetups = data.last_scan_setups;
+          renderSetups();
+        }
+      } catch (err) {
+        console.error('Failed to fetch status:', err);
+      }
+    }
+
+    function renderSetups() {
+      const container = document.getElementById('setupsContainer');
+      const emptyState = document.getElementById('emptyState');
+      const searchTerm = document.getElementById('searchInput').value.trim().toUpperCase();
+
+      let filtered = rawSetups.filter(s => {
+        const matchStage = currentStageFilter === 'ALL' || s.stage === currentStageFilter;
+        const matchSearch = !searchTerm || s.symbol.toUpperCase().includes(searchTerm);
+        return matchStage && matchSearch;
+      });
+
+      const activatedCount = rawSetups.filter(s => s.stage === 'ACTIVATED').length;
+      const pendingCount = rawSetups.filter(s => s.stage === 'PENDING_RETRACE').length;
+      document.getElementById('countStageAll').innerText = rawSetups.length;
+      document.getElementById('countStageActivated').innerText = activatedCount;
+      document.getElementById('countStagePending').innerText = pendingCount;
+      document.getElementById('statActivated').innerText = activatedCount;
+      document.getElementById('statPending').innerText = pendingCount;
+
+      if (filtered.length === 0) {
+        container.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+      }
+
+      emptyState.classList.add('hidden');
+
+      container.innerHTML = filtered.map(s => {
+        const isBullish = s.direction === 'Bullish';
+        const isActivated = s.stage === 'ACTIVATED';
+
+        const badgeBg = isBullish ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
+        const glowClass = isBullish ? 'hover:border-emerald-500/50 hover:shadow-emerald-500/10' : 'hover:border-rose-500/50 hover:shadow-rose-500/10';
+        const icon = isBullish ? 'fa-arrow-trend-up text-emerald-400' : 'fa-arrow-trend-down text-rose-400';
+        const slLabel = isBullish ? '≤' : '≥';
+        const ltfLabel = s.ltf_timeframe || currentLiveLtf || '5m';
+        const hyperliquidUrl = `https://app.hyperliquid.xyz/trade/${s.symbol}`;
+
+        const stageBadge = isActivated
+          ? '<span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse">🚀 ACTIVATED (In Retrace)</span>'
+          : '<span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/20 text-amber-400 border border-amber-500/40">⏳ PENDING RETRACE</span>';
+
+        const tp = s.tp_levels || {};
+
+        return `
+          <div class="p-6 rounded-3xl bg-dark-800/90 border border-dark-700/80 transition-all duration-200 hover:-translate-y-1 hover:shadow-xl ${glowClass} flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center space-x-2.5">
+                  <div class="h-9 w-9 rounded-xl bg-dark-900 flex items-center justify-center font-extrabold text-sm font-mono text-white border border-dark-700">
+                    ${s.symbol.slice(0, 3)}
+                  </div>
+                  <div>
+                    <div class="flex items-center space-x-1.5">
+                      <span class="font-bold text-base text-white tracking-wide font-mono">${s.symbol}-PERP</span>
+                      <a href="${hyperliquidUrl}" target="_blank" class="text-slate-500 hover:text-indigo-400 text-xs transition-colors" title="Trade on Hyperliquid">
+                        <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                      </a>
+                    </div>
+                    <span class="text-[11px] text-slate-400">${ltfLabel} FVG Execution</span>
+                  </div>
+                </div>
+
+                <div class="px-2.5 py-1 rounded-full text-xs font-semibold border flex items-center space-x-1.5 ${badgeBg}">
+                  <i class="fa-solid ${icon} text-[10px]"></i>
+                  <span>${s.direction}</span>
+                </div>
+              </div>
+
+              <div class="mb-4">
+                ${stageBadge}
+              </div>
+
+              <div class="p-3.5 rounded-2xl bg-dark-900/80 border border-dark-700/50 mb-4 flex items-center justify-between">
+                <div>
+                  <span class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider">Live Price</span>
+                  <div class="text-lg font-extrabold text-white font-mono">$${formatNumber(s.price)}</div>
+                </div>
+                <div class="text-right">
+                  <span class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider">Entry Ref</span>
+                  <div class="text-lg font-extrabold text-indigo-400 font-mono">$${formatNumber(s.entry_price)}</div>
+                </div>
+              </div>
+
+              <!-- Take Profit Targets Grid -->
+              <div class="p-3 rounded-2xl bg-dark-750/40 border border-dark-700/40 mb-4">
+                <div class="text-[10px] uppercase font-bold text-slate-400 mb-2 flex items-center justify-between">
+                  <span>Take Profit Targets</span>
+                  <span class="text-amber-400 font-mono">Risk: $${formatNumber(tp.sl_points || tp.risk_points)} pts (${tp.risk_pct || 0}%)</span>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div class="p-1.5 rounded-lg bg-dark-900/80 border border-dark-700/50 flex flex-col justify-between">
+                    <div class="flex justify-between items-baseline">
+                      <span class="text-slate-400 font-semibold text-[11px]">1.0R</span>
+                      <span class="text-emerald-400 font-bold">$${formatNumber(tp.r1)}</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 font-normal text-right">+${formatNumber(tp.r1_points || tp.risk_points)} pts</span>
+                  </div>
+                  <div class="p-1.5 rounded-lg bg-dark-900/80 border border-dark-700/50 flex flex-col justify-between">
+                    <div class="flex justify-between items-baseline">
+                      <span class="text-slate-400 font-semibold text-[11px]">1.5R</span>
+                      <span class="text-emerald-400 font-bold">$${formatNumber(tp.r1_5)}</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 font-normal text-right">+${formatNumber(tp.r1_5_points || (tp.risk_points * 1.5))} pts</span>
+                  </div>
+                  <div class="p-1.5 rounded-lg bg-dark-900/80 border border-dark-700/50 flex flex-col justify-between">
+                    <div class="flex justify-between items-baseline">
+                      <span class="text-slate-400 font-semibold text-[11px]">2.0R</span>
+                      <span class="text-sky-400 font-bold">$${formatNumber(tp.r2)}</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 font-normal text-right">+${formatNumber(tp.r2_points || (tp.risk_points * 2.0))} pts</span>
+                  </div>
+                  <div class="p-1.5 rounded-lg bg-dark-900/80 border border-dark-700/50 flex flex-col justify-between">
+                    <div class="flex justify-between items-baseline">
+                      <span class="text-slate-400 font-semibold text-[11px]">3.0R</span>
+                      <span class="text-purple-400 font-bold">$${formatNumber(tp.r3)}</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500 font-normal text-right">+${formatNumber(tp.r3_points || (tp.risk_points * 3.0))} pts</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="space-y-2 text-xs">
+                <div class="flex items-center justify-between p-2 rounded-xl bg-dark-750/30 border border-dark-700/30">
+                  <span class="text-slate-400 font-medium">4H FVG Zone</span>
+                  <div class="text-right font-mono text-slate-200">
+                    <span>${formatNumber(s.htf_fvg?.bottom)} – ${formatNumber(s.htf_fvg?.top)}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between p-2 rounded-xl bg-dark-750/30 border border-dark-700/30">
+                  <span class="text-slate-400 font-medium">⏰ ${ltfLabel} FVG Formed</span>
+                  <div class="text-right font-mono text-slate-200">
+                    <span>${s.fvg_formation_time_ist || s.formed_time_ist || 'Live'}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between p-2 rounded-xl bg-dark-750/30 border border-dark-700/30">
+                  <span class="text-slate-400 font-medium">🚀 Trade Entry Time</span>
+                  <div class="text-right font-mono font-semibold ${s.stage === 'ACTIVATED' ? 'text-emerald-400' : 'text-amber-400'}">
+                    <span>${s.entry_time_ist || (s.stage === 'ACTIVATED' ? 'Live Retrace' : '⏳ Awaiting Retrace')}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between p-2 rounded-xl bg-dark-750/30 border border-dark-700/30">
+                  <span class="text-slate-400 font-medium">${ltfLabel} FVG Retrace Zone</span>
+                  <div class="text-right font-mono text-slate-200">
+                    <span>${formatNumber(s.ltf_fvg?.bottom)} – ${formatNumber(s.ltf_fvg?.top)}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between p-2 rounded-xl bg-dark-750/30 border border-dark-700/30">
+                  <span class="text-slate-400 font-medium">Stop Loss Ref</span>
+                  <div class="text-right font-mono font-semibold">
+                    <span class="text-amber-400">${slLabel} $${formatNumber(s.sl_ref)}</span>
+                    <span class="text-[10px] text-slate-400 font-normal ml-1">($${formatNumber(tp.sl_points || tp.risk_points)} pts)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 mt-5">
+              <button
+                onclick="openChartModal('/api/chart?symbol=${s.symbol}&direction=${s.direction}&ltf=${ltfLabel}&stage=${s.stage}&entry=${s.entry_price}&sl=${s.sl_ref}&htf_bottom=${s.htf_fvg?.bottom || ''}&htf_top=${s.htf_fvg?.top || ''}&ltf_bottom=${s.ltf_fvg?.bottom || ''}&ltf_top=${s.ltf_fvg?.top || ''}', '${s.symbol}-PERP (${ltfLabel}) · ${s.direction} FVG Setup')"
+                class="py-2 px-3 rounded-2xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold text-center transition-all flex items-center justify-center space-x-1.5"
+              >
+                <i class="fa-solid fa-chart-candlestick text-[11px]"></i>
+                <span>View Chart</span>
+              </button>
+              <a
+                href="${hyperliquidUrl}"
+                target="_blank"
+                class="py-2 px-3 rounded-2xl bg-dark-700 hover:bg-emerald-600 text-slate-200 hover:text-white text-xs font-semibold text-center transition-all flex items-center justify-center space-x-1.5"
+              >
+                <span>Trade Hyperliquid</span>
+                <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
+              </a>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function triggerManualScan() {
+      if (isScanning) return;
+      isScanning = true;
+
+      const scanBtn = document.getElementById('btnScanNow');
+      const scanIcon = document.getElementById('scanIcon');
+      const scanBtnText = document.getElementById('scanBtnText');
+
+      scanIcon.classList.add('animate-spin');
+      scanBtnText.innerText = 'Scanning...';
+      scanBtn.disabled = true;
+
+      showToast(`Scan initiated across targets (LTF: ${currentLiveLtf}, 4H: ${currentHtfMode})...`, 'info');
+
+      try {
+        const res = await fetch(`/api/scan?ltf=${currentLiveLtf}&htf_mode=${currentHtfMode}`, { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          rawSetups = data.setups || [];
+          document.getElementById('statActivated').innerText = data.activated_count || 0;
+          document.getElementById('statPending').innerText = data.pending_count || 0;
+          if (data.timestamp_ist) {
+            document.getElementById('statLastScanTime').innerText = data.timestamp_ist;
+          }
+          renderSetups();
+          showToast(`Scan complete! ${data.activated_count} Activated, ${data.pending_count} Pending.`, 'success');
+        } else {
+          showToast('Scan encountered an issue. Check logs.', 'error');
+        }
+      } catch (err) {
+        showToast(`Scan error: ${err.message}`, 'error');
+      } finally {
+        isScanning = false;
+        scanIcon.classList.remove('animate-spin');
+        scanBtnText.innerText = 'Scan Now';
+        scanBtn.disabled = false;
+        fetchStatus();
+      }
+    }
+
+    async function testTelegramAlert() {
+      const btn = document.getElementById('btnTestTelegram');
+      btn.disabled = true;
+      showToast('Sending test alert to Telegram (IST)...', 'info');
+
+      try {
+        const res = await fetch('/api/test-telegram', { method: 'POST' });
+        const data = await res.json();
+        if (data.status === 'success') {
+          showToast('Telegram test alert successfully delivered! 🚀', 'success');
+        } else {
+          showToast(`Telegram test failed: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showToast(`Telegram error: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function initDatePickers() {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - 14);
+
+      const endInput = document.getElementById('btEndDate');
+      const startInput = document.getElementById('btStartDate');
+      if (endInput && startInput) {
+        endInput.value = end.toISOString().split('T')[0];
+        startInput.value = start.toISOString().split('T')[0];
+
+        startInput.addEventListener('change', () => {
+          document.getElementById('btPreset').value = 'custom';
+        });
+        endInput.addEventListener('change', () => {
+          document.getElementById('btPreset').value = 'custom';
+        });
+      }
+    }
+
+    function handlePresetChange() {
+      const preset = document.getElementById('btPreset').value;
+      if (preset === 'custom') return;
+      const days = parseInt(preset, 10);
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days);
+
+      document.getElementById('btEndDate').value = end.toISOString().split('T')[0];
+      document.getElementById('btStartDate').value = start.toISOString().split('T')[0];
+    }
+
+    async function runBacktest() {
+      if (isBacktesting) return;
+      isBacktesting = true;
+
+      const btn = document.getElementById('btnRunBacktest');
+      const icon = document.getElementById('btIcon');
+      const text = document.getElementById('btBtnText');
+      const symbol = document.getElementById('btSymbol').value;
+      const ltf = document.getElementById('btLtf').value;
+      const htfMode = document.getElementById('btHtfMode').value;
+      const rr = document.getElementById('btRR').value;
+      const startDate = document.getElementById('btStartDate').value;
+      const endDate = document.getElementById('btEndDate').value;
+      const preset = document.getElementById('btPreset').value;
+      const singlePos = document.getElementById('btSinglePos') ? document.getElementById('btSinglePos').value : 'true';
+
+      icon.className = 'fa-solid fa-arrows-rotate animate-spin text-xs';
+      text.innerText = 'Simulating History...';
+      btn.disabled = true;
+
+      let dateDesc = `${startDate} to ${endDate}`;
+      showToast(`Running 2-stage backtest on ${symbol} (${dateDesc}, ${ltf}, ${htfMode}, ${rr} R:R, ${singlePos === 'true' ? 'Single Pos' : 'Concurrent'})...`, 'info');
+
+      try {
+        let url = `/api/backtest?symbol=${symbol}&target_rr=${rr}&ltf=${ltf}&htf_mode=${htfMode}&single_position=${singlePos}`;
+        if (startDate && endDate) {
+          url += `&start_date=${startDate}&end_date=${endDate}`;
+        } else {
+          url += `&days=${preset !== 'custom' ? preset : 14}`;
+        }
+
+        const res = await fetch(url, { method: 'POST' });
+        if (res.ok) {
+          const json = await res.json();
+          const data = json.data;
+
+          document.getElementById('btWinRate').innerText = `${data.win_rate_pct}%`;
+          document.getElementById('btWinLossSub').innerText = `${data.winning_trades} Wins / ${data.losing_trades} Losses`;
+          document.getElementById('btTotalTrades').innerText = data.total_trades;
+          document.getElementById('btOpenTradesSub').innerText = `${data.open_trades} Open positions`;
+          document.getElementById('btProfitFactor').innerText = data.profit_factor;
+          document.getElementById('btNetR').innerText = `(${data.total_r_return >= 0 ? '+' : ''}${data.total_r_return} R)`;
+          
+          document.getElementById('btAvgSl').innerText = `$${formatNumber(data.avg_sl_points)} pts`;
+          document.getElementById('btSlMinMaxSub').innerText = `Min: $${formatNumber(data.min_sl_points)} | Max: $${formatNumber(data.max_sl_points)}`;
+
+          document.getElementById('btAvgTp').innerText = `$${formatNumber(data.avg_tp_points)} pts`;
+          document.getElementById('btTpMinMaxSub').innerText = `Min: $${formatNumber(data.min_tp_points)} | Max: $${formatNumber(data.max_tp_points)}`;
+
+          document.getElementById('btAvgMfe').innerText = `${data.avg_mfe_pct}%`;
+          document.getElementById('btMfeMinMaxSub').innerText = `MFE: +${data.min_mfe_pct}% to +${data.max_mfe_pct}% | Avg: ${(data.avg_trade_duration_minutes / 60).toFixed(1)}h (${data.min_duration_minutes}m–${(data.max_duration_minutes / 60).toFixed(1)}h)`;
+          document.getElementById('btLogCount').innerText = `${data.trades.length} Setups (${data.start_date_ist || startDate} – ${data.end_date_ist || endDate} | ${data.ltf_timeframe})`;
+
+          const tbody = document.getElementById('btTableBody');
+          if (data.trades.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="13" class="py-8 text-center text-slate-500">No historical retrace setups found for ${symbol} between ${data.start_date_ist || startDate} and ${data.end_date_ist || endDate} using ${ltf} FVG.</td></tr>`;
+          } else {
+            tbody.innerHTML = data.trades.map(t => {
+              const isWin = t.outcome === 'WIN';
+              const isLoss = t.outcome === 'LOSS';
+              let badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">⏳ OPEN</span>';
+              if (isWin) {
+                badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">✅ WON (TP)</span>';
+              } else if (isLoss) {
+                badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">❌ LOST (SL)</span>';
+              }
+
+              const dirBadge = t.direction === 'Bullish'
+                ? '<span class="text-emerald-400 font-semibold">🟢 Bullish</span>'
+                : '<span class="text-rose-400 font-semibold">🔴 Bearish</span>';
+
+              const rClass = t.r_multiple > 0 ? 'text-emerald-400 font-bold' : (t.r_multiple < 0 ? 'text-rose-400 font-bold' : 'text-slate-400');
+              const durationHrs = (t.duration_minutes / 60).toFixed(1);
+
+              const chartUrl = `/api/chart?symbol=${t.symbol}&direction=${t.direction}&ltf=${t.ltf_timeframe}&stage=ACTIVATED&entry=${t.entry_price}&sl=${t.sl_price}&htf_bottom=${t.htf_fvg?.bottom || ''}&htf_top=${t.htf_fvg?.top || ''}&ltf_bottom=${t.ltf_fvg?.bottom || ''}&ltf_top=${t.ltf_fvg?.top || ''}&fvg_formed_ts=${t.fvg_formation_timestamp || ''}&entry_ts=${t.entry_timestamp || ''}&timestamp=${t.entry_timestamp || t.fvg_formation_timestamp || ''}`;
+              const chartTitle = `${t.symbol}-PERP (${t.ltf_timeframe}) · ${t.direction} [${t.outcome}] · Formed: ${t.fvg_formation_datetime || t.entry_datetime}`;
+
+              return `
+                <tr
+                  class="hover:bg-dark-750/60 cursor-pointer group transition-colors"
+                  onmouseenter="showBtChartHover(event, '${chartUrl}', '${t.symbol}', '${t.direction}', '${t.outcome}', '${t.entry_datetime}')"
+                  onmousemove="moveBtChartHover(event)"
+                  onmouseleave="hideBtChartHover()"
+                  onclick="openChartModal('${chartUrl}', '${chartTitle}')"
+                >
+                  <td class="py-3 px-3 text-slate-400 font-normal">${t.fvg_formation_datetime || t.entry_datetime}</td>
+                  <td class="py-3 px-3 text-slate-200 font-medium">${t.entry_datetime}</td>
+                  <td class="py-3 px-3 font-bold text-white">${t.symbol}-PERP</td>
+                  <td class="py-3 px-3 text-indigo-400 font-semibold">${t.ltf_timeframe}</td>
+                  <td class="py-3 px-3">${dirBadge}</td>
+                  <td class="py-3 px-3 text-white font-bold">$${formatNumber(t.entry_price)}</td>
+                  <td class="py-3 px-3 font-semibold">
+                    <span class="text-amber-400">$${formatNumber(t.sl_price)}</span>
+                    <span class="text-[10px] text-slate-400 font-normal ml-1">($${formatNumber(t.sl_points)} pts)</span>
+                  </td>
+                  <td class="py-3 px-3 font-semibold">
+                    <span class="text-sky-400">$${formatNumber(t.tp_price)}</span>
+                    <span class="text-[10px] text-slate-400 font-normal ml-1">(+$${formatNumber(t.tp_points)} pts)</span>
+                  </td>
+                  <td class="py-3 px-3">${badge}</td>
+                  <td class="py-3 px-3 ${rClass}">${t.r_multiple > 0 ? '+' : ''}${t.r_multiple} R</td>
+                  <td class="py-3 px-3 text-emerald-400">+${t.mfe_pct}%</td>
+                  <td class="py-3 px-3 text-slate-400">${durationHrs} hrs</td>
+                  <td class="py-3 px-3 text-center">
+                    <button
+                      onclick="event.stopPropagation(); openChartModal('${chartUrl}', '${chartTitle}')"
+                      class="px-2.5 py-1 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-semibold flex items-center space-x-1.5 mx-auto transition-all shadow-sm"
+                      title="Click to view full-size chart"
+                    >
+                      <i class="fa-solid fa-chart-candlestick text-[10px]"></i>
+                      <span>Chart</span>
+                    </button>
+                  </td>
+                </tr>
+              `;
+            }).join('');
+          }
+
+          showToast(`Backtest complete (${ltf})! Found ${data.total_trades} setups with ${data.win_rate_pct}% win rate.`, 'success');
+        } else {
+          showToast('Backtest error. Check server logs.', 'error');
+        }
+      } catch (err) {
+        showToast(`Backtest error: ${err.message}`, 'error');
+      } finally {
+        isBacktesting = false;
+        icon.className = 'fa-solid fa-play text-xs';
+        text.innerText = 'Run Backtest';
+        btn.disabled = false;
+      }
+    }
+
+    let btHoverTimeout = null;
+
+    function showBtChartHover(event, chartUrl, symbol, direction, outcome, entryTime) {
+      clearTimeout(btHoverTimeout);
+      const popover = document.getElementById('btChartHoverPopover');
+      const img = document.getElementById('btHoverImg');
+      const spinner = document.getElementById('btHoverSpinner');
+      const symElem = document.getElementById('btHoverSymbol');
+      const stageElem = document.getElementById('btHoverStage');
+      const timeElem = document.getElementById('btHoverTime');
+
+      symElem.innerText = `${symbol}-PERP · ${direction}`;
+      timeElem.innerText = entryTime || '';
+
+      if (outcome === 'WIN') {
+        stageElem.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+        stageElem.innerText = '✅ WIN (2.0R TP)';
+      } else if (outcome === 'LOSS') {
+        stageElem.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30';
+        stageElem.innerText = '❌ LOSS (SL)';
+      } else {
+        stageElem.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30';
+        stageElem.innerText = '⏳ OPEN';
+      }
+
+      if (img.src !== chartUrl) {
+        spinner.classList.remove('hidden');
+        img.src = chartUrl;
+      }
+
+      moveBtChartHover(event);
+      popover.classList.remove('hidden');
+    }
+
+    function moveBtChartHover(event) {
+      const popover = document.getElementById('btChartHoverPopover');
+      if (!popover || popover.classList.contains('hidden')) return;
+
+      const popoverWidth = 470;
+      const popoverHeight = 310;
+      let left = event.clientX + 20;
+      let top = event.clientY - (popoverHeight / 2);
+
+      // Boundary protection
+      if (left + popoverWidth > window.innerWidth) {
+        left = event.clientX - popoverWidth - 20;
+      }
+      if (top < 20) {
+        top = 20;
+      } else if (top + popoverHeight > window.innerHeight) {
+        top = window.innerHeight - popoverHeight - 20;
+      }
+
+      popover.style.left = `${left}px`;
+      popover.style.top = `${top}px`;
+    }
+
+    function hideBtChartHover() {
+      btHoverTimeout = setTimeout(() => {
+        const popover = document.getElementById('btChartHoverPopover');
+        if (popover) popover.classList.add('hidden');
+      }, 80);
+    }
+
+    function openChartModal(imgUrl, title) {
+      const modal = document.getElementById('chartModal');
+      const img = document.getElementById('chartModalImg');
+      const titleElem = document.getElementById('chartModalTitle');
+      titleElem.innerText = title;
+      img.src = imgUrl;
+      modal.classList.remove('hidden');
+    }
+
+    function closeChartModal() {
+      const modal = document.getElementById('chartModal');
+      modal.classList.add('hidden');
+    }
+
+    initDatePickers();
+    fetchStatus();
+
+    setInterval(() => {
+      const toggle = document.getElementById('autoRefreshToggle');
+      if (toggle && toggle.checked && !isScanning) {
+        fetchStatus();
+      }
+    }, 10000);
+  </script>
+
+  <!-- Floating Backtest Chart Hover Popover -->
+  <div id="btChartHoverPopover" class="hidden fixed z-50 pointer-events-none transition-opacity duration-150 shadow-2xl rounded-2xl overflow-hidden border border-indigo-500/40 bg-dark-900/95 backdrop-blur-md" style="width: 460px;">
+    <div class="p-2.5 px-3.5 bg-dark-800/90 border-b border-dark-700/80 flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <span id="btHoverSymbol" class="font-bold text-xs text-white font-mono">BTC-PERP</span>
+        <span id="btHoverStage" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400">WIN (2.0R)</span>
+      </div>
+      <span class="text-[10px] text-slate-400 font-mono" id="btHoverTime">IST</span>
+    </div>
+    <div class="p-2 bg-dark-950 flex items-center justify-center min-h-[220px] relative">
+      <div id="btHoverSpinner" class="absolute inset-0 flex flex-col items-center justify-center bg-dark-950/80 text-indigo-400 text-xs">
+        <i class="fa-solid fa-circle-notch animate-spin text-lg mb-1"></i>
+        <span>Loading chart preview...</span>
+      </div>
+      <img id="btHoverImg" src="" alt="Backtest Chart Preview" class="w-full h-auto rounded-xl" onload="document.getElementById('btHoverSpinner').classList.add('hidden')" onerror="document.getElementById('btHoverSpinner').innerHTML='<span class=\'text-slate-500 text-xs\'>Chart unavailable</span>'" />
+    </div>
+  </div>
+
+  <!-- TradingView Chart Modal -->
+  <div id="chartModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+    <div class="relative w-full max-w-5xl bg-dark-800 border border-dark-700 rounded-3xl overflow-hidden shadow-2xl">
+      <div class="flex items-center justify-between p-4 px-6 border-b border-dark-700 bg-dark-900/80">
+        <h3 id="chartModalTitle" class="text-sm font-bold text-white flex items-center space-x-2 font-mono">
+          <span>TradingView Setup Chart</span>
+        </h3>
+        <button onclick="closeChartModal()" class="text-slate-400 hover:text-white text-lg px-2 py-1 transition-colors">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="p-4 flex items-center justify-center bg-dark-900 min-h-[300px]">
+        <img id="chartModalImg" src="" alt="FVG Setup Chart" class="rounded-2xl max-h-[75vh] w-auto shadow-inner" />
+      </div>
+    </div>
+  </div>
+</body>
+</html>

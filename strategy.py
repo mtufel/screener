@@ -1,0 +1,693 @@
+"""
+Strategy module for Fair Value Gap (FVG) multi-timeframe cryptocurrency screener.
+Implements:
+1. 4H Higher Timeframe (HTF) FVG Cache with dynamic invalidation (removes FVGs when price shoots past).
+2. Configurable 4H FVG Selection: "ANY_VALID" vs "MOST_RECENT".
+3. Lower Timeframe (LTF: 1m, 5m, 15m) FVG Formation detection.
+4. Two-Stage Lifecycle:
+   - PENDING_RETRACE: New LTF FVG formed inside 4H zone; waiting for pullback.
+   - ACTIVATED: Price retraces back into the LTF FVG (Trade Entry with 1R, 1.5R, 2R, 3R TPs).
+"""
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+import logging
+import os
+from typing import Any, Dict, List, Literal, Optional
+
+from dotenv import load_dotenv
+from hyperliquid_client import HyperliquidClient, hyperliquid_client
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+# IST Timezone (UTC + 5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# ==============================================================================
+# STRATEGY CONFIGURATION
+# ==============================================================================
+HTF_TIMEFRAME: str = os.getenv("HTF_TIMEFRAME", "4h")
+LTF_TIMEFRAME: str = os.getenv("LTF_TIMEFRAME", "5m")
+LOOKBACK_CANDLES: int = int(os.getenv("LOOKBACK_CANDLES", "50"))
+TOP_N_ALERTS: int = int(os.getenv("TOP_N_ALERTS", "10"))
+COINS_WHITELIST: str = os.getenv("COINS_WHITELIST", "BTC,ETH,WTIOIL,SILVER,GOLD,PAXG").strip()
+HTF_SELECTION_MODE: str = os.getenv("HTF_SELECTION_MODE", "ANY_VALID").strip().upper()  # "ANY_VALID" or "MOST_RECENT"
+
+# Scoring Weights
+WEIGHT_HTF_TIGHTNESS: float = 0.35
+WEIGHT_LTF_TIGHTNESS: float = 0.35
+WEIGHT_CENTER_PROXIMITY: float = 0.30
+
+
+# ==============================================================================
+# DATA STRUCTURES
+# ==============================================================================
+@dataclass
+class Candle:
+    """Standard OHLCV candle representation."""
+    timestamp: int  # Open time in milliseconds
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Candle":
+        """Parse raw candle dictionary from Hyperliquid."""
+        return cls(
+            timestamp=int(data.get("t", 0)),
+            open=float(data.get("o", 0.0)),
+            high=float(data.get("h", 0.0)),
+            low=float(data.get("l", 0.0)),
+            close=float(data.get("c", 0.0)),
+            volume=float(data.get("v", 0.0)),
+        )
+
+
+@dataclass
+class FVG:
+    """Fair Value Gap representation."""
+    direction: Literal["Bullish", "Bearish"]
+    top: float       # Upper boundary of the gap
+    bottom: float    # Lower boundary of the gap
+    c1: Candle       # Oldest candle in 3-candle sequence
+    c2: Candle       # Middle candle (gap impulse)
+    c3: Candle       # Newest candle in 3-candle sequence
+    formed_at: int   # Timestamp (ms) of the newest candle (c3)
+    is_valid: bool = True
+
+    @property
+    def width(self) -> float:
+        """Absolute price width of the gap."""
+        return max(0.0, self.top - self.bottom)
+
+    @property
+    def midpoint(self) -> float:
+        """Midpoint price of the gap."""
+        return (self.top + self.bottom) / 2.0
+
+
+@dataclass
+class TPLevels:
+    """Take-Profit price levels based on Risk-to-Reward multiples."""
+    r1: float
+    r1_5: float
+    r2: float
+    r3: float
+    risk_points: float
+    risk_pct: float
+    r1_points: float = 0.0
+    r1_5_points: float = 0.0
+    r2_points: float = 0.0
+    r3_points: float = 0.0
+    sl_points: float = 0.0
+
+    def __post_init__(self):
+        if self.sl_points == 0.0:
+            self.sl_points = self.risk_points
+        if self.r1_points == 0.0:
+            self.r1_points = self.risk_points * 1.0
+        if self.r1_5_points == 0.0:
+            self.r1_5_points = self.risk_points * 1.5
+        if self.r2_points == 0.0:
+            self.r2_points = self.risk_points * 2.0
+        if self.r3_points == 0.0:
+            self.r3_points = self.risk_points * 3.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "r1": round(self.r1, 4),
+            "r1_5": round(self.r1_5, 4),
+            "r2": round(self.r2, 4),
+            "r3": round(self.r3, 4),
+            "risk_points": round(self.risk_points, 4),
+            "sl_points": round(self.sl_points, 4),
+            "r1_points": round(self.r1_points, 4),
+            "r1_5_points": round(self.r1_5_points, 4),
+            "r2_points": round(self.r2_points, 4),
+            "r3_points": round(self.r3_points, 4),
+            "risk_pct": round(self.risk_pct, 2),
+        }
+
+
+@dataclass
+class Phase1Result:
+    """Intermediate result for coins passing Phase 1 (4H FVG)."""
+    symbol: str
+    direction: Literal["Bullish", "Bearish"]
+    htf_fvg: FVG
+    current_price: float
+    active_4h_fvgs: List[FVG]
+
+
+@dataclass
+class SetupResult:
+    """Final qualified setup passing Phase 1 and Phase 2."""
+    symbol: str
+    direction: Literal["Bullish", "Bearish"]
+    stage: Literal["PENDING_RETRACE", "ACTIVATED"]
+    htf_fvg: FVG
+    ltf_fvg: FVG
+    current_price: float
+    entry_price: float
+    sl_ref: float
+    tp_levels: TPLevels
+    score: float
+    ltf_timeframe: str = "5m"
+    htf_mode: str = "ANY_VALID"
+    formed_time_ist: str = ""
+    fvg_formation_time_ist: str = ""
+    entry_time_ist: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "direction": self.direction,
+            "stage": self.stage,
+            "price": round(self.current_price, 4),
+            "entry_price": round(self.entry_price, 4),
+            "sl_ref": round(self.sl_ref, 4),
+            "score": round(self.score, 4),
+            "ltf_timeframe": self.ltf_timeframe,
+            "htf_mode": self.htf_mode,
+            "formed_time_ist": self.formed_time_ist,
+            "fvg_formation_time_ist": self.fvg_formation_time_ist,
+            "entry_time_ist": self.entry_time_ist,
+            "tp_levels": self.tp_levels.to_dict(),
+            "htf_fvg": {
+                "top": round(self.htf_fvg.top, 4),
+                "bottom": round(self.htf_fvg.bottom, 4),
+                "width": round(self.htf_fvg.width, 4),
+                "midpoint": round(self.htf_fvg.midpoint, 4),
+            },
+            "ltf_fvg": {
+                "top": round(self.ltf_fvg.top, 4),
+                "bottom": round(self.ltf_fvg.bottom, 4),
+                "width": round(self.ltf_fvg.width, 4),
+                "midpoint": round(self.ltf_fvg.midpoint, 4),
+            },
+        }
+
+
+# ==============================================================================
+# FVG COMPUTATION & ACTIVE CACHE WITH INVALIDATION
+# ==============================================================================
+def compute_fvg(
+    candles: List[Candle],
+    direction: Optional[Literal["Bullish", "Bearish"]] = None,
+) -> Optional[FVG]:
+    """
+    Computes the most recent 3-candle Fair Value Gap (FVG) from a list of candles.
+    """
+    if len(candles) < 3:
+        return None
+
+    for i in range(len(candles) - 1, 1, -1):
+        c1 = candles[i - 2]
+        c2 = candles[i - 1]
+        c3 = candles[i]
+
+        # Bullish FVG: c3.low > c1.high
+        if c3.low > c1.high:
+            if direction is None or direction == "Bullish":
+                return FVG(
+                    direction="Bullish",
+                    top=c3.low,
+                    bottom=c1.high,
+                    c1=c1,
+                    c2=c2,
+                    c3=c3,
+                    formed_at=c3.timestamp,
+                )
+
+        # Bearish FVG: c3.high < c1.low
+        if c3.high < c1.low:
+            if direction is None or direction == "Bearish":
+                return FVG(
+                    direction="Bearish",
+                    top=c1.low,
+                    bottom=c3.high,
+                    c1=c1,
+                    c2=c2,
+                    c3=c3,
+                    formed_at=c3.timestamp,
+                )
+
+    return None
+
+
+def compute_all_active_4h_fvgs(candles_4h: List[Candle]) -> List[FVG]:
+    """
+    Calculates all historical 4H FVGs on finished candles and tracks their lifecycle.
+    
+    Invalidation Rule:
+    - Bullish 4H FVG [bottom=c1.high, top=c3.low]:
+      Invalidated if subsequent price falls completely below `bottom` (c1.high).
+    - Bearish 4H FVG [bottom=c3.high, top=c1.low]:
+      Invalidated if subsequent price rises completely above `top` (c1.low).
+
+    Returns:
+        List[FVG]: List of all currently VALID un-invalidated 4H FVGs sorted newest first.
+    """
+    if len(candles_4h) < 3:
+        return []
+
+    valid_fvgs: List[FVG] = []
+
+    for i in range(2, len(candles_4h)):
+        c1 = candles_4h[i - 2]
+        c2 = candles_4h[i - 1]
+        c3 = candles_4h[i]
+
+        candidate: Optional[FVG] = None
+
+        if c3.low > c1.high:
+            candidate = FVG(
+                direction="Bullish",
+                top=c3.low,
+                bottom=c1.high,
+                c1=c1,
+                c2=c2,
+                c3=c3,
+                formed_at=c3.timestamp,
+            )
+        elif c3.high < c1.low:
+            candidate = FVG(
+                direction="Bearish",
+                top=c1.low,
+                bottom=c3.high,
+                c1=c1,
+                c2=c2,
+                c3=c3,
+                formed_at=c3.timestamp,
+            )
+
+        if candidate is None:
+            continue
+
+        # Invalidation check on subsequent candles (k > i)
+        is_invalidated = False
+        for k in range(i + 1, len(candles_4h)):
+            sub_candle = candles_4h[k]
+            if candidate.direction == "Bullish":
+                # Price broke below the gap bottom
+                if sub_candle.low < candidate.bottom:
+                    is_invalidated = True
+                    break
+            else:
+                # Price broke above the gap top
+                if sub_candle.high > candidate.top:
+                    is_invalidated = True
+                    break
+
+        if not is_invalidated:
+            valid_fvgs.append(candidate)
+
+    # Sort newest first
+    valid_fvgs.sort(key=lambda f: f.formed_at, reverse=True)
+    return valid_fvgs
+
+
+def price_in_fvg(price: float, fvg: FVG) -> bool:
+    """Checks if price is within the FVG price boundaries [bottom, top]."""
+    if fvg is None or price <= 0:
+        return False
+    return fvg.bottom <= price <= fvg.top
+
+
+def calculate_tp_levels(direction: Literal["Bullish", "Bearish"], entry_price: float, sl_price: float) -> TPLevels:
+    """Calculates 1.0R, 1.5R, 2.0R, and 3.0R Take Profit targets."""
+    risk_points = abs(entry_price - sl_price)
+    if risk_points <= 0:
+        risk_points = entry_price * 0.005  # fallback 0.5% default risk
+    risk_pct = (risk_points / entry_price) * 100.0
+
+    if direction == "Bullish":
+        r1 = entry_price + (1.0 * risk_points)
+        r1_5 = entry_price + (1.5 * risk_points)
+        r2 = entry_price + (2.0 * risk_points)
+        r3 = entry_price + (3.0 * risk_points)
+    else:
+        r1 = entry_price - (1.0 * risk_points)
+        r1_5 = entry_price - (1.5 * risk_points)
+        r2 = entry_price - (2.0 * risk_points)
+        r3 = entry_price - (3.0 * risk_points)
+
+    return TPLevels(
+        r1=r1,
+        r1_5=r1_5,
+        r2=r2,
+        r3=r3,
+        risk_points=risk_points,
+        risk_pct=risk_pct,
+    )
+
+
+def score_coin(htf_fvg: FVG, ltf_fvg: FVG, current_price: float) -> float:
+    """Calculates quality score (0.0 to 1.0)."""
+    if current_price <= 0:
+        return 0.0
+
+    htf_rel_width = htf_fvg.width / current_price
+    ltf_rel_width = ltf_fvg.width / current_price
+
+    htf_tightness = max(0.0, min(1.0, 1.0 - (htf_rel_width / 0.05)))
+    ltf_tightness = max(0.0, min(1.0, 1.0 - (ltf_rel_width / 0.02)))
+
+    if ltf_fvg.width > 0:
+        dist_to_center = abs(current_price - ltf_fvg.midpoint)
+        center_proximity = max(0.0, min(1.0, 1.0 - (dist_to_center / (ltf_fvg.width / 2.0))))
+    else:
+        center_proximity = 1.0
+
+    return (
+        (WEIGHT_HTF_TIGHTNESS * htf_tightness)
+        + (WEIGHT_LTF_TIGHTNESS * ltf_tightness)
+        + (WEIGHT_CENTER_PROXIMITY * center_proximity)
+    )
+
+
+def is_major_session() -> bool:
+    """Optional session filter."""
+    return True
+
+
+# ==============================================================================
+# PIPELINE STAGES
+# ==============================================================================
+async def get_last_n_candles(
+    symbol: str,
+    timeframe: str,
+    n: int = LOOKBACK_CANDLES,
+    client: Optional[HyperliquidClient] = None,
+) -> List[Candle]:
+    """Fetches finished candles for a symbol and timeframe."""
+    cli = client or hyperliquid_client
+    raw = await cli.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n + 1)
+    if not raw:
+        return []
+
+    # Exclude the currently open (unfinished) candle
+    finished_raw = raw[:-1] if len(raw) > 1 else raw
+    return [Candle.from_dict(c) for c in finished_raw]
+
+
+def is_4h_fvg_retraced_after_creation(
+    candles_4h: List[Candle],
+    fvg: FVG,
+    current_price: float,
+    max_candles_since_test: int = 6,
+) -> bool:
+    """
+    Verifies that price has actually RETRACED / TAPPED into the 4H FVG
+    STRICTLY AFTER the FVG was formed (on candles subsequent to c3, or live price).
+    
+    If price has never pulled back / retraced into the 4H FVG after creation,
+    this FVG remains untested and cannot trigger LTF trade setups.
+    """
+    # 1. Check if current price is directly inside the 4H FVG right now
+    if price_in_fvg(current_price, fvg):
+        return True
+
+    # 2. Get candles formed strictly after the FVG creation candle (c3)
+    fvg_creation_ts = fvg.formed_at
+    subsequent_candles = [c for c in candles_4h if c.timestamp > fvg_creation_ts]
+    if not subsequent_candles:
+        return False
+
+    # 3. Check if any subsequent candle tapped the 4H FVG zone
+    recent_subsequent = subsequent_candles[-max_candles_since_test:]
+    for c in recent_subsequent:
+        if fvg.direction == "Bullish":
+            # For Bullish FVG [bottom, top], subsequent price must have dipped into it
+            if c.low <= fvg.top and c.high >= fvg.bottom:
+                return True
+        else:
+            # For Bearish FVG [bottom, top], subsequent price must have rallied into it
+            if c.high >= fvg.bottom and c.low <= fvg.top:
+                return True
+
+    return False
+
+
+async def phase1_filter(
+    universe: List[str],
+    all_mids: Optional[Dict[str, float]] = None,
+    htf_mode: str = "ANY_VALID",
+    client: Optional[HyperliquidClient] = None,
+) -> List[Phase1Result]:
+    """
+    Phase 1: Calculates active 4H FVGs (with invalidation) and checks if price is currently inside
+    OR has confirmed a retrace/tap into the 4H FVG zone strictly after creation.
+    """
+    cli = client or hyperliquid_client
+    passed: List[Phase1Result] = []
+
+    for symbol in universe:
+        try:
+            candles_4h = await get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=LOOKBACK_CANDLES, client=cli)
+            if len(candles_4h) < 3:
+                continue
+
+            active_fvgs = compute_all_active_4h_fvgs(candles_4h)
+            if not active_fvgs:
+                continue
+
+            # Selection mode: ANY_VALID vs MOST_RECENT
+            fvgs_to_check = [active_fvgs[0]] if htf_mode == "MOST_RECENT" else active_fvgs
+
+            current_price = 0.0
+            if all_mids and symbol in all_mids:
+                current_price = all_mids[symbol]
+            else:
+                current_price = candles_4h[-1].close
+
+            for htf_fvg in fvgs_to_check:
+                if is_4h_fvg_retraced_after_creation(candles_4h, htf_fvg, current_price=current_price, max_candles_since_test=6):
+                    passed.append(
+                        Phase1Result(
+                            symbol=symbol,
+                            direction=htf_fvg.direction,
+                            htf_fvg=htf_fvg,
+                            current_price=current_price,
+                            active_4h_fvgs=active_fvgs,
+                        )
+                    )
+                    break
+        except Exception as exc:
+            logger.warning("Error checking Phase 1 for %s: %s", symbol, exc)
+
+    logger.info("Phase 1 Complete: %d/%d coins have confirmed 4H FVG retrace (Mode: %s).", len(passed), len(universe), htf_mode)
+    return passed
+
+
+async def phase2_check(
+    phase1_coin: Phase1Result,
+    client: Optional[HyperliquidClient] = None,
+    ltf_timeframe: Optional[str] = None,
+    htf_mode: str = "ANY_VALID",
+) -> Optional[SetupResult]:
+    """
+    Phase 2: Detects new LTF FVG formation (1m/5m/15m) and checks retrace activation.
+    """
+    cli = client or hyperliquid_client
+    symbol = phase1_coin.symbol
+    direction = phase1_coin.direction
+    current_price = phase1_coin.current_price
+    ltf = ltf_timeframe or os.getenv("LTF_TIMEFRAME", LTF_TIMEFRAME)
+
+    try:
+        candles_ltf = await get_last_n_candles(
+            symbol=symbol,
+            timeframe=ltf,
+            n=LOOKBACK_CANDLES,
+            client=cli,
+        )
+        if len(candles_ltf) < 3:
+            return None
+
+        # Search backwards through LTF candles to find the most recent VALID, UN-CLOSED FVG setup
+        for i in range(len(candles_ltf) - 1, 1, -1):
+            c1 = candles_ltf[i - 2]
+            c2 = candles_ltf[i - 1]
+            c3 = candles_ltf[i]
+
+            # Bullish FVG: c3.low > c1.high | Bearish FVG: c3.high < c1.low
+            is_fvg = (c3.low > c1.high) if direction == "Bullish" else (c3.high < c1.low)
+            if not is_fvg:
+                continue
+
+            ltf_fvg = FVG(
+                direction=direction,
+                top=c3.low if direction == "Bullish" else c1.low,
+                bottom=c1.high if direction == "Bullish" else c3.high,
+                c1=c1,
+                c2=c2,
+                c3=c3,
+                formed_at=c3.timestamp,
+            )
+
+            # Determine Stop Loss reference
+            if direction == "Bullish":
+                sl_ref = min(c1.low, c2.low, c3.low)
+                if sl_ref >= current_price:
+                    continue
+            else:
+                sl_ref = max(c1.high, c2.high, c3.high)
+                if sl_ref <= current_price:
+                    continue
+
+            fvg_formation_time_ist = datetime.fromtimestamp(ltf_fvg.formed_at / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
+
+            # Stage classification & Retrace Detection:
+            # Retrace MUST happen on a candle or tick AFTER the FVG formation candle
+            retrace_candle = None
+            retrace_idx = None
+            if i < len(candles_ltf) - 1:
+                for idx in range(i + 1, len(candles_ltf)):
+                    chk_c = candles_ltf[idx]
+                    if price_in_fvg(chk_c.low, ltf_fvg) or price_in_fvg(chk_c.high, ltf_fvg) or price_in_fvg(chk_c.open, ltf_fvg) or price_in_fvg(chk_c.close, ltf_fvg):
+                        retrace_candle = chk_c
+                        retrace_idx = idx
+                        break
+
+            if retrace_candle is not None:
+                stage: Literal["PENDING_RETRACE", "ACTIVATED"] = "ACTIVATED"
+                entry_price = min(retrace_candle.open, ltf_fvg.top) if direction == "Bullish" else max(retrace_candle.open, ltf_fvg.bottom)
+                entry_time_ist = datetime.fromtimestamp(retrace_candle.timestamp / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
+            elif price_in_fvg(current_price, ltf_fvg) and i < len(candles_ltf) - 1:
+                stage = "ACTIVATED"
+                entry_price = current_price
+                entry_time_ist = datetime.now(IST).strftime("%d-%b-%Y %I:%M %p IST") + " (Live)"
+            else:
+                stage = "PENDING_RETRACE"
+                entry_price = ltf_fvg.midpoint
+                entry_time_ist = "⏳ Awaiting Retrace"
+
+            # Calculate TP levels (1.0R, 1.5R, 2.0R, 3.0R)
+            tp_levels = calculate_tp_levels(direction=direction, entry_price=entry_price, sl_price=sl_ref)
+
+            # Invalidation Check (SL Hit or 2R Target TP Hit):
+            # If price subsequent to formation/retrace breached SL or reached 2.0R Target TP,
+            # this candidate setup is closed/dead -> continue searching for older active open setups!
+            is_closed = False
+            for k in range(i + 1, len(candles_ltf)):
+                chk_c = candles_ltf[k]
+                if direction == "Bullish":
+                    if chk_c.low <= sl_ref or chk_c.high >= tp_levels.r2:
+                        is_closed = True
+                        break
+                else:
+                    if chk_c.high >= sl_ref or chk_c.low <= tp_levels.r2:
+                        is_closed = True
+                        break
+
+            # Also check live tick price
+            if direction == "Bullish" and (current_price <= sl_ref or current_price >= tp_levels.r2):
+                is_closed = True
+            elif direction == "Bearish" and (current_price >= sl_ref or current_price <= tp_levels.r2):
+                is_closed = True
+
+            if is_closed:
+                continue
+
+            # Found a valid active open or pending setup!
+            score = score_coin(htf_fvg=phase1_coin.htf_fvg, ltf_fvg=ltf_fvg, current_price=current_price)
+
+            logger.info(
+                "Phase 2 [%s] for %s [%s] (%s): Price=%.4f, Entry=%.4f, SL=%.4f, 2R=%.4f (FVG Formed=%s, Entry=%s)",
+                stage,
+                symbol,
+                direction,
+                ltf,
+                current_price,
+                entry_price,
+                sl_ref,
+                tp_levels.r2,
+                fvg_formation_time_ist,
+                entry_time_ist,
+            )
+
+            return SetupResult(
+                symbol=symbol,
+                direction=direction,
+                stage=stage,
+                htf_fvg=phase1_coin.htf_fvg,
+                ltf_fvg=ltf_fvg,
+                current_price=current_price,
+                entry_price=entry_price,
+                sl_ref=sl_ref,
+                tp_levels=tp_levels,
+                score=score,
+                ltf_timeframe=ltf,
+                htf_mode=htf_mode,
+                formed_time_ist=datetime.now(IST).strftime("%d-%b %I:%M %p IST"),
+                fvg_formation_time_ist=fvg_formation_time_ist,
+                entry_time_ist=entry_time_ist,
+            )
+
+        return None
+    except Exception as exc:
+        logger.warning("Error in Phase 2 check for %s (%s): %s", symbol, ltf, exc)
+        return None
+
+
+async def run_screener(
+    top_n: int = TOP_N_ALERTS,
+    ltf_timeframe: Optional[str] = None,
+    htf_mode: Optional[str] = None,
+    client: Optional[HyperliquidClient] = None,
+) -> List[SetupResult]:
+    """
+    Executes the full 2-stage screener workflow across the target universe.
+    """
+    cli = client or hyperliquid_client
+    ltf = ltf_timeframe or os.getenv("LTF_TIMEFRAME", LTF_TIMEFRAME)
+    h_mode = htf_mode or os.getenv("HTF_SELECTION_MODE", HTF_SELECTION_MODE)
+
+    if not is_major_session():
+        return []
+
+    universe = await cli.get_universe()
+    if not universe:
+        return []
+
+    whitelist_raw = os.getenv("COINS_WHITELIST", COINS_WHITELIST).strip()
+    if whitelist_raw and whitelist_raw.upper() != "ALL":
+        from hyperliquid_client import SYMBOL_ALIASES
+        raw_allowed = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
+        allowed = set(raw_allowed)
+        for raw_sym in raw_allowed:
+            if raw_sym in SYMBOL_ALIASES:
+                allowed.add(SYMBOL_ALIASES[raw_sym])
+        universe = [c for c in universe if c.upper() in allowed]
+
+    all_mids = await cli.get_all_mids()
+    logger.info("Scanning universe of %d coins (HTF=%s, Mode=%s, LTF=%s)...", len(universe), HTF_TIMEFRAME, h_mode, ltf)
+
+    # 1. Phase 1 Filter
+    phase1_candidates = await phase1_filter(universe, all_mids=all_mids, htf_mode=h_mode, client=cli)
+    if not phase1_candidates:
+        return []
+
+    # 2. Phase 2 Checks
+    qualified_setups: List[SetupResult] = []
+    batch_size = 15
+    for i in range(0, len(phase1_candidates), batch_size):
+        batch = phase1_candidates[i : i + batch_size]
+        phase2_tasks = [phase2_check(cand, client=cli, ltf_timeframe=ltf, htf_mode=h_mode) for cand in batch]
+        phase2_raw = await asyncio.gather(*phase2_tasks, return_exceptions=True)
+
+        for res in phase2_raw:
+            if isinstance(res, SetupResult):
+                qualified_setups.append(res)
+            elif isinstance(res, Exception):
+                logger.warning("Phase 2 exception: %s", res)
+
+    # Sort: ACTIVATED setups first, then sorted by quality score descending
+    qualified_setups.sort(key=lambda s: (1 if s.stage == "ACTIVATED" else 0, s.score), reverse=True)
+    return qualified_setups[:top_n]
