@@ -227,8 +227,14 @@ async def test_all_candidate_fvgs_stopped_out_returns_none():
 # 4. TRADE TRACKER: LIFECYCLE, NO BREAKEVEN, & TARGET TP CLOSURE
 # ==============================================================================
 def test_trade_tracker_alert_deduplication():
-    """Validates that repeat scans of the same setup do not spam duplicate alerts."""
-    tracker = TradeTracker(single_active_position=True)
+    """
+    Validates the 2-Stage Telegram notification lifecycle:
+    - Alert 1 fires ONCE on PENDING_RETRACE.
+    - Subsequent duplicate PENDING_RETRACE scans are suppressed.
+    - Alert 2 fires ONCE when setup transitions to ACTIVATED.
+    - Subsequent duplicate ACTIVATED scans are suppressed.
+    """
+    tracker = TradeTracker(single_active_position=True, persistence_file=None)
     c1 = Candle(1000, 100, 105, 95, 104, 10)
     c2 = Candle(2000, 105, 120, 104, 118, 50)
     c3 = Candle(3000, 118, 125, 110, 122, 30)
@@ -266,7 +272,7 @@ def test_trade_tracker_tp_sl_updates():
     - 2.0R Target TP closes the trade as WIN (CLOSED_TP).
     - Subsequent price crash below initial SL never fires a Stop Loss alert.
     """
-    tracker = TradeTracker(single_active_position=True)
+    tracker = TradeTracker(single_active_position=True, persistence_file=None)
     c1 = Candle(1000, 100, 105, 95, 104, 10)
     c2 = Candle(2000, 105, 120, 104, 118, 50)
     c3 = Candle(3000, 118, 125, 110, 122, 30)
@@ -302,7 +308,7 @@ def test_trade_tracker_tp_sl_updates():
 
 def test_trade_tracker_single_position_suppression():
     """Validates that single_active_position=True suppresses new overlapping trades for the same asset."""
-    tracker = TradeTracker(single_active_position=True)
+    tracker = TradeTracker(single_active_position=True, persistence_file=None)
     c1 = Candle(1000, 100, 105, 95, 104, 10)
     c2 = Candle(2000, 105, 120, 104, 118, 50)
     c3 = Candle(3000, 118, 125, 110, 122, 30)
@@ -492,10 +498,31 @@ def test_fastapi_endpoints():
         assert "SL RISK (PTS)" in html_res.text
         assert "TP REWARD (PTS)" in html_res.text
 
-        # Status API
+        # Status API with new config fields
         status_res = client.get("/api/status")
         assert status_res.status_code == 200
-        assert "htf_mode" in status_res.json()
+        status_data = status_res.json()
+        assert "htf_mode" in status_data
+        assert "use_close_invalidation" in status_data
+        assert "max_htf_retrace_candles" in status_data
+        assert "session_filter_enabled" in status_data
+        assert "single_position" in status_data
+
+        # Config GET & POST API
+        cfg_get = client.get("/api/config")
+        assert cfg_get.status_code == 200
+        assert "config" in cfg_get.json()
+
+        cfg_post = client.post("/api/config?use_close_invalidation=true&max_htf_retrace_candles=24&session_filter_enabled=true&single_position=false")
+        assert cfg_post.status_code == 200
+        posted_cfg = cfg_post.json()["config"]
+        assert posted_cfg["use_close_invalidation"] is True
+        assert posted_cfg["max_htf_retrace_candles"] == 24
+        assert posted_cfg["session_filter_enabled"] is True
+        assert posted_cfg["single_position"] is False
+
+        # Reset back for subsequent tests
+        client.post("/api/config?use_close_invalidation=false&max_htf_retrace_candles=18&session_filter_enabled=false&single_position=true")
 
         # Dynamic Setup Chart API
         chart_res = client.get("/api/chart?symbol=BTC&direction=Bullish&ltf=5m&stage=ACTIVATED&entry=96000&sl=95000")
@@ -507,3 +534,113 @@ def test_fastapi_endpoints():
         bt_chart_res = client.get("/api/chart?symbol=PAXG&direction=Bullish&ltf=5m&stage=ACTIVATED&entry=4460&sl=4458&timestamp=1725000000000")
         assert bt_chart_res.status_code == 200
         assert bt_chart_res.headers["content-type"] == "image/png"
+
+
+# ==============================================================================
+# 10. REVIEW AUDIT FIXES VALIDATION
+# ==============================================================================
+def test_backtest_no_lookahead_bias_in_4h_slice():
+    """
+    Validates that a 4H candle currently in progress is NOT included in the HTF slice
+    until its full 4-hour duration has finished.
+    """
+    # 4H Candle 1: 00:00 to 04:00 (Open ts = 0, Close ts = 14,400,000)
+    c1 = Candle(0, 100, 105, 95, 104, 10)
+    # 4H Candle 2: 04:00 to 08:00 (Open ts = 14,400,000, Close ts = 28,800,000)
+    c2 = Candle(14400000, 105, 120, 104, 118, 50)
+    # 4H Candle 3: 08:00 to 12:00 (Open ts = 28,800,000, Close ts = 43,200,000)
+    c3 = Candle(28800000, 118, 125, 110, 122, 30)
+
+    candles_4h = [c1, c2, c3]
+    htf_duration_ms = 4 * 3600 * 1000
+
+    # At 10:00 AM (curr_ts = 36,000,000), Candle 3 is still incomplete and must NOT be in slice!
+    curr_ts_midway = 36000000
+    slice_midway = [c for c in candles_4h if (c.timestamp + htf_duration_ms) <= curr_ts_midway]
+    assert len(slice_midway) == 2
+    assert c3 not in slice_midway
+
+    # At 12:00 PM (curr_ts = 43,200,000), Candle 3 has officially closed and enters the slice!
+    curr_ts_closed = 43200000
+    slice_closed = [c for c in candles_4h if (c.timestamp + htf_duration_ms) <= curr_ts_closed]
+    assert len(slice_closed) == 3
+    assert c3 in slice_closed
+
+
+def test_close_based_vs_wick_based_invalidation(monkeypatch):
+    """Validates that close-based vs wick-based invalidation can be selected via config."""
+    # Bullish FVG with gap [100, 105]
+    c1 = Candle(1000, 95, 100, 90, 98, 10)
+    c2 = Candle(2000, 98, 120, 97, 118, 50)
+    c3 = Candle(3000, 118, 125, 105, 122, 30)
+    # Candle 4 wicks down to 98 (below bottom 100) but closes at 104 (inside/above gap)
+    c4_wick = Candle(4000, 110, 112, 98, 104, 20)
+
+    # 1. Wick-based (default): Candle 4 wicks below 100 -> FVG invalidated
+    monkeypatch.setattr("strategy.USE_CLOSE_BASED_INVALIDATION", False)
+    fvgs_wick = compute_all_active_4h_fvgs([c1, c2, c3, c4_wick])
+    assert len(fvgs_wick) == 0
+
+    # 2. Close-based: Candle 4 closes at 104 >= 100 -> FVG remains VALID
+    monkeypatch.setattr("strategy.USE_CLOSE_BASED_INVALIDATION", True)
+    fvgs_close = compute_all_active_4h_fvgs([c1, c2, c3, c4_wick])
+    assert len(fvgs_close) == 1
+    assert fvgs_close[0].bottom == 100
+
+
+def test_pending_retrace_entry_pricing_and_scoring():
+    """
+    Validates that PENDING_RETRACE setups calculate TP levels based on realistic
+    FVG barrier fill price rather than arbitrary midpoint.
+    """
+    c1 = Candle(1000, 95, 100, 90, 98, 10)
+    c2 = Candle(2000, 98, 120, 97, 118, 50)
+    c3 = Candle(3000, 118, 125, 105, 122, 30)
+    htf = FVG("Bullish", top=130, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=3000)
+    ltf = FVG("Bullish", top=105, bottom=100, c1=c1, c2=c2, c3=c3, formed_at=3000)
+
+    # For Bullish pending setup, expected limit entry is at gap top (105.0)
+    entry_expected = ltf.top
+    sl_ref = 90.0
+    tp = calculate_tp_levels("Bullish", entry_price=entry_expected, sl_price=sl_ref)
+
+    assert entry_expected == 105.0
+    assert tp.risk_points == 15.0
+    assert tp.r2 == 135.0
+
+    # Score calculation for pending setup (with center_proximity=1.0)
+    score = score_coin(htf, ltf, current_price=120.0, is_pending=True)
+    assert score >= 0.30
+
+    # With tight realistic crypto FVG widths:
+    htf_tight = FVG("Bullish", top=10050, bottom=10000, c1=c1, c2=c2, c3=c3, formed_at=3000)
+    ltf_tight = FVG("Bullish", top=10020, bottom=10010, c1=c1, c2=c2, c3=c3, formed_at=3000)
+    tight_score = score_coin(htf_tight, ltf_tight, current_price=10000.0, is_pending=True)
+    assert tight_score > 0.80
+
+
+def test_trade_tracker_disk_persistence_and_recovery(tmp_path):
+    """Validates that TradeTracker saves to disk and restores state accurately across reboots."""
+    temp_file = str(tmp_path / "test_trades.json")
+    tracker1 = TradeTracker(single_active_position=True, persistence_file=temp_file)
+
+    c1 = Candle(1000, 100, 105, 95, 104, 10)
+    c2 = Candle(2000, 105, 120, 104, 118, 50)
+    c3 = Candle(3000, 118, 125, 110, 122, 30)
+    htf = FVG("Bullish", top=125, bottom=110, c1=c1, c2=c2, c3=c3, formed_at=3000)
+    ltf = FVG("Bullish", top=120, bottom=115, c1=c1, c2=c2, c3=c3, formed_at=3000)
+    tp = calculate_tp_levels("Bullish", 100.0, 90.0)
+
+    setup = SetupResult("ETH", "Bullish", "ACTIVATED", htf, ltf, 100.0, 100.0, 90.0, tp, 0.9, "5m")
+    tracker1.register_or_update_setup(setup, [c1, c2, c3])
+    tracker1.check_open_trades({"ETH": 112.0})  # Hits 1R milestone
+
+    # Simulate app reboot with a fresh TradeTracker instance loading the same file
+    tracker2 = TradeTracker(single_active_position=True, persistence_file=temp_file)
+    sid = tracker2.get_setup_id(setup)
+    assert sid in tracker2.trades
+    restored_trade = tracker2.trades[sid]
+    assert restored_trade.symbol == "ETH"
+    assert restored_trade.stage == "ACTIVATED"
+    assert restored_trade.tp1_alert_sent is True  # Milestone state preserved!
+

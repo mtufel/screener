@@ -210,99 +210,165 @@
       </div>
 
       <!-- Controls & Strategy Configuration Toolbar -->
-      <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-dark-800/60 p-4 rounded-3xl border border-dark-700/60 backdrop-blur-sm">
-        <!-- Stage Filters & Direction Filters -->
-        <div class="flex flex-wrap items-center gap-3">
-          <!-- Stage Tabs -->
-          <div class="flex items-center space-x-1 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60">
-            <button
-              onclick="setStageFilter('ALL')"
-              id="stageTabAll"
-              class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm"
-            >
-              All (<span id="countStageAll">0</span>)
-            </button>
-            <button
-              onclick="setStageFilter('ACTIVATED')"
-              id="stageTabActivated"
-              class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-emerald-400"
-            >
-              🚀 Activated (<span id="countStageActivated">0</span>)
-            </button>
-            <button
-              onclick="setStageFilter('PENDING_RETRACE')"
-              id="stageTabPending"
-              class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-amber-400"
-            >
-              ⏳ Pending (<span id="countStagePending">0</span>)
-            </button>
+      <div class="space-y-3">
+        <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-dark-800/60 p-4 rounded-3xl border border-dark-700/60 backdrop-blur-sm">
+          <!-- Stage Filters & Direction Filters -->
+          <div class="flex flex-wrap items-center gap-3">
+            <!-- Stage Tabs -->
+            <div class="flex items-center space-x-1 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60">
+              <button
+                onclick="setStageFilter('ALL')"
+                id="stageTabAll"
+                class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm"
+              >
+                All (<span id="countStageAll">0</span>)
+              </button>
+              <button
+                onclick="setStageFilter('ACTIVATED')"
+                id="stageTabActivated"
+                class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-emerald-400"
+              >
+                🚀 Activated (<span id="countStageActivated">0</span>)
+              </button>
+              <button
+                onclick="setStageFilter('PENDING_RETRACE')"
+                id="stageTabPending"
+                class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-amber-400"
+              >
+                ⏳ Pending (<span id="countStagePending">0</span>)
+              </button>
+            </div>
+
+            <!-- 4H Selection Mode Switcher -->
+            <div class="flex items-center space-x-1.5 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60 text-xs">
+              <span class="px-2 text-[10px] font-bold uppercase text-slate-400 font-mono">4H Mode:</span>
+              <button
+                onclick="setHtfMode('ANY_VALID')"
+                id="htfModeAny"
+                class="px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]"
+              >
+                Any Valid 4H
+              </button>
+              <button
+                onclick="setHtfMode('MOST_RECENT')"
+                id="htfModeRecent"
+                class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+              >
+                Recent 4H Only
+              </button>
+            </div>
+
+            <!-- Lower Timeframe Selector (1m, 5m, 15m) -->
+            <div class="flex items-center space-x-1 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60 text-xs">
+              <span class="px-2 text-[10px] font-bold uppercase text-slate-400 font-mono">LTF:</span>
+              <button
+                onclick="setLiveLtf('1m')"
+                id="ltfBtn1m"
+                class="px-2 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+              >
+                1m
+              </button>
+              <button
+                onclick="setLiveLtf('5m')"
+                id="ltfBtn5m"
+                class="px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]"
+              >
+                5m
+              </button>
+              <button
+                onclick="setLiveLtf('15m')"
+                id="ltfBtn15m"
+                class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+              >
+                15m
+              </button>
+            </div>
           </div>
 
-          <!-- 4H Selection Mode Switcher -->
-          <div class="flex items-center space-x-1.5 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60 text-xs">
-            <span class="px-2 text-[10px] font-bold uppercase text-slate-400 font-mono">4H Mode:</span>
-            <button
-              onclick="setHtfMode('ANY_VALID')"
-              id="htfModeAny"
-              class="px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]"
-            >
-              Any Valid 4H
-            </button>
-            <button
-              onclick="setHtfMode('MOST_RECENT')"
-              id="htfModeRecent"
-              class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
-            >
-              Recent 4H Only
-            </button>
-          </div>
+          <!-- Search & Auto-Refresh -->
+          <div class="flex items-center space-x-3">
+            <div class="relative flex-1 sm:w-56">
+              <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+              <input
+                type="text"
+                id="searchInput"
+                placeholder="Search coin (e.g. BTC)..."
+                oninput="renderSetups()"
+                class="w-full bg-dark-900/80 border border-dark-700/80 rounded-xl pl-9 pr-3.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors font-mono"
+              />
+            </div>
 
-          <!-- Lower Timeframe Selector (1m, 5m, 15m) -->
-          <div class="flex items-center space-x-1 p-1 rounded-2xl bg-dark-900/80 border border-dark-700/60 text-xs">
-            <span class="px-2 text-[10px] font-bold uppercase text-slate-400 font-mono">LTF:</span>
-            <button
-              onclick="setLiveLtf('1m')"
-              id="ltfBtn1m"
-              class="px-2 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
-            >
-              1m
-            </button>
-            <button
-              onclick="setLiveLtf('5m')"
-              id="ltfBtn5m"
-              class="px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]"
-            >
-              5m
-            </button>
-            <button
-              onclick="setLiveLtf('15m')"
-              id="ltfBtn15m"
-              class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
-            >
-              15m
-            </button>
+            <div class="flex items-center space-x-2 text-xs text-slate-400 bg-dark-900/80 px-3 py-1.5 rounded-xl border border-dark-700/80">
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="autoRefreshToggle" checked class="sr-only peer" />
+                <div class="w-8 h-4 bg-dark-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+              <span class="hidden md:inline">Live Sync</span>
+            </div>
           </div>
         </div>
 
-        <!-- Search & Auto-Refresh -->
-        <div class="flex items-center space-x-3">
-          <div class="relative flex-1 sm:w-56">
-            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-            <input
-              type="text"
-              id="searchInput"
-              placeholder="Search coin (e.g. BTC)..."
-              oninput="renderSetups()"
-              class="w-full bg-dark-900/80 border border-dark-700/80 rounded-xl pl-9 pr-3.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors font-mono"
-            />
+        <!-- Strategy Parameters & Rules Bar (New Config Options) -->
+        <div class="flex flex-wrap items-center justify-between gap-3 bg-dark-800/40 px-4 py-2.5 rounded-2xl border border-dark-700/40 text-xs">
+          <div class="flex items-center space-x-1.5 text-slate-400 font-semibold">
+            <i class="fa-solid fa-sliders text-indigo-400"></i>
+            <span class="text-[11px] uppercase tracking-wider font-mono">Strategy Rules:</span>
           </div>
 
-          <div class="flex items-center space-x-2 text-xs text-slate-400 bg-dark-900/80 px-3 py-1.5 rounded-xl border border-dark-700/80">
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="autoRefreshToggle" checked class="sr-only peer" />
-              <div class="w-8 h-4 bg-dark-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
-            </label>
-            <span class="hidden md:inline">Live Sync</span>
+          <div class="flex flex-wrap items-center gap-3">
+            <!-- 4H Invalidation Option -->
+            <div class="flex items-center space-x-1.5 bg-dark-900/80 px-2.5 py-1 rounded-xl border border-dark-700/60">
+              <span class="text-[10px] text-slate-400 font-medium">4H Inval:</span>
+              <select
+                id="liveUseCloseInval"
+                onchange="updateLiveStrategyConfig()"
+                class="bg-transparent text-[11px] font-semibold text-indigo-300 focus:outline-none cursor-pointer"
+              >
+                <option value="false" class="bg-dark-900 text-white">Wick Breach (Standard)</option>
+                <option value="true" class="bg-dark-900 text-white">Close Breach (Body Close)</option>
+              </select>
+            </div>
+
+            <!-- 4H Retrace Lookback Window Option -->
+            <div class="flex items-center space-x-1.5 bg-dark-900/80 px-2.5 py-1 rounded-xl border border-dark-700/60">
+              <span class="text-[10px] text-slate-400 font-medium">4H Retrace Window:</span>
+              <select
+                id="liveMaxRetraceCandles"
+                onchange="updateLiveStrategyConfig()"
+                class="bg-transparent text-[11px] font-semibold text-indigo-300 focus:outline-none cursor-pointer"
+              >
+                <option value="18" class="bg-dark-900 text-white">18 Bars (72h / 3 Days)</option>
+                <option value="6" class="bg-dark-900 text-white">6 Bars (24h / 1 Day)</option>
+                <option value="12" class="bg-dark-900 text-white">12 Bars (48h / 2 Days)</option>
+                <option value="30" class="bg-dark-900 text-white">30 Bars (120h / 5 Days)</option>
+              </select>
+            </div>
+
+            <!-- Session Filter Option -->
+            <div class="flex items-center space-x-1.5 bg-dark-900/80 px-2.5 py-1 rounded-xl border border-dark-700/60">
+              <span class="text-[10px] text-slate-400 font-medium">Sessions:</span>
+              <select
+                id="liveSessionFilter"
+                onchange="updateLiveStrategyConfig()"
+                class="bg-transparent text-[11px] font-semibold text-indigo-300 focus:outline-none cursor-pointer"
+              >
+                <option value="false" class="bg-dark-900 text-white">24/7 (All Sessions)</option>
+                <option value="true" class="bg-dark-900 text-white">Major Hours (Asia/Lon/NY)</option>
+              </select>
+            </div>
+
+            <!-- Single Position Mode Option -->
+            <div class="flex items-center space-x-1.5 bg-dark-900/80 px-2.5 py-1 rounded-xl border border-dark-700/60">
+              <span class="text-[10px] text-slate-400 font-medium">Position Limit:</span>
+              <select
+                id="liveSinglePos"
+                onchange="updateLiveStrategyConfig()"
+                class="bg-transparent text-[11px] font-semibold text-indigo-300 focus:outline-none cursor-pointer"
+              >
+                <option value="true" class="bg-dark-900 text-white">Single Trade / Coin</option>
+                <option value="false" class="bg-dark-900 text-white">Concurrent Overlapping</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -378,6 +444,38 @@
               <select id="btHtfMode" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
                 <option value="ANY_VALID" selected>Any Valid 4H</option>
                 <option value="MOST_RECENT">Recent 4H Only</option>
+              </select>
+            </div>
+
+            <!-- 4H Invalidation Option -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">4H Invalidation</label>
+              <select id="btInvalidation" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="false" selected>Wick Breach (Standard)</option>
+                <option value="true">Close Breach (Body Close)</option>
+              </select>
+            </div>
+
+            <!-- 4H Retrace Lookback Window -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">4H Retrace Window</label>
+              <select id="btRetraceWindow" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="18" selected>18 Bars (72h / 3d)</option>
+                <option value="6">6 Bars (24h / 1d)</option>
+                <option value="12">12 Bars (48h / 2d)</option>
+                <option value="30">30 Bars (120h / 5d)</option>
+              </select>
+            </div>
+
+            <!-- Candle Gap Cooldown -->
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Trade Gap Cooldown</label>
+              <select id="btCandleGap" class="bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500 font-mono">
+                <option value="" selected>Auto (40/20/8 candles)</option>
+                <option value="0">0 (No Cooldown)</option>
+                <option value="10">10 Candles</option>
+                <option value="20">20 Candles</option>
+                <option value="40">40 Candles</option>
               </select>
             </div>
 
@@ -727,6 +825,20 @@
         document.getElementById('statActivated').innerText = data.activated_count || 0;
         document.getElementById('statPending').innerText = data.pending_count || 0;
 
+        // Sync Live Strategy Configuration Dropdowns
+        if (data.use_close_invalidation !== undefined && document.getElementById('liveUseCloseInval')) {
+          document.getElementById('liveUseCloseInval').value = String(data.use_close_invalidation);
+        }
+        if (data.max_htf_retrace_candles !== undefined && document.getElementById('liveMaxRetraceCandles')) {
+          document.getElementById('liveMaxRetraceCandles').value = String(data.max_htf_retrace_candles);
+        }
+        if (data.session_filter_enabled !== undefined && document.getElementById('liveSessionFilter')) {
+          document.getElementById('liveSessionFilter').value = String(data.session_filter_enabled);
+        }
+        if (data.single_position !== undefined && document.getElementById('liveSinglePos')) {
+          document.getElementById('liveSinglePos').value = String(data.single_position);
+        }
+
         if (data.last_scan_time_ist) {
           document.getElementById('statLastScanTime').innerText = data.last_scan_time_ist;
         }
@@ -737,6 +849,22 @@
         }
       } catch (err) {
         console.error('Failed to fetch status:', err);
+      }
+    }
+
+    async function updateLiveStrategyConfig() {
+      const useClose = document.getElementById('liveUseCloseInval').value === 'true';
+      const retraceWin = parseInt(document.getElementById('liveMaxRetraceCandles').value, 10);
+      const sessFilter = document.getElementById('liveSessionFilter').value === 'true';
+      const singlePos = document.getElementById('liveSinglePos').value === 'true';
+
+      showToast('Updating strategy settings & re-scanning...', 'info');
+
+      try {
+        await fetch(`/api/config?use_close_invalidation=${useClose}&max_htf_retrace_candles=${retraceWin}&session_filter_enabled=${sessFilter}&single_position=${singlePos}`, { method: 'POST' });
+        triggerManualScan();
+      } catch (err) {
+        showToast(`Failed to update config: ${err.message}`, 'error');
       }
     }
 
@@ -930,15 +1058,18 @@
       const scanBtn = document.getElementById('btnScanNow');
       const scanIcon = document.getElementById('scanIcon');
       const scanBtnText = document.getElementById('scanBtnText');
+      const useClose = document.getElementById('liveUseCloseInval') ? document.getElementById('liveUseCloseInval').value : 'false';
+      const retraceWin = document.getElementById('liveMaxRetraceCandles') ? document.getElementById('liveMaxRetraceCandles').value : '18';
+      const sessFilter = document.getElementById('liveSessionFilter') ? document.getElementById('liveSessionFilter').value : 'false';
 
       scanIcon.classList.add('animate-spin');
       scanBtnText.innerText = 'Scanning...';
       scanBtn.disabled = true;
 
-      showToast(`Scan initiated across targets (LTF: ${currentLiveLtf}, 4H: ${currentHtfMode})...`, 'info');
+      showToast(`Scan initiated across targets (LTF: ${currentLiveLtf}, 4H: ${currentHtfMode}, Inval: ${useClose === 'true' ? 'Close' : 'Wick'})...`, 'info');
 
       try {
-        const res = await fetch(`/api/scan?ltf=${currentLiveLtf}&htf_mode=${currentHtfMode}`, { method: 'POST' });
+        const res = await fetch(`/api/scan?ltf=${currentLiveLtf}&htf_mode=${currentHtfMode}&use_close_invalidation=${useClose}&max_htf_retrace_candles=${retraceWin}&session_filter_enabled=${sessFilter}`, { method: 'POST' });
         if (res.ok) {
           const data = await res.json();
           rawSetups = data.setups || [];
@@ -1030,6 +1161,9 @@
       const endDate = document.getElementById('btEndDate').value;
       const preset = document.getElementById('btPreset').value;
       const singlePos = document.getElementById('btSinglePos') ? document.getElementById('btSinglePos').value : 'true';
+      const useCloseInval = document.getElementById('btInvalidation') ? document.getElementById('btInvalidation').value : 'false';
+      const retraceWindow = document.getElementById('btRetraceWindow') ? document.getElementById('btRetraceWindow').value : '18';
+      const candleGap = document.getElementById('btCandleGap') ? document.getElementById('btCandleGap').value : '';
 
       icon.className = 'fa-solid fa-arrows-rotate animate-spin text-xs';
       text.innerText = 'Simulating History...';
@@ -1039,7 +1173,10 @@
       showToast(`Running 2-stage backtest on ${symbol} (${dateDesc}, ${ltf}, ${htfMode}, ${rr} R:R, ${singlePos === 'true' ? 'Single Pos' : 'Concurrent'})...`, 'info');
 
       try {
-        let url = `/api/backtest?symbol=${symbol}&target_rr=${rr}&ltf=${ltf}&htf_mode=${htfMode}&single_position=${singlePos}`;
+        let url = `/api/backtest?symbol=${symbol}&target_rr=${rr}&ltf=${ltf}&htf_mode=${htfMode}&single_position=${singlePos}&use_close_invalidation=${useCloseInval}&max_htf_retrace_candles=${retraceWindow}`;
+        if (candleGap !== '') {
+          url += `&min_candle_gap=${candleGap}`;
+        }
         if (startDate && endDate) {
           url += `&start_date=${startDate}&end_date=${endDate}`;
         } else {

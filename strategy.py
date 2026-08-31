@@ -35,6 +35,9 @@ LOOKBACK_CANDLES: int = int(os.getenv("LOOKBACK_CANDLES", "50"))
 TOP_N_ALERTS: int = int(os.getenv("TOP_N_ALERTS", "10"))
 COINS_WHITELIST: str = os.getenv("COINS_WHITELIST", "BTC,ETH,WTIOIL,SILVER,GOLD,PAXG").strip()
 HTF_SELECTION_MODE: str = os.getenv("HTF_SELECTION_MODE", "ANY_VALID").strip().upper()  # "ANY_VALID" or "MOST_RECENT"
+USE_CLOSE_BASED_INVALIDATION: bool = os.getenv("USE_CLOSE_BASED_INVALIDATION", "false").strip().lower() in ("true", "1", "yes")
+MAX_HTF_RETRACE_CANDLES: int = int(os.getenv("MAX_HTF_RETRACE_CANDLES", "18"))  # 18 * 4h = 72 hours / 3 days
+SESSION_FILTER_ENABLED: bool = os.getenv("SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 
 # Scoring Weights
 WEIGHT_HTF_TIGHTNESS: float = 0.35
@@ -142,6 +145,7 @@ class Phase1Result:
     htf_fvg: FVG
     current_price: float
     active_4h_fvgs: List[FVG]
+    htf_touch_ts: Optional[int] = None  # Timestamp (ms) of first candle that tapped the 4H FVG
 
 
 @dataclass
@@ -240,7 +244,10 @@ def compute_fvg(
     return None
 
 
-def compute_all_active_4h_fvgs(candles_4h: List[Candle]) -> List[FVG]:
+def compute_all_active_4h_fvgs(
+    candles_4h: List[Candle],
+    use_close_invalidation: Optional[bool] = None,
+) -> List[FVG]:
     """
     Calculates all historical 4H FVGs on finished candles and tracks their lifecycle.
     
@@ -249,21 +256,16 @@ def compute_all_active_4h_fvgs(candles_4h: List[Candle]) -> List[FVG]:
       Invalidated if subsequent price falls completely below `bottom` (c1.high).
     - Bearish 4H FVG [bottom=c3.high, top=c1.low]:
       Invalidated if subsequent price rises completely above `top` (c1.low).
-
-    Returns:
-        List[FVG]: List of all currently VALID un-invalidated 4H FVGs sorted newest first.
     """
-    if len(candles_4h) < 3:
-        return []
-
     valid_fvgs: List[FVG] = []
+    close_inval = USE_CLOSE_BASED_INVALIDATION if use_close_invalidation is None else use_close_invalidation
 
-    for i in range(2, len(candles_4h)):
-        c1 = candles_4h[i - 2]
-        c2 = candles_4h[i - 1]
-        c3 = candles_4h[i]
+    for i in range(len(candles_4h) - 2):
+        c1 = candles_4h[i]
+        c2 = candles_4h[i + 1]
+        c3 = candles_4h[i + 2]
 
-        candidate: Optional[FVG] = None
+        candidate = None
 
         if c3.low > c1.high:
             candidate = FVG(
@@ -291,16 +293,18 @@ def compute_all_active_4h_fvgs(candles_4h: List[Candle]) -> List[FVG]:
 
         # Invalidation check on subsequent candles (k > i)
         is_invalidated = False
-        for k in range(i + 1, len(candles_4h)):
+        for k in range(i + 3, len(candles_4h)):
             sub_candle = candles_4h[k]
             if candidate.direction == "Bullish":
                 # Price broke below the gap bottom
-                if sub_candle.low < candidate.bottom:
+                breach = sub_candle.close if close_inval else sub_candle.low
+                if breach < candidate.bottom:
                     is_invalidated = True
                     break
             else:
                 # Price broke above the gap top
-                if sub_candle.high > candidate.top:
+                breach = sub_candle.close if close_inval else sub_candle.high
+                if breach > candidate.top:
                     is_invalidated = True
                     break
 
@@ -347,7 +351,7 @@ def calculate_tp_levels(direction: Literal["Bullish", "Bearish"], entry_price: f
     )
 
 
-def score_coin(htf_fvg: FVG, ltf_fvg: FVG, current_price: float) -> float:
+def score_coin(htf_fvg: FVG, ltf_fvg: FVG, current_price: float, is_pending: bool = False) -> float:
     """Calculates quality score (0.0 to 1.0)."""
     if current_price <= 0:
         return 0.0
@@ -358,22 +362,36 @@ def score_coin(htf_fvg: FVG, ltf_fvg: FVG, current_price: float) -> float:
     htf_tightness = max(0.0, min(1.0, 1.0 - (htf_rel_width / 0.05)))
     ltf_tightness = max(0.0, min(1.0, 1.0 - (ltf_rel_width / 0.02)))
 
-    if ltf_fvg.width > 0:
+    if is_pending:
+        # Pending setups awaiting limit fill are scored with neutral/full proximity
+        center_proximity = 1.0
+    elif ltf_fvg.width > 0:
         dist_to_center = abs(current_price - ltf_fvg.midpoint)
         center_proximity = max(0.0, min(1.0, 1.0 - (dist_to_center / (ltf_fvg.width / 2.0))))
     else:
         center_proximity = 1.0
 
-    return (
+    score = (
         (WEIGHT_HTF_TIGHTNESS * htf_tightness)
         + (WEIGHT_LTF_TIGHTNESS * ltf_tightness)
         + (WEIGHT_CENTER_PROXIMITY * center_proximity)
     )
+    return max(0.0, min(1.0, score))
 
 
-def is_major_session() -> bool:
-    """Optional session filter."""
-    return True
+def is_major_session(ts_ms: Optional[int] = None, session_filter_enabled: Optional[bool] = None) -> bool:
+    """
+    Checks if current time falls within major trading session hours (London, NY, Asian).
+    Controlled by SESSION_FILTER_ENABLED (default False, allowing 24/7 crypto screening).
+    """
+    enabled = SESSION_FILTER_ENABLED if session_filter_enabled is None else session_filter_enabled
+    if not enabled:
+        return True
+
+    now_utc = datetime.now(timezone.utc) if ts_ms is None else datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    hour = now_utc.hour
+    # Asian (Tokyo: 00-09 UTC), London (07-16 UTC), NY (13-22 UTC) -> Active 00:00 to 22:00 UTC
+    return 0 <= hour <= 22
 
 
 # ==============================================================================
@@ -400,7 +418,7 @@ def is_4h_fvg_retraced_after_creation(
     candles_4h: List[Candle],
     fvg: FVG,
     current_price: float,
-    max_candles_since_test: int = 6,
+    max_candles_since_test: Optional[int] = None,
 ) -> bool:
     """
     Verifies that price has actually RETRACED / TAPPED into the 4H FVG
@@ -419,8 +437,9 @@ def is_4h_fvg_retraced_after_creation(
     if not subsequent_candles:
         return False
 
-    # 3. Check if any subsequent candle tapped the 4H FVG zone
-    recent_subsequent = subsequent_candles[-max_candles_since_test:]
+    lookback_window = MAX_HTF_RETRACE_CANDLES if max_candles_since_test is None else max_candles_since_test
+    # 3. Check if any subsequent candle tapped the 4H FVG zone within the retrace lookback window
+    recent_subsequent = subsequent_candles[-lookback_window:] if lookback_window > 0 else subsequent_candles
     for c in recent_subsequent:
         if fvg.direction == "Bullish":
             # For Bullish FVG [bottom, top], subsequent price must have dipped into it
@@ -434,10 +453,44 @@ def is_4h_fvg_retraced_after_creation(
     return False
 
 
+def get_4h_fvg_touch_timestamp(
+    candles_4h: List[Candle],
+    fvg: FVG,
+    current_price: float,
+    max_candles_since_test: Optional[int] = None,
+) -> Optional[int]:
+    """
+    Returns the timestamp (ms) of the FIRST candle (or live price event) that tapped
+    into the 4H FVG zone strictly after the FVG was formed.
+    """
+    fvg_creation_ts = fvg.formed_at
+    subsequent_candles = [c for c in candles_4h if c.timestamp > fvg_creation_ts]
+
+    lookback_window = MAX_HTF_RETRACE_CANDLES if max_candles_since_test is None else max_candles_since_test
+    recent_subsequent = subsequent_candles[-lookback_window:] if lookback_window > 0 else subsequent_candles
+
+    for c in recent_subsequent:
+        if fvg.direction == "Bullish":
+            if c.low <= fvg.top and c.high >= fvg.bottom:
+                return c.timestamp
+        else:
+            if c.high >= fvg.bottom and c.low <= fvg.top:
+                return c.timestamp
+
+    if price_in_fvg(current_price, fvg):
+        if subsequent_candles:
+            return subsequent_candles[-1].timestamp
+        return fvg.formed_at
+
+    return None
+
+
 async def phase1_filter(
     universe: List[str],
     all_mids: Optional[Dict[str, float]] = None,
     htf_mode: str = "ANY_VALID",
+    use_close_invalidation: Optional[bool] = None,
+    max_htf_retrace_candles: Optional[int] = None,
     client: Optional[HyperliquidClient] = None,
 ) -> List[Phase1Result]:
     """
@@ -453,7 +506,7 @@ async def phase1_filter(
             if len(candles_4h) < 3:
                 continue
 
-            active_fvgs = compute_all_active_4h_fvgs(candles_4h)
+            active_fvgs = compute_all_active_4h_fvgs(candles_4h, use_close_invalidation=use_close_invalidation)
             if not active_fvgs:
                 continue
 
@@ -467,7 +520,8 @@ async def phase1_filter(
                 current_price = candles_4h[-1].close
 
             for htf_fvg in fvgs_to_check:
-                if is_4h_fvg_retraced_after_creation(candles_4h, htf_fvg, current_price=current_price, max_candles_since_test=6):
+                touch_ts = get_4h_fvg_touch_timestamp(candles_4h, htf_fvg, current_price=current_price, max_candles_since_test=max_htf_retrace_candles)
+                if touch_ts is not None:
                     passed.append(
                         Phase1Result(
                             symbol=symbol,
@@ -475,6 +529,7 @@ async def phase1_filter(
                             htf_fvg=htf_fvg,
                             current_price=current_price,
                             active_4h_fvgs=active_fvgs,
+                            htf_touch_ts=touch_ts,
                         )
                     )
                     break
@@ -510,8 +565,17 @@ async def phase2_check(
         if len(candles_ltf) < 3:
             return None
 
-        # Search backwards through LTF candles to find the most recent VALID, UN-CLOSED FVG setup
-        for i in range(len(candles_ltf) - 1, 1, -1):
+        # If htf_touch_ts is specified, scan chronologically forward from touch timestamp
+        # to find the FIRST LTF FVG formed post 4H touch. Otherwise fallback to backwards search.
+        if phase1_coin.htf_touch_ts is not None:
+            candidate_indices = [
+                i for i in range(2, len(candles_ltf))
+                if candles_ltf[i].timestamp > phase1_coin.htf_touch_ts
+            ]
+        else:
+            candidate_indices = list(range(len(candles_ltf) - 1, 1, -1))
+
+        for i in candidate_indices:
             c1 = candles_ltf[i - 2]
             c2 = candles_ltf[i - 1]
             c3 = candles_ltf[i]
@@ -535,10 +599,14 @@ async def phase2_check(
             if direction == "Bullish":
                 sl_ref = min(c1.low, c2.low, c3.low)
                 if sl_ref >= current_price:
+                    if phase1_coin.htf_touch_ts is not None:
+                        return None
                     continue
             else:
                 sl_ref = max(c1.high, c2.high, c3.high)
                 if sl_ref <= current_price:
+                    if phase1_coin.htf_touch_ts is not None:
+                        return None
                     continue
 
             fvg_formation_time_ist = datetime.fromtimestamp(ltf_fvg.formed_at / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
@@ -557,46 +625,58 @@ async def phase2_check(
 
             if retrace_candle is not None:
                 stage: Literal["PENDING_RETRACE", "ACTIVATED"] = "ACTIVATED"
-                entry_price = min(retrace_candle.open, ltf_fvg.top) if direction == "Bullish" else max(retrace_candle.open, ltf_fvg.bottom)
+                if direction == "Bullish":
+                    entry_price = retrace_candle.open if retrace_candle.open <= ltf_fvg.top else ltf_fvg.top
+                else:
+                    entry_price = retrace_candle.open if retrace_candle.open >= ltf_fvg.bottom else ltf_fvg.bottom
                 entry_time_ist = datetime.fromtimestamp(retrace_candle.timestamp / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
-            elif price_in_fvg(current_price, ltf_fvg) and i < len(candles_ltf) - 1:
+            elif price_in_fvg(current_price, ltf_fvg):
                 stage = "ACTIVATED"
                 entry_price = current_price
                 entry_time_ist = datetime.now(IST).strftime("%d-%b-%Y %I:%M %p IST") + " (Live)"
             else:
                 stage = "PENDING_RETRACE"
-                entry_price = ltf_fvg.midpoint
+                # For pending setups, realistic limit fill is expected at the FVG boundary
+                entry_price = ltf_fvg.top if direction == "Bullish" else ltf_fvg.bottom
                 entry_time_ist = "⏳ Awaiting Retrace"
 
             # Calculate TP levels (1.0R, 1.5R, 2.0R, 3.0R)
             tp_levels = calculate_tp_levels(direction=direction, entry_price=entry_price, sl_price=sl_ref)
 
             # Invalidation Check (SL Hit or 2R Target TP Hit):
-            # If price subsequent to formation/retrace breached SL or reached 2.0R Target TP,
-            # this candidate setup is closed/dead -> continue searching for older active open setups!
+            # If trade is ACTIVATED, check candles from retrace_idx onwards.
+            # If trade is PENDING_RETRACE, check candles from formation candle i + 1 onwards.
             is_closed = False
-            for k in range(i + 1, len(candles_ltf)):
+            start_inval_idx = retrace_idx if retrace_idx is not None else i + 1
+            for k in range(start_inval_idx, len(candles_ltf)):
                 chk_c = candles_ltf[k]
                 if direction == "Bullish":
-                    if chk_c.low <= sl_ref or chk_c.high >= tp_levels.r2:
+                    if chk_c.low <= sl_ref or (stage == "ACTIVATED" and chk_c.high >= tp_levels.r2):
                         is_closed = True
                         break
                 else:
-                    if chk_c.high >= sl_ref or chk_c.low <= tp_levels.r2:
+                    if chk_c.high >= sl_ref or (stage == "ACTIVATED" and chk_c.low <= tp_levels.r2):
                         is_closed = True
                         break
 
             # Also check live tick price
-            if direction == "Bullish" and (current_price <= sl_ref or current_price >= tp_levels.r2):
+            if direction == "Bullish" and (current_price <= sl_ref or (stage == "ACTIVATED" and current_price >= tp_levels.r2)):
                 is_closed = True
-            elif direction == "Bearish" and (current_price >= sl_ref or current_price <= tp_levels.r2):
+            elif direction == "Bearish" and (current_price >= sl_ref or (stage == "ACTIVATED" and current_price <= tp_levels.r2)):
                 is_closed = True
 
             if is_closed:
+                if phase1_coin.htf_touch_ts is not None:
+                    return None
                 continue
 
             # Found a valid active open or pending setup!
-            score = score_coin(htf_fvg=phase1_coin.htf_fvg, ltf_fvg=ltf_fvg, current_price=current_price)
+            score = score_coin(
+                htf_fvg=phase1_coin.htf_fvg,
+                ltf_fvg=ltf_fvg,
+                current_price=current_price,
+                is_pending=(stage == "PENDING_RETRACE"),
+            )
 
             logger.info(
                 "Phase 2 [%s] for %s [%s] (%s): Price=%.4f, Entry=%.4f, SL=%.4f, 2R=%.4f (FVG Formed=%s, Entry=%s)",
@@ -640,6 +720,9 @@ async def run_screener(
     top_n: int = TOP_N_ALERTS,
     ltf_timeframe: Optional[str] = None,
     htf_mode: Optional[str] = None,
+    use_close_invalidation: Optional[bool] = None,
+    max_htf_retrace_candles: Optional[int] = None,
+    session_filter_enabled: Optional[bool] = None,
     client: Optional[HyperliquidClient] = None,
 ) -> List[SetupResult]:
     """
@@ -649,7 +732,8 @@ async def run_screener(
     ltf = ltf_timeframe or os.getenv("LTF_TIMEFRAME", LTF_TIMEFRAME)
     h_mode = htf_mode or os.getenv("HTF_SELECTION_MODE", HTF_SELECTION_MODE)
 
-    if not is_major_session():
+    if not is_major_session(session_filter_enabled=session_filter_enabled):
+        logger.info("Outside major trading sessions and session filter is enabled. Skipping scan.")
         return []
 
     universe = await cli.get_universe()
@@ -667,10 +751,25 @@ async def run_screener(
         universe = [c for c in universe if c.upper() in allowed]
 
     all_mids = await cli.get_all_mids()
-    logger.info("Scanning universe of %d coins (HTF=%s, Mode=%s, LTF=%s)...", len(universe), HTF_TIMEFRAME, h_mode, ltf)
+    logger.info(
+        "Scanning universe of %d coins (HTF=%s, Mode=%s, LTF=%s, CloseInval=%s, RetraceWin=%s)...",
+        len(universe),
+        HTF_TIMEFRAME,
+        h_mode,
+        ltf,
+        use_close_invalidation,
+        max_htf_retrace_candles,
+    )
 
     # 1. Phase 1 Filter
-    phase1_candidates = await phase1_filter(universe, all_mids=all_mids, htf_mode=h_mode, client=cli)
+    phase1_candidates = await phase1_filter(
+        universe,
+        all_mids=all_mids,
+        htf_mode=h_mode,
+        use_close_invalidation=use_close_invalidation,
+        max_htf_retrace_candles=max_htf_retrace_candles,
+        client=cli,
+    )
     if not phase1_candidates:
         return []
 

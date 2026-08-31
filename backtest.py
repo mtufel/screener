@@ -30,6 +30,7 @@ from strategy import (
     price_in_fvg,
     score_coin,
     is_4h_fvg_retraced_after_creation,
+    get_4h_fvg_touch_timestamp,
 )
 
 load_dotenv()
@@ -329,6 +330,9 @@ async def run_historical_backtest(
     ltf_timeframe: str = "5m",
     htf_mode: str = "ANY_VALID",
     single_position: bool = True,
+    use_close_invalidation: bool = False,
+    max_htf_retrace_candles: int = 18,
+    min_candle_gap: Optional[int] = None,
     client: Optional[HyperliquidClient] = None,
 ) -> BacktestSummary:
     """
@@ -412,45 +416,72 @@ async def run_historical_backtest(
     candles_ltf = [Candle.from_dict(c) for c in sorted(raw_ltf, key=lambda x: x.get("t", 0))]
 
     trades: List[HistoricalTrade] = []
-    min_candle_gap = 40 if ltf == "1m" else (20 if ltf == "5m" else 8)
-    last_trade_candle_idx = -min_candle_gap
+    candle_gap = min_candle_gap if min_candle_gap is not None else (40 if ltf == "1m" else (20 if ltf == "5m" else 8))
+    last_trade_candle_idx = -candle_gap
     active_trade_exit_idx = -1
+    htf_candle_duration_ms = 4 * 3600 * 1000
+    active_sessions: Dict[str, int] = {}
 
     # Iterate through LTF candles chronologically
     for i in range(15, len(candles_ltf) - 1):
         if single_position and i <= active_trade_exit_idx:
             continue
-        if not single_position and (i - last_trade_candle_idx < min_candle_gap):
+        if not single_position and (i - last_trade_candle_idx < candle_gap):
             continue
 
         curr_candle = candles_ltf[i]
         curr_ts = curr_candle.timestamp
         curr_price = curr_candle.close
 
-        # Filter 4H candles finished strictly at or before curr_ts
-        htf_slice = [c for c in candles_4h if c.timestamp <= curr_ts]
+        # Filter 4H candles FINISHED strictly at or before curr_ts (close_time <= curr_ts)
+        htf_slice = [c for c in candles_4h if (c.timestamp + htf_candle_duration_ms) <= curr_ts]
         if len(htf_slice) < 3:
             continue
 
-        active_4h_fvgs = compute_all_active_4h_fvgs(htf_slice)
+        active_4h_fvgs = compute_all_active_4h_fvgs(htf_slice, use_close_invalidation=use_close_invalidation)
         if not active_4h_fvgs:
             continue
 
         fvgs_to_check = [active_4h_fvgs[0]] if h_mode == "MOST_RECENT" else active_4h_fvgs
         matched_htf_fvg: Optional[FVG] = None
+        matched_touch_ts: Optional[int] = None
         for htf_fvg in fvgs_to_check:
-            if is_4h_fvg_retraced_after_creation(htf_slice, htf_fvg, current_price=curr_price, max_candles_since_test=6):
+            touch_ts = get_4h_fvg_touch_timestamp(htf_slice, htf_fvg, current_price=curr_price, max_candles_since_test=max_htf_retrace_candles)
+            if touch_ts is not None:
+                session_key = f"{htf_fvg.direction}_{htf_fvg.formed_at}"
+                if active_sessions.get(session_key) == touch_ts:
+                    continue
                 matched_htf_fvg = htf_fvg
+                matched_touch_ts = touch_ts
                 break
 
-        if matched_htf_fvg is None:
+        if matched_htf_fvg is None or matched_touch_ts is None:
             continue
 
-        # Check for newly formed LTF FVG
-        ltf_slice = candles_ltf[: i + 1]
-        ltf_fvg = compute_fvg(ltf_slice[-20:], direction=matched_htf_fvg.direction)
-        if ltf_fvg is None:
+        # Check for newly formed LTF FVG strictly after 4H touch
+        c1_ltf = candles_ltf[i - 2]
+        c2_ltf = candles_ltf[i - 1]
+        c3_ltf = candles_ltf[i]
+
+        if c3_ltf.timestamp <= matched_touch_ts:
             continue
+
+        is_fvg = (c3_ltf.low > c1_ltf.high) if matched_htf_fvg.direction == "Bullish" else (c3_ltf.high < c1_ltf.low)
+        if not is_fvg:
+            continue
+
+        ltf_fvg = FVG(
+            direction=matched_htf_fvg.direction,
+            top=c3_ltf.low if matched_htf_fvg.direction == "Bullish" else c1_ltf.low,
+            bottom=c1_ltf.high if matched_htf_fvg.direction == "Bullish" else c3_ltf.high,
+            c1=c1_ltf,
+            c2=c2_ltf,
+            c3=c3_ltf,
+            formed_at=c3_ltf.timestamp,
+        )
+
+        session_key = f"{matched_htf_fvg.direction}_{matched_htf_fvg.formed_at}"
+        active_sessions[session_key] = matched_touch_ts  # consume this touch session
 
         # Stop loss calculation
         if matched_htf_fvg.direction == "Bullish":
@@ -474,7 +505,7 @@ async def run_historical_backtest(
                     break
                 if chk_c.low <= ltf_fvg.top and chk_c.high >= ltf_fvg.bottom:
                     retrace_idx = check_idx
-                    retrace_entry_price = min(chk_c.open, ltf_fvg.top)
+                    retrace_entry_price = chk_c.open if chk_c.open <= ltf_fvg.top else ltf_fvg.top
                     break
             else:
                 # Invalidation if price breaches SL before retrace
@@ -482,7 +513,7 @@ async def run_historical_backtest(
                     break
                 if chk_c.high >= ltf_fvg.bottom and chk_c.low <= ltf_fvg.top:
                     retrace_idx = check_idx
-                    retrace_entry_price = max(chk_c.open, ltf_fvg.bottom)
+                    retrace_entry_price = chk_c.open if chk_c.open >= ltf_fvg.bottom else ltf_fvg.bottom
                     break
 
         if retrace_idx is None or retrace_entry_price is None:

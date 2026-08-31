@@ -277,6 +277,10 @@ class HyperliquidClient:
         Fallback fetcher using Binance public Kline API for extended historical lookbacks
         when Hyperliquid rolling node snapshot cache is exhausted (e.g. pre-Aug 13 for 5m).
         """
+        if coin.upper() == "WTIOIL":
+            # Binance does not offer WTI Crude Oil; avoid mapping to unrelated stablecoins
+            return []
+
         sym_map = {
             "BTC": "BTCUSDT",
             "ETH": "ETHUSDT",
@@ -284,7 +288,6 @@ class HyperliquidClient:
             "PAXG": "PAXGUSDT",
             "GOLD": "PAXGUSDT",
             "SILVER": "XAGUSDT",
-            "WTIOIL": "USDCUSDT",
         }
         binance_symbol = sym_map.get(coin.upper(), f"{coin.upper()}USDT")
         interval_ms_map = {
