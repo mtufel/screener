@@ -524,7 +524,7 @@ async def phase1_filter(
 
     for symbol in universe:
         try:
-            candles_4h = await get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=LOOKBACK_CANDLES, client=cli)
+            candles_4h = await get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200, client=cli)
             if len(candles_4h) < 3:
                 continue
 
@@ -532,18 +532,23 @@ async def phase1_filter(
             if not active_fvgs:
                 continue
 
-            # Selection mode: ANY_VALID vs MOST_RECENT
-            fvgs_to_check = [active_fvgs[0]] if htf_mode == "MOST_RECENT" else active_fvgs
-
             current_price = 0.0
             if all_mids and symbol in all_mids:
                 current_price = all_mids[symbol]
             else:
                 current_price = candles_4h[-1].close
 
+            logger.info("[Phase 1 Scan] %s (Price: $%.2f) — %d Active 4H FVG(s)", symbol, current_price, len(active_fvgs))
+
+            # Selection mode: ANY_VALID vs MOST_RECENT
+            fvgs_to_check = [active_fvgs[0]] if htf_mode == "MOST_RECENT" else active_fvgs
+
             for htf_fvg in fvgs_to_check:
+                f_dt = datetime.fromtimestamp(htf_fvg.formed_at / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
                 touch_ts = get_4h_fvg_touch_timestamp(candles_4h, htf_fvg, current_price=current_price, max_candles_since_test=max_htf_retrace_candles)
                 if touch_ts is not None:
+                    t_dt = datetime.fromtimestamp(touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+                    logger.info("  ✅ 4H %s FVG [$%.2f - $%.2f] formed %s -> TOUCHED at %s", htf_fvg.direction, htf_fvg.bottom, htf_fvg.top, f_dt, t_dt)
                     passed.append(
                         Phase1Result(
                             symbol=symbol,
@@ -554,11 +559,12 @@ async def phase1_filter(
                             htf_touch_ts=touch_ts,
                         )
                     )
-                    break
+                else:
+                    logger.info("  ⏳ 4H %s FVG [$%.2f - $%.2f] formed %s -> UNTOUCHED (Waiting for retrace)", htf_fvg.direction, htf_fvg.bottom, htf_fvg.top, f_dt)
         except Exception as exc:
             logger.warning("Error checking Phase 1 for %s: %s", symbol, exc)
 
-    logger.info("Phase 1 Complete: %d/%d coins have confirmed 4H FVG retrace (Mode: %s).", len(passed), len(universe), htf_mode)
+    logger.info("Phase 1 Complete: %d active touch setup(s) passed for Phase 2 check.", len(passed))
     return passed
 
 
@@ -586,6 +592,9 @@ async def phase2_check(
         )
         if len(candles_ltf) < 3:
             return None
+
+        touch_str = datetime.fromtimestamp(phase1_coin.htf_touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST") if phase1_coin.htf_touch_ts else "None"
+        logger.info("[Phase 2 Scan] %s (%s %s) — Searching for nearest LTF FVG post 4H touch at %s", symbol, direction, ltf, touch_str)
 
         # If htf_touch_ts is specified, scan chronologically forward from touch timestamp
         # to find the FIRST LTF FVG formed post 4H touch. Otherwise fallback to backwards search.
@@ -616,6 +625,9 @@ async def phase2_check(
                 c3=c3,
                 formed_at=c3.timestamp,
             )
+
+            fvg_formed_dt = datetime.fromtimestamp(c3.timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+            logger.info("  🎯 Found Nearest LTF %s FVG [%.2f - %.2f] formed at %s", direction, ltf_fvg.bottom, ltf_fvg.top, fvg_formed_dt)
 
             # Determine Stop Loss reference
             if direction == "Bullish":
