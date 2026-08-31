@@ -460,29 +460,51 @@ def get_4h_fvg_touch_timestamp(
     max_candles_since_test: Optional[int] = None,
 ) -> Optional[int]:
     """
-    Returns the timestamp (ms) of the FIRST candle (or live price event) that tapped
+    Returns the timestamp (ms) of the true FIRST candle (or live price event) that tapped
     into the 4H FVG zone strictly after the FVG was formed.
     """
     fvg_creation_ts = fvg.formed_at
     subsequent_candles = [c for c in candles_4h if c.timestamp > fvg_creation_ts]
+    if not subsequent_candles:
+        if price_in_fvg(current_price, fvg):
+            return fvg.formed_at
+        return None
 
-    lookback_window = MAX_HTF_RETRACE_CANDLES if max_candles_since_test is None else max_candles_since_test
-    recent_subsequent = subsequent_candles[-lookback_window:] if lookback_window > 0 else subsequent_candles
-
-    for c in recent_subsequent:
+    # Scan chronologically forward from formation to find the earliest touch
+    first_touch_ts = None
+    for c in subsequent_candles:
         if fvg.direction == "Bullish":
             if c.low <= fvg.top and c.high >= fvg.bottom:
-                return c.timestamp
+                first_touch_ts = c.timestamp
+                break
         else:
             if c.high >= fvg.bottom and c.low <= fvg.top:
-                return c.timestamp
+                first_touch_ts = c.timestamp
+                break
 
-    if price_in_fvg(current_price, fvg):
-        if subsequent_candles:
-            return subsequent_candles[-1].timestamp
-        return fvg.formed_at
+    if first_touch_ts is None and price_in_fvg(current_price, fvg):
+        first_touch_ts = subsequent_candles[-1].timestamp
 
-    return None
+    if first_touch_ts is None:
+        return None
+
+    # Check if the touch happened within the max lookback window (default 18 4H candles = 72h)
+    lookback_window = MAX_HTF_RETRACE_CANDLES if max_candles_since_test is None else max_candles_since_test
+    if lookback_window > 0 and len(subsequent_candles) > lookback_window:
+        cutoff_ts = subsequent_candles[-lookback_window].timestamp
+        if first_touch_ts < cutoff_ts:
+            # Check if there was a subsequent re-touch inside the active lookback window
+            recent_subsequent = subsequent_candles[-lookback_window:]
+            for c in recent_subsequent:
+                if fvg.direction == "Bullish":
+                    if c.low <= fvg.top and c.high >= fvg.bottom:
+                        return c.timestamp
+                else:
+                    if c.high >= fvg.bottom and c.low <= fvg.top:
+                        return c.timestamp
+            return None
+
+    return first_touch_ts
 
 
 async def phase1_filter(

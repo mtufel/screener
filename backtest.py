@@ -448,8 +448,8 @@ async def run_historical_backtest(
         for htf_fvg in fvgs_to_check:
             touch_ts = get_4h_fvg_touch_timestamp(htf_slice, htf_fvg, current_price=curr_price, max_candles_since_test=max_htf_retrace_candles)
             if touch_ts is not None:
-                session_key = f"{htf_fvg.direction}_{htf_fvg.formed_at}"
-                if active_sessions.get(session_key) == touch_ts:
+                session_key = f"{htf_fvg.direction}_{htf_fvg.formed_at}_{touch_ts}"
+                if session_key in active_sessions:
                     continue
                 matched_htf_fvg = htf_fvg
                 matched_touch_ts = touch_ts
@@ -470,6 +470,10 @@ async def run_historical_backtest(
         if not is_fvg:
             continue
 
+        # Found the first / nearest LTF FVG post 4H touch — consume this touch session permanently
+        session_key = f"{matched_htf_fvg.direction}_{matched_htf_fvg.formed_at}_{matched_touch_ts}"
+        active_sessions[session_key] = matched_touch_ts
+
         ltf_fvg = FVG(
             direction=matched_htf_fvg.direction,
             top=c3_ltf.low if matched_htf_fvg.direction == "Bullish" else c1_ltf.low,
@@ -479,9 +483,6 @@ async def run_historical_backtest(
             c3=c3_ltf,
             formed_at=c3_ltf.timestamp,
         )
-
-        session_key = f"{matched_htf_fvg.direction}_{matched_htf_fvg.formed_at}"
-        active_sessions[session_key] = matched_touch_ts  # consume this touch session
 
         # Stop loss calculation
         if matched_htf_fvg.direction == "Bullish":
