@@ -32,7 +32,11 @@ DEFAULT_UNIVERSE = [
 ]
 
 
-async def inspect_symbol_live(symbol: str, ltf_timeframe: str = "15m"):
+async def inspect_symbol_live(
+    symbol: str,
+    ltf_timeframe: str = "15m",
+    use_close_invalidation: bool = False,
+):
     print("\n" + "=" * 80)
     print(f"  🔍 LIVE SCAN: {symbol} (LTF Refinement: {ltf_timeframe})")
     print("=" * 80)
@@ -66,10 +70,16 @@ async def inspect_symbol_live(symbol: str, ltf_timeframe: str = "15m"):
     # =========================================================================
     # STEP 1: Non-Invalidated 4H FVG Detection & Caching
     # =========================================================================
-    print(f"\n--- [STEP 1] Non-Invalidated 4H FVGs ---")
+    inv_label = "CANDLE CLOSE" if use_close_invalidation else "WICK"
+    print(f"\n--- [STEP 1] Non-Invalidated 4H FVGs (Invalidation: {inv_label}) ---")
     cache = HTFFVGCache()
     t0 = time.perf_counter()
-    active_fvgs = cache.bootstrap(symbol, candles_4h, current_time_ms=now_ms)
+    active_fvgs = cache.bootstrap(
+        symbol,
+        candles_4h,
+        current_time_ms=now_ms,
+        use_close_invalidation=use_close_invalidation,
+    )
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     if not active_fvgs:
@@ -112,13 +122,15 @@ async def main():
     parser = argparse.ArgumentParser(description="Live Step 1 & 2 Scanner for Extreme LTF FVG Strategy")
     parser.add_argument("symbol", nargs="?", default="PAXG", help="Crypto symbol to scan (e.g. BTC, ETH, SOL, PAXG)")
     parser.add_argument("--ltf", default="15m", choices=["1m", "5m", "15m", "1h"], help="LTF timeframe for touch refinement")
+    parser.add_argument("--invalidation", default="wick", choices=["wick", "close"], help="Invalidation mode: wick or close (default: wick)")
     parser.add_argument("--all", action="store_true", help="Scan entire top crypto universe")
     args = parser.parse_args()
 
+    use_close = (args.invalidation == "close")
     symbols = DEFAULT_UNIVERSE if args.all else [args.symbol.upper()]
 
     for sym in symbols:
-        await inspect_symbol_live(sym, ltf_timeframe=args.ltf)
+        await inspect_symbol_live(sym, ltf_timeframe=args.ltf, use_close_invalidation=use_close)
 
     print("\n" + "=" * 80)
     print("  ✅ Live scan complete!")

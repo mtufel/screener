@@ -206,9 +206,13 @@ class HTFFVGCache:
         # Maps symbol -> last 2 closed 4H candles to detect transitions across deltas
         self.last_closed_candles: Dict[str, List[Candle]] = {}
 
-    def is_bootstrapped(self, symbol: str) -> bool:
-        """Checks if a symbol has been initialized in the cache."""
-        return symbol in self.last_processed_candle_ts
+    def _key(self, symbol: str, use_close_invalidation: bool) -> str:
+        mode = "close" if use_close_invalidation else "wick"
+        return f"{symbol}:{mode}"
+
+    def is_bootstrapped(self, symbol: str, use_close_invalidation: bool = False) -> bool:
+        """Checks if a symbol with specified invalidation mode has been initialized in the cache."""
+        return self._key(symbol, use_close_invalidation) in self.last_processed_candle_ts
 
     def bootstrap(
         self,
@@ -222,6 +226,7 @@ class HTFFVGCache:
         Initializes the cache for a symbol using historical 4H candles.
         Strictly filters for closed candles only.
         """
+        key = self._key(symbol, use_close_invalidation)
         closed_candles = (
             filter_closed_candles(candles_4h, HTF_CANDLE_DURATION_MS, current_time_ms)
             if enforce_closed_filter
@@ -229,9 +234,9 @@ class HTFFVGCache:
         )
 
         if not closed_candles:
-            self.active_fvgs[symbol] = []
-            self.last_processed_candle_ts[symbol] = 0
-            self.last_closed_candles[symbol] = []
+            self.active_fvgs[key] = []
+            self.last_processed_candle_ts[key] = 0
+            self.last_closed_candles[key] = []
             return []
 
         # Compute all active non-invalidated 4H FVGs
@@ -242,15 +247,20 @@ class HTFFVGCache:
             enforce_closed_filter=False,  # Already filtered above
         )
 
-        self.active_fvgs[symbol] = active
-        self.last_processed_candle_ts[symbol] = closed_candles[-1].timestamp
-        self.last_closed_candles[symbol] = closed_candles[-2:] if len(closed_candles) >= 2 else closed_candles[:]
+        self.active_fvgs[key] = active
+        self.last_processed_candle_ts[key] = closed_candles[-1].timestamp
+        self.last_closed_candles[key] = closed_candles[-2:] if len(closed_candles) >= 2 else closed_candles[:]
+
+        # Also populate bare symbol for backward compatibility
+        self.last_processed_candle_ts[symbol] = self.last_processed_candle_ts[key]
+        self.last_closed_candles[symbol] = self.last_closed_candles[key]
 
         logger.info(
-            "[HTF Cache Bootstrap] %s: Initialized with %d active 4H FVG(s). Latest closed bar: %s",
+            "[HTF Cache Bootstrap] %s (%s): Initialized with %d active 4H FVG(s). Latest closed bar: %s",
             symbol,
+            "close" if use_close_invalidation else "wick",
             len(active),
-            datetime.fromtimestamp(self.last_processed_candle_ts[symbol] / 1000.0, tz=IST).strftime("%d-%b %I:%M %p"),
+            datetime.fromtimestamp(self.last_processed_candle_ts[key] / 1000.0, tz=IST).strftime("%d-%b %I:%M %p"),
         )
         return active
 
@@ -267,7 +277,8 @@ class HTFFVGCache:
         Incrementally updates active 4H FVGs using delta candles and live price.
         If the symbol is not yet bootstrapped, runs bootstrap automatically.
         """
-        if not self.is_bootstrapped(symbol):
+        key = self._key(symbol, use_close_invalidation)
+        if not self.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
             return self.bootstrap(
                 symbol=symbol,
                 candles_4h=recent_candles_4h,
@@ -276,7 +287,7 @@ class HTFFVGCache:
                 enforce_closed_filter=enforce_closed_filter,
             )
 
-        last_ts = self.last_processed_candle_ts.get(symbol, 0)
+        last_ts = self.last_processed_candle_ts.get(key, 0)
 
         # 1. Filter for newly closed candles only (ts > last_ts AND fully closed)
         now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
@@ -286,7 +297,7 @@ class HTFFVGCache:
         ]
         new_closed_candles.sort(key=lambda c: c.timestamp)
 
-        active = list(self.active_fvgs.get(symbol, []))
+        active = list(self.active_fvgs.get(key, []))
 
         # 2. Invalidation Step: Evaluate existing active FVGs against new delta candles + current price
         surviving_fvgs: List[FVG] = []
@@ -329,7 +340,7 @@ class HTFFVGCache:
 
         # 3. New Formation Step: If there are new closed candles, detect newly formed 4H FVGs
         if new_closed_candles:
-            prior_candles = self.last_closed_candles.get(symbol, [])
+            prior_candles = self.last_closed_candles.get(key, [])
             combined = prior_candles + new_closed_candles
 
             # Scan any 3-candle window that includes at least one newly closed candle
@@ -400,24 +411,29 @@ class HTFFVGCache:
                         )
 
             # Update cache bookkeeping
-            self.last_processed_candle_ts[symbol] = new_closed_candles[-1].timestamp
-            self.last_closed_candles[symbol] = combined[-2:]
+            self.last_processed_candle_ts[key] = new_closed_candles[-1].timestamp
+            self.last_closed_candles[key] = combined[-2:]
+            self.last_processed_candle_ts[symbol] = self.last_processed_candle_ts[key]
+            self.last_closed_candles[symbol] = self.last_closed_candles[key]
 
         # Sort newest first
         active.sort(key=lambda f: f.formed_at, reverse=True)
-        self.active_fvgs[symbol] = active
+        self.active_fvgs[key] = active
         return active
 
-    def get_active_fvgs(self, symbol: str) -> List[FVG]:
-        """Returns the currently active, non-invalidated 4H FVGs for symbol."""
-        return list(self.active_fvgs.get(symbol, []))
+    def get_active_fvgs(self, symbol: str, use_close_invalidation: bool = False) -> List[FVG]:
+        """Returns the currently active, non-invalidated 4H FVGs for symbol and mode."""
+        key = self._key(symbol, use_close_invalidation)
+        return list(self.active_fvgs.get(key, []))
 
     def invalidate_cache(self, symbol: Optional[str] = None):
         """Clears cache for a single symbol or all symbols."""
         if symbol:
-            self.active_fvgs.pop(symbol, None)
-            self.last_processed_candle_ts.pop(symbol, None)
-            self.last_closed_candles.pop(symbol, None)
+            for mode in ["wick", "close"]:
+                k = f"{symbol}:{mode}"
+                self.active_fvgs.pop(k, None)
+                self.last_processed_candle_ts.pop(k, None)
+                self.last_closed_candles.pop(k, None)
         else:
             self.active_fvgs.clear()
             self.last_processed_candle_ts.clear()
@@ -446,7 +462,7 @@ async def get_active_4h_fvgs_for_symbol(
     candles = [Candle.from_dict(c) for c in raw]
     current_price = candles[-1].close if candles else 0.0
 
-    if force_bootstrap or not htf_fvg_cache.is_bootstrapped(symbol):
+    if force_bootstrap or not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
         return htf_fvg_cache.bootstrap(
             symbol=symbol,
             candles_4h=candles,
