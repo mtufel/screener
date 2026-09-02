@@ -69,6 +69,9 @@ class FVG:
     formed_at: int   # Open timestamp (ms) of c3
     is_valid: bool = True
     timeframe: str = "4h"
+    lifecycle_state: str = "PENDING_RETRACE"
+    entry_timestamp: Optional[int] = None
+    floating_r: float = 0.0
 
     @property
     def width(self) -> float:
@@ -742,6 +745,10 @@ class ExtremeTradeSetup:
     tp_1r: float
     tp_2r: float
     tp_3r: float
+    state: Literal["PENDING_RETRACE", "TRADE_ACTIVE", "TP1_HIT", "TP2_HIT", "TP3_HIT", "STOPPED_OUT", "INVALIDATED"] = "PENDING_RETRACE"
+    entry_timestamp: Optional[int] = None
+    floating_r: float = 0.0
+    completion_target: Literal["1R", "2R", "3R"] = "1R"
     ltf_timeframe: str = "15m"
     all_unmitigated_fvgs: List[FVG] = field(default_factory=list)
 
@@ -753,6 +760,117 @@ class ExtremeTradeSetup:
     def is_valid_risk(self) -> bool:
         return self.risk_r > 0
 
+    @property
+    def entry_time_ist(self) -> Optional[str]:
+        if not self.entry_timestamp:
+            return None
+        return datetime.fromtimestamp(self.entry_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+
+def evaluate_ltf_setup_lifecycle(
+    ltf_fvg: FVG,
+    subsequent_candles: List[Candle],
+    current_price: float = 0.0,
+    completion_target: Literal["1R", "2R", "3R"] = "1R",
+) -> Tuple[str, Optional[int], float]:
+    """
+    Evaluates the lifecycle state of a candidate LTF FVG from formation across subsequent candles up to current_price.
+    Returns: (state, entry_timestamp, floating_r)
+    - PENDING_RETRACE: Price has not touched entry yet.
+    - TRADE_ACTIVE: Price touched entry, but neither SL nor completion_target has been hit.
+    - STOPPED_OUT: Price hit SL after entry.
+    - COMPLETED: Price hit completion_target (TP) after entry.
+    - INVALIDATED: Price blew through SL before ever touching entry.
+    """
+    direction = ltf_fvg.direction
+    c1, c2, c3 = ltf_fvg.c1, ltf_fvg.c2, ltf_fvg.c3
+
+    if direction == "Bullish":
+        entry_price = ltf_fvg.top
+        stop_loss = min(c1.low, c2.low, c3.low)
+        risk_r = max(0.0, entry_price - stop_loss)
+        mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
+        tp_target = entry_price + mult * risk_r
+    else:
+        entry_price = ltf_fvg.bottom
+        stop_loss = max(c1.high, c2.high, c3.high)
+        risk_r = max(0.0, stop_loss - entry_price)
+        mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
+        tp_target = entry_price - mult * risk_r
+
+    if risk_r <= 0:
+        return ("INVALIDATED", None, 0.0)
+
+    state = "PENDING_RETRACE"
+    entry_ts: Optional[int] = None
+
+    for c in subsequent_candles:
+        if state == "PENDING_RETRACE":
+            # If candle breached SL before touching entry
+            if direction == "Bullish":
+                if c.low <= stop_loss and c.high < entry_price:
+                    return ("INVALIDATED", None, 0.0)
+                if c.low <= entry_price:
+                    state = "TRADE_ACTIVE"
+                    entry_ts = c.timestamp
+            else:
+                if c.high >= stop_loss and c.low > entry_price:
+                    return ("INVALIDATED", None, 0.0)
+                if c.high >= entry_price:
+                    state = "TRADE_ACTIVE"
+                    entry_ts = c.timestamp
+
+        if state == "TRADE_ACTIVE":
+            # Check SL
+            if direction == "Bullish" and c.low <= stop_loss:
+                return ("STOPPED_OUT", entry_ts, -1.0)
+            elif direction == "Bearish" and c.high >= stop_loss:
+                return ("STOPPED_OUT", entry_ts, -1.0)
+
+            # Check TP
+            if direction == "Bullish" and c.high >= tp_target:
+                return ("COMPLETED", entry_ts, mult)
+            elif direction == "Bearish" and c.low <= tp_target:
+                return ("COMPLETED", entry_ts, mult)
+
+    # Check live price
+    if current_price > 0:
+        if state == "PENDING_RETRACE":
+            if direction == "Bullish":
+                if current_price <= stop_loss:
+                    return ("INVALIDATED", None, 0.0)
+                elif current_price <= entry_price:
+                    state = "TRADE_ACTIVE"
+                    entry_ts = int(time.time() * 1000)
+            else:
+                if current_price >= stop_loss:
+                    return ("INVALIDATED", None, 0.0)
+                elif current_price >= entry_price:
+                    state = "TRADE_ACTIVE"
+                    entry_ts = int(time.time() * 1000)
+
+        elif state == "TRADE_ACTIVE":
+            if direction == "Bullish":
+                if current_price <= stop_loss:
+                    return ("STOPPED_OUT", entry_ts, -1.0)
+                elif current_price >= tp_target:
+                    return ("COMPLETED", entry_ts, mult)
+            else:
+                if current_price >= stop_loss:
+                    return ("STOPPED_OUT", entry_ts, -1.0)
+                elif current_price <= tp_target:
+                    return ("COMPLETED", entry_ts, mult)
+
+    # Calculate floating R if active
+    floating_r = 0.0
+    if state == "TRADE_ACTIVE" and current_price > 0 and risk_r > 0:
+        if direction == "Bullish":
+            floating_r = (current_price - entry_price) / risk_r
+        else:
+            floating_r = (entry_price - current_price) / risk_r
+
+    return (state, entry_ts, floating_r)
+
 
 def find_unmitigated_ltf_fvgs(
     candles_ltf: List[Candle],
@@ -762,12 +880,14 @@ def find_unmitigated_ltf_fvgs(
     current_time_ms: Optional[int] = None,
     ltf_timeframe: str = "15m",
     min_gap_pct: float = 0.05,
+    completion_target: Literal["1R", "2R", "3R"] = "1R",
 ) -> List[FVG]:
     """
     Scans candles_ltf for FVGs matching direction that formed strictly AFTER after_timestamp,
-    and filters for 'Not Traded Yet' (unmitigated):
-    From the moment the LTF FVG formed until the current bar, price has never entered between [bottom, top].
-    Optionally enforces min_gap_pct to ignore microscopic spread noise.
+    and runs the Trade State Machine:
+    - Retains PENDING_RETRACE (waiting for entry)
+    - Retains TRADE_ACTIVE (touched entry, floating between Entry and TP/SL)
+    - Discards STOPPED_OUT, COMPLETED, and INVALIDATED.
     """
     duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
     now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
@@ -820,29 +940,20 @@ def find_unmitigated_ltf_fvgs(
         if min_gap_pct > 0 and cand.gap_pct < min_gap_pct:
             continue
 
-        # Check 'Not Traded Yet' (zero intermediate touches from c3 close to now)
-        is_traded = False
-        for k in range(i + 3, len(closed_ltf)):
-            sub = closed_ltf[k]
-            if cand.direction == "Bullish":
-                # Price pulled back down into [bottom, top]
-                if sub.low <= cand.top:
-                    is_traded = True
-                    break
-            else:
-                # Price rallied up into [bottom, top]
-                if sub.high >= cand.bottom:
-                    is_traded = True
-                    break
+        # Evaluate trade state machine across subsequent candles
+        subsequent = closed_ltf[i + 3:]
+        state, entry_ts, floating_r = evaluate_ltf_setup_lifecycle(
+            ltf_fvg=cand,
+            subsequent_candles=subsequent,
+            current_price=current_price,
+            completion_target=completion_target,
+        )
 
-        # Check current price
-        if not is_traded and current_price > 0:
-            if cand.direction == "Bullish" and current_price <= cand.top:
-                is_traded = True
-            elif cand.direction == "Bearish" and current_price >= cand.bottom:
-                is_traded = True
-
-        if not is_traded:
+        # Only retain setups that are PENDING_RETRACE or TRADE_ACTIVE
+        if state in ("PENDING_RETRACE", "TRADE_ACTIVE"):
+            cand.lifecycle_state = state
+            cand.entry_timestamp = entry_ts
+            cand.floating_r = floating_r
             unmitigated.append(cand)
 
     return unmitigated
@@ -873,6 +984,7 @@ def build_extreme_trade_setup(
     anchor: TouchedAnchor,
     ltf_fvg: FVG,
     ltf_timeframe: str = "15m",
+    completion_target: Literal["1R", "2R", "3R"] = "1R",
     all_unmitigated_fvgs: Optional[List[FVG]] = None,
 ) -> ExtremeTradeSetup:
     """
@@ -880,6 +992,7 @@ def build_extreme_trade_setup(
     - Entry: Outer boundary (Bullish: top, Bearish: bottom).
     - Stop Loss: Exact extreme wick across [c1, c2, c3] forming the LTF FVG.
     - 1R, 2R, 3R targets.
+    - Preserves state machine fields: state, entry_timestamp, floating_r.
     """
     direction = anchor.fvg.direction
     c1, c2, c3 = ltf_fvg.c1, ltf_fvg.c2, ltf_fvg.c3
@@ -910,6 +1023,10 @@ def build_extreme_trade_setup(
         tp_1r=tp_1r,
         tp_2r=tp_2r,
         tp_3r=tp_3r,
+        state=ltf_fvg.lifecycle_state,
+        entry_timestamp=ltf_fvg.entry_timestamp,
+        floating_r=ltf_fvg.floating_r,
+        completion_target=completion_target,
         ltf_timeframe=ltf_timeframe,
         all_unmitigated_fvgs=all_unmitigated_fvgs or [ltf_fvg],
     )
@@ -920,12 +1037,13 @@ async def get_extreme_setup_for_symbol(
     ltf_timeframe: str = "15m",
     client: Optional[HyperliquidClient] = None,
     use_close_invalidation: bool = False,
-    min_gap_pct: float = 0.0,
+    min_gap_pct: float = 0.05,
+    completion_target: Literal["1R", "2R", "3R"] = "1R",
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:
     1. Finds the most recent touched 4H FVG anchor.
-    2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter).
+    2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter and state machine).
     3. Selects the #1 Extreme FVG (lowest for Bullish, highest for Bearish).
     4. Computes Entry, SL, and 1R/2R/3R targets.
     """
@@ -953,6 +1071,7 @@ async def get_extreme_setup_for_symbol(
         current_price=current_price,
         ltf_timeframe=ltf_timeframe,
         min_gap_pct=min_gap_pct,
+        completion_target=completion_target,
     )
     if not unmitigated:
         return None
@@ -966,6 +1085,7 @@ async def get_extreme_setup_for_symbol(
         anchor=anchor,
         ltf_fvg=best_ltf,
         ltf_timeframe=ltf_timeframe,
+        completion_target=completion_target,
         all_unmitigated_fvgs=unmitigated,
     )
 

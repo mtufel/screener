@@ -41,6 +41,7 @@ async def inspect_symbol_live(
     ltf_timeframe: str = "15m",
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
+    completion_target: str = "1R",
 ):
     print("\n" + "=" * 80)
     print(f"  🔍 LIVE SCAN: {symbol} (LTF Refinement: {ltf_timeframe})")
@@ -121,7 +122,7 @@ async def inspect_symbol_live(
         # =====================================================================
         # STEP 3: Unmitigated LTF FVG Discovery, Extreme Ranking & Trade Setup
         # =====================================================================
-        print(f"\n--- [STEP 3] Unmitigated LTF FVGs ({ltf_timeframe}) & Extreme Trade Setup (Min Gap: {min_gap_pct:.2f}%) ---")
+        print(f"\n--- [STEP 3] Unmitigated LTF FVGs ({ltf_timeframe}) & Extreme Trade Setup (Min Gap: {min_gap_pct:.2f}%, Target: {completion_target}) ---")
         unmitigated_fvgs = find_unmitigated_ltf_fvgs(
             candles_ltf=candles_ltf,
             after_timestamp=anchor.first_touch_timestamp,
@@ -129,16 +130,18 @@ async def inspect_symbol_live(
             current_price=current_price,
             ltf_timeframe=ltf_timeframe,
             min_gap_pct=min_gap_pct,
+            completion_target=completion_target,
         )
 
         if not unmitigated_fvgs:
-            print(f"  ⏳ No unmitigated {ltf_timeframe} {f.direction} FVGs (>= {min_gap_pct:.2f}%) found since 4H touch.")
+            print(f"  ⏳ No active or pending {ltf_timeframe} {f.direction} FVGs (>= {min_gap_pct:.2f}%) found since 4H touch.")
             print(f"     (Waiting for new {f.direction} {ltf_timeframe} FVG to form)")
         else:
             rank_rule = "Lowest Price" if f.direction == "Bullish" else "Highest Price"
-            print(f"  ⚡ Found {len(unmitigated_fvgs)} unmitigated {ltf_timeframe} {f.direction} FVG(s) (Ranking by {rank_rule}):")
+            print(f"  ⚡ Found {len(unmitigated_fvgs)} active/pending {ltf_timeframe} {f.direction} FVG(s) (Ranking by {rank_rule}):")
             for idx, uf in enumerate(unmitigated_fvgs[:5], 1):
-                print(f"    {idx:2d}. {uf.direction:7s} [${uf.bottom:,.2f} - ${uf.top:,.2f}] | Gap: ${uf.width:,.2f} ({uf.gap_pct:.3f}%) | Formed: {uf.formed_time_ist}")
+                st_label = "⏳ PENDING" if uf.lifecycle_state == "PENDING_RETRACE" else f"🚀 ACTIVE ({uf.floating_r:+.2f}R)"
+                print(f"    {idx:2d}. [{st_label}] {uf.direction:7s} [${uf.bottom:,.2f} - ${uf.top:,.2f}] | Gap: ${uf.width:,.2f} ({uf.gap_pct:.3f}%) | Formed: {uf.formed_time_ist}")
             if len(unmitigated_fvgs) > 5:
                 print(f"    ... and {len(unmitigated_fvgs) - 5} more")
 
@@ -150,21 +153,32 @@ async def inspect_symbol_live(
                     anchor=anchor,
                     ltf_fvg=best_ltf,
                     ltf_timeframe=ltf_timeframe,
+                    completion_target=completion_target,
                     all_unmitigated_fvgs=unmitigated_fvgs,
                 )
                 side = "LONG" if setup.direction == "Bullish" else "SHORT"
-                print(f"\n  🚀 #1 EXTREME TRADE SETUP GENERATED ({side}):")
+                is_active = (setup.state == "TRADE_ACTIVE")
+
+                header_tag = "🚀 #1 EXTREME TRADE (IN POSITION / ACTIVE NOW)" if is_active else "🔔 #1 EXTREME TRADE SETUP (PENDING RETRACE / LIMIT ORDER)"
+                print(f"\n  {header_tag} ({side}):")
                 print(f"     • Target LTF FVG:     [${best_ltf.bottom:,.2f} - ${best_ltf.top:,.2f}] (Gap: ${best_ltf.width:,.2f} / {best_ltf.gap_pct:.3f}%)")
                 print(f"     • Formed At:          {best_ltf.formed_time_ist}")
-                print(f"     • Entry Price Point:  ${setup.entry_price:,.2f} (Outer Boundary)")
+                print(f"     • State:              {setup.state}")
+                if is_active:
+                    print(f"     • Entry Touched At:   {setup.entry_time_ist}")
+                    print(f"     • Entry Price Point:  ${setup.entry_price:,.2f}")
+                    print(f"     • Current Live Price: ${current_price:,.2f}")
+                    print(f"     • Floating PnL:       {setup.floating_r:+.2f}R")
+                else:
+                    dist_to_entry = ((current_price - setup.entry_price) / setup.entry_price) * 100
+                    print(f"     • Limit Order Entry:  ${setup.entry_price:,.2f} ({dist_to_entry:+.2f}% away)")
+                    print(f"     • Current Live Price: ${current_price:,.2f}")
                 print(f"     • Stop Loss (SL):     ${setup.stop_loss:,.2f} (Exact 3-candle wick extreme)")
                 print(f"     • Risk ($R$):          ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)")
                 print(f"     • Targets:")
                 print(f"       - TP 1R (1:1):      ${setup.tp_1r:,.2f}")
                 print(f"       - TP 2R (1:2):      ${setup.tp_2r:,.2f}")
                 print(f"       - TP 3R (1:3):      ${setup.tp_3r:,.2f}")
-                dist_to_entry = ((current_price - setup.entry_price) / setup.entry_price) * 100
-                print(f"     • Live Distance:      {dist_to_entry:+.2f}% to entry (Current: ${current_price:,.2f})")
     else:
         print(f"  ⏳ Status: WAITING FOR RETRACE")
         print(f"     None of the {len(active_fvgs)} active 4H FVGs have been touched post-close yet.")
@@ -176,6 +190,7 @@ async def main():
     parser.add_argument("--ltf", default="15m", choices=["1m", "5m", "15m", "1h"], help="LTF timeframe for touch refinement")
     parser.add_argument("--invalidation", default="wick", choices=["wick", "close"], help="Invalidation mode: wick or close (default: wick)")
     parser.add_argument("--min-gap-pct", type=float, default=0.05, help="Minimum LTF FVG gap size in %% (default: 0.05%%)")
+    parser.add_argument("--target", default="1R", choices=["1R", "2R", "3R"], help="Completion target (default: 1R)")
     parser.add_argument("--all", action="store_true", help="Scan entire top crypto universe")
     args = parser.parse_args()
 
@@ -188,6 +203,7 @@ async def main():
             ltf_timeframe=args.ltf,
             use_close_invalidation=use_close,
             min_gap_pct=args.min_gap_pct,
+            completion_target=args.target,
         )
 
     print("\n" + "=" * 80)

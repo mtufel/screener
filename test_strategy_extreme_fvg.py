@@ -414,17 +414,17 @@ def test_exact_ltf_touch_refinement():
 M15 = 15 * 60 * 1000
 
 
-def test_unmitigated_filter_discards_traded_fvg():
+def test_unmitigated_filter_retains_active_trade_on_touch():
     # 4H touch occurred at t=1000
     touch_ts = 1000
 
-    # Bullish LTF FVG formed by c1, c2, c3
+    # Bullish LTF FVG formed by c1, c2, c3: Entry=115, SL=95, Risk=20, TP1=135
     c1 = make_candle(1000, 100, 110, 95, 108)        # c1.high = 110
     c2 = make_candle(1000 + M15, 108, 130, 107, 128)
     c3 = make_candle(1000 + 2 * M15, 128, 135, 115, 130)  # c3.low = 115 -> FVG [110 - 115]
 
-    # c4 pulls back down to 112 (inside [110, 115], low <= 115) -> Mitigated / Traded!
-    c4 = make_candle(1000 + 3 * M15, 130, 131, 112, 120)
+    # c4 pulls back down to 112 (enters trade at 115, but does NOT hit SL 95 or TP1 135)
+    c4 = make_candle(1000 + 3 * M15, 128, 130, 112, 120)
 
     now_ms = 1000 + 4 * M15
     unmitigated = find_unmitigated_ltf_fvgs(
@@ -436,7 +436,9 @@ def test_unmitigated_filter_discards_traded_fvg():
         ltf_timeframe="15m",
     )
 
-    assert len(unmitigated) == 0  # Was traded by c4!
+    # Under the state machine, price touched entry without hitting SL/TP -> TRADE_ACTIVE!
+    assert len(unmitigated) == 1
+    assert unmitigated[0].lifecycle_state == "TRADE_ACTIVE"
 
 
 def test_unmitigated_filter_keeps_fresh_fvg():
@@ -552,4 +554,108 @@ def test_trade_setup_entry_sl_and_targets_bearish():
     assert setup.tp_1r == 95.0 - 13.0  # 82.0
     assert setup.tp_2r == 95.0 - 26.0  # 69.0
     assert setup.tp_3r == 95.0 - 39.0  # 56.0
+
+
+def test_trade_stays_active_if_neither_sl_nor_tp_hit():
+    touch_ts = 1000
+    # Bullish FVG [100 - 105], Entry=105, SL=90, Risk=15, TP1=120
+    c1 = make_candle(1000, 95, 100, 90, 98)
+    c2 = make_candle(1000 + M15, 98, 120, 96, 118)
+    c3 = make_candle(1000 + 2 * M15, 118, 125, 105, 120)
+
+    # c4 pulls back to 102 (touches entry 105, but does NOT hit SL 90, high 110 stays below TP1 120)
+    c4 = make_candle(1000 + 3 * M15, 108, 110, 102, 108)
+    # c5 floats around 110 (neither SL 90 nor TP1 120 hit)
+    c5 = make_candle(1000 + 4 * M15, 108, 112, 106, 110)
+
+    now_ms = 1000 + 5 * M15
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4, c5],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=110.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+        completion_target="1R",
+    )
+
+    # MUST NOT BE DISCARDED! It is TRADE_ACTIVE!
+    assert len(unmitigated) == 1
+    assert unmitigated[0].lifecycle_state == "TRADE_ACTIVE"
+    assert unmitigated[0].entry_timestamp == 1000 + 3 * M15
+    assert unmitigated[0].floating_r > 0  # in profit
+
+
+def test_trade_discarded_if_sl_hit():
+    touch_ts = 1000
+    c1 = make_candle(1000, 95, 100, 90, 98)
+    c2 = make_candle(1000 + M15, 98, 120, 96, 118)
+    c3 = make_candle(1000 + 2 * M15, 118, 125, 105, 120)
+
+    # c4 touches entry (102 <= 105)
+    c4 = make_candle(1000 + 3 * M15, 120, 121, 102, 108)
+    # c5 dumps through SL 90 (low=88)
+    c5 = make_candle(1000 + 4 * M15, 108, 109, 88, 89)
+
+    now_ms = 1000 + 5 * M15
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4, c5],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=89.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+        completion_target="1R",
+    )
+
+    assert len(unmitigated) == 0  # Discarded because stopped out
+
+
+def test_trade_discarded_if_tp_hit():
+    touch_ts = 1000
+    c1 = make_candle(1000, 95, 100, 90, 98)
+    c2 = make_candle(1000 + M15, 98, 120, 96, 118)
+    c3 = make_candle(1000 + 2 * M15, 118, 125, 105, 120)
+
+    # c4 touches entry (102 <= 105)
+    c4 = make_candle(1000 + 3 * M15, 120, 121, 102, 108)
+    # c5 explodes to high=125 (hits TP1 120)
+    c5 = make_candle(1000 + 4 * M15, 108, 125, 107, 124)
+
+    now_ms = 1000 + 5 * M15
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4, c5],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=124.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+        completion_target="1R",
+    )
+
+    assert len(unmitigated) == 0  # Discarded because target reached
+
+
+def test_unentered_fvg_stays_pending():
+    touch_ts = 1000
+    c1 = make_candle(1000, 95, 100, 90, 98)
+    c2 = make_candle(1000 + M15, 98, 120, 96, 118)
+    c3 = make_candle(1000 + 2 * M15, 118, 125, 105, 120)
+
+    # c4 stays above entry (low=108 > 105)
+    c4 = make_candle(1000 + 3 * M15, 120, 130, 108, 128)
+
+    now_ms = 1000 + 4 * M15
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=128.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+    )
+
+    assert len(unmitigated) == 1
+    assert unmitigated[0].lifecycle_state == "PENDING_RETRACE"
+    assert unmitigated[0].entry_timestamp is None
 
