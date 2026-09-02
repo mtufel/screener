@@ -470,7 +470,9 @@ async def get_active_4h_fvgs_for_symbol(
 class TouchedAnchor:
     """Represents a 4H FVG that has been touched post-close and acts as the single active anchor."""
     fvg: FVG
-    touch_timestamp: int
+    touch_timestamp: int          # Timestamp when price entered this touch wave (for post-touch LTF search)
+    latest_touch_timestamp: int   # Timestamp of the most recent bar/tick touching the zone (for recency comparison)
+    is_currently_inside: bool = False
     touch_timeframe: str = "4h"
 
     @property
@@ -481,53 +483,86 @@ class TouchedAnchor:
         t_close = datetime.fromtimestamp((self.touch_timestamp + duration_ms) / 1000.0, tz=IST).strftime("%I:%M %p IST")
         return f"{t_open} - {t_close}"
 
+    @property
+    def latest_touch_time_ist(self) -> str:
+        """Formatted most recent touch time in IST."""
+        return datetime.fromtimestamp(self.latest_touch_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
-def get_4h_fvg_first_touch_ts(
+
+def get_4h_fvg_most_recent_touch(
     candles_4h: List[Candle],
     fvg: FVG,
     current_price: float = 0.0,
     candles_ltf: Optional[List[Candle]] = None,
     ltf_timeframe: str = "15m",
-) -> Optional[Tuple[int, str]]:
+) -> Optional[TouchedAnchor]:
     """
-    Returns (touch_timestamp, timeframe) of the true FIRST touch into the 4H FVG zone
-    strictly after the FVG was formed (after c3 closed).
+    Finds the MOST RECENT touch for a 4H FVG strictly post-close.
+    - If price is currently inside the zone: touch is active NOW (and traces back to start of this entry wave).
+    - Otherwise, finds the latest candle that entered the zone.
     The candle that formed the FVG (c3) can NEVER count as its own touch!
     """
     fvg_close_ts = fvg.close_timestamp
+    now_ms = int(time.time() * 1000)
 
-    # 1. If LTF candles are provided, scan for the earliest LTF candle strictly at or after 4H FVG close
+    # 1. Price is currently inside the zone right now
+    if current_price > 0 and fvg.bottom <= current_price <= fvg.top and now_ms >= fvg_close_ts:
+        entry_ts = now_ms
+        tf = "live"
+        if candles_ltf:
+            tf = ltf_timeframe
+            for c in reversed(candles_ltf):
+                if c.timestamp < fvg_close_ts:
+                    break
+                inside = (c.low <= fvg.top and c.high >= fvg.bottom) if fvg.direction == "Bullish" else (c.high >= fvg.bottom and c.low <= fvg.top)
+                if inside:
+                    entry_ts = c.timestamp
+                else:
+                    break
+        elif candles_4h:
+            for c in reversed(candles_4h):
+                if c.timestamp < fvg.formed_at:
+                    break
+                inside = (c.low <= fvg.top and c.high >= fvg.bottom) if fvg.direction == "Bullish" else (c.high >= fvg.bottom and c.low <= fvg.top)
+                if inside:
+                    entry_ts = c.timestamp
+                else:
+                    break
+
+        return TouchedAnchor(
+            fvg=fvg,
+            touch_timestamp=entry_ts,
+            latest_touch_timestamp=now_ms,
+            is_currently_inside=True,
+            touch_timeframe=tf,
+        )
+
+    # 2. Otherwise scan from newest to oldest for the latest candle touch post-close
     if candles_ltf:
-        subsequent_ltf = [c for c in candles_ltf if c.timestamp >= fvg_close_ts]
-        for c in subsequent_ltf:
-            if fvg.direction == "Bullish":
-                if c.low <= fvg.top and c.high >= fvg.bottom:
-                    return (c.timestamp, ltf_timeframe)
-            else:
-                if c.high >= fvg.bottom and c.low <= fvg.top:
-                    return (c.timestamp, ltf_timeframe)
+        for c in reversed(candles_ltf):
+            if c.timestamp < fvg_close_ts:
+                break
+            inside = (c.low <= fvg.top and c.high >= fvg.bottom) if fvg.direction == "Bullish" else (c.high >= fvg.bottom and c.low <= fvg.top)
+            if inside:
+                return TouchedAnchor(
+                    fvg=fvg,
+                    touch_timestamp=c.timestamp,
+                    latest_touch_timestamp=c.timestamp,
+                    is_currently_inside=False,
+                    touch_timeframe=ltf_timeframe,
+                )
 
-    # 2. Otherwise scan 4H candles formed strictly after creation (c4 onwards, c.timestamp > c3.timestamp)
     subsequent_4h = [c for c in candles_4h if c.timestamp > fvg.formed_at]
-    first_touch_ts = None
-    for c in subsequent_4h:
-        if fvg.direction == "Bullish":
-            if c.low <= fvg.top and c.high >= fvg.bottom:
-                first_touch_ts = c.timestamp
-                break
-        else:
-            if c.high >= fvg.bottom and c.low <= fvg.top:
-                first_touch_ts = c.timestamp
-                break
-
-    if first_touch_ts is not None:
-        return (first_touch_ts, "4h")
-
-    # 3. If live price is currently inside the 4H FVG zone post-close
-    if current_price > 0 and fvg.bottom <= current_price <= fvg.top:
-        now_ms = int(time.time() * 1000)
-        if now_ms >= fvg_close_ts:
-            return (now_ms, "live")
+    for c in reversed(subsequent_4h):
+        inside = (c.low <= fvg.top and c.high >= fvg.bottom) if fvg.direction == "Bullish" else (c.high >= fvg.bottom and c.low <= fvg.top)
+        if inside:
+            return TouchedAnchor(
+                fvg=fvg,
+                touch_timestamp=c.timestamp,
+                latest_touch_timestamp=c.timestamp,
+                is_currently_inside=False,
+                touch_timeframe="4h",
+            )
 
     return None
 
@@ -542,34 +577,28 @@ def get_most_recent_touched_4h_fvg(
     """
     Evaluates all active, non-invalidated 4H FVGs and identifies the SINGLE
     most recent touched 4H FVG.
-    If multiple 4H FVGs have been touched, selects the one with the latest touch timestamp.
+    - Any 4H FVG price is currently inside takes highest precedence.
+    - Otherwise, selects the one whose latest touch occurred most recently in time.
     Returns None if no 4H FVG has been touched.
     """
     touched_anchors: List[TouchedAnchor] = []
 
     for fvg in active_fvgs:
-        touch_info = get_4h_fvg_first_touch_ts(
+        anchor = get_4h_fvg_most_recent_touch(
             candles_4h=candles_4h,
             fvg=fvg,
             current_price=current_price,
             candles_ltf=candles_ltf,
             ltf_timeframe=ltf_timeframe,
         )
-        if touch_info is not None:
-            ts, tf = touch_info
-            touched_anchors.append(
-                TouchedAnchor(
-                    fvg=fvg,
-                    touch_timestamp=ts,
-                    touch_timeframe=tf,
-                )
-            )
+        if anchor is not None:
+            touched_anchors.append(anchor)
 
     if not touched_anchors:
         return None
 
-    # Sort by touch_timestamp descending (most recent touch first)
-    touched_anchors.sort(key=lambda a: a.touch_timestamp, reverse=True)
+    # Sort: currently inside first, then latest_touch_timestamp descending
+    touched_anchors.sort(key=lambda a: (a.is_currently_inside, a.latest_touch_timestamp), reverse=True)
     return touched_anchors[0]
 
 

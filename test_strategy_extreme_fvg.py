@@ -15,7 +15,7 @@ from strategy_extreme_fvg import (
     TouchedAnchor,
     compute_all_active_4h_fvgs,
     filter_closed_candles,
-    get_4h_fvg_first_touch_ts,
+    get_4h_fvg_most_recent_touch,
     get_most_recent_touched_4h_fvg,
     HTF_CANDLE_DURATION_MS,
 )
@@ -281,16 +281,15 @@ def test_4h_touch_strictly_post_close():
     fvg = FVG("Bullish", 115, 110, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
 
     # With only c1, c2, c3, touch must be None
-    touch = get_4h_fvg_first_touch_ts([c1, c2, c3], fvg, current_price=132.0)
+    touch = get_4h_fvg_most_recent_touch([c1, c2, c3], fvg, current_price=132.0)
     assert touch is None
 
     # When c4 (strictly post-close) dips into [110, 115] with low=113
     c4 = make_candle(3 * H4, 132, 133, 113, 125)
-    touch_c4 = get_4h_fvg_first_touch_ts([c1, c2, c3, c4], fvg, current_price=125.0)
+    touch_c4 = get_4h_fvg_most_recent_touch([c1, c2, c3, c4], fvg, current_price=125.0)
     assert touch_c4 is not None
-    ts, tf = touch_c4
-    assert ts == 3 * H4
-    assert tf == "4h"
+    assert touch_c4.touch_timestamp == 3 * H4
+    assert touch_c4.touch_timeframe == "4h"
 
 
 def test_most_recent_touched_fvg_selection():
@@ -325,7 +324,35 @@ def test_most_recent_touched_fvg_selection():
     assert anchor is not None
     assert anchor.fvg.bottom == 140.0
     assert anchor.fvg.top == 145.0
-    assert anchor.touch_timestamp == 6 * H4
+    assert anchor.latest_touch_timestamp == 6 * H4
+
+
+def test_currently_inside_takes_priority_over_older_touch():
+    # FVG A: touched 12 hours ago, price moved out
+    c1_a = make_candle(0, 100, 110, 95, 105)
+    c2_a = make_candle(H4, 105, 130, 104, 128)
+    c3_a = make_candle(2 * H4, 128, 135, 115, 132)
+    fvg_a = FVG("Bullish", 115, 110, c1_a, c2_a, c3_a, formed_at=2 * H4, timeframe="4h")
+    c4_a = make_candle(3 * H4, 132, 133, 112, 128)
+
+    # FVG B: formed on 27-Aug, price is CURRENTLY INSIDE at 98.0
+    c1_b = make_candle(4 * H4, 90, 96, 85, 95)
+    c2_b = make_candle(5 * H4, 95, 105, 94, 103)
+    c3_b = make_candle(6 * H4, 103, 106, 99, 104)
+    fvg_b = FVG("Bullish", 99, 96, c1_b, c2_b, c3_b, formed_at=6 * H4, timeframe="4h")
+
+    all_candles = [c1_a, c2_a, c3_a, c4_a, c1_b, c2_b, c3_b]
+
+    # Live price is 98.0 -> inside FVG B [96 - 99]!
+    anchor = get_most_recent_touched_4h_fvg(
+        candles_4h=all_candles,
+        active_fvgs=[fvg_a, fvg_b],
+        current_price=98.0,
+    )
+
+    assert anchor is not None
+    assert anchor.fvg == fvg_b
+    assert anchor.is_currently_inside is True
 
 
 def test_untouched_fvgs_return_none():
