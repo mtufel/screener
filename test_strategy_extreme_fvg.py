@@ -13,11 +13,15 @@ from strategy_extreme_fvg import (
     FVG,
     HTFFVGCache,
     TouchedAnchor,
+    ExtremeTradeSetup,
     compute_all_active_4h_fvgs,
     filter_closed_candles,
     get_4h_fvg_first_touch_ts,
     get_4h_fvg_most_recent_touch_ts,
     get_most_recent_touched_4h_fvg,
+    find_unmitigated_ltf_fvgs,
+    select_extreme_ltf_fvg,
+    build_extreme_trade_setup,
     HTF_CANDLE_DURATION_MS,
 )
 
@@ -402,4 +406,150 @@ def test_exact_ltf_touch_refinement():
     assert anchor is not None
     assert anchor.touch_timestamp == 3 * H4 + m15  # Exactly Bar 2!
     assert anchor.touch_timeframe == "15m"
+
+
+# ==============================================================================
+# 6. Step 3: Unmitigated LTF FVG Discovery, Extreme Ranking & Trade Setup
+# ==============================================================================
+M15 = 15 * 60 * 1000
+
+
+def test_unmitigated_filter_discards_traded_fvg():
+    # 4H touch occurred at t=1000
+    touch_ts = 1000
+
+    # Bullish LTF FVG formed by c1, c2, c3
+    c1 = make_candle(1000, 100, 110, 95, 108)        # c1.high = 110
+    c2 = make_candle(1000 + M15, 108, 130, 107, 128)
+    c3 = make_candle(1000 + 2 * M15, 128, 135, 115, 130)  # c3.low = 115 -> FVG [110 - 115]
+
+    # c4 pulls back down to 112 (inside [110, 115], low <= 115) -> Mitigated / Traded!
+    c4 = make_candle(1000 + 3 * M15, 130, 131, 112, 120)
+
+    now_ms = 1000 + 4 * M15
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=120.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+    )
+
+    assert len(unmitigated) == 0  # Was traded by c4!
+
+
+def test_unmitigated_filter_keeps_fresh_fvg():
+    touch_ts = 1000
+
+    c1 = make_candle(1000, 100, 110, 95, 108)        # bottom = 110
+    c2 = make_candle(1000 + M15, 108, 130, 107, 128)
+    c3 = make_candle(1000 + 2 * M15, 128, 135, 115, 130)  # top = 115
+
+    # c4 stays well above the zone (low = 118 > 115)
+    c4 = make_candle(1000 + 3 * M15, 130, 140, 118, 138)
+
+    now_ms = 1000 + 4 * M15
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=138.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+    )
+
+    assert len(unmitigated) == 1
+    assert unmitigated[0].bottom == 110.0
+    assert unmitigated[0].top == 115.0
+
+
+def test_extreme_ranking_bullish_selects_lowest():
+    # Two unmitigated Bullish FVGs
+    # FVG 1: lower at [100 - 105]
+    c1_1 = make_candle(1000, 90, 100, 85, 98)
+    c2_1 = make_candle(1000 + M15, 98, 120, 97, 118)
+    c3_1 = make_candle(1000 + 2 * M15, 118, 125, 105, 122)
+    fvg_low = FVG("Bullish", 105, 100, c1_1, c2_1, c3_1, formed_at=c3_1.timestamp, timeframe="15m")
+
+    # FVG 2: higher at [115 - 120]
+    c1_2 = make_candle(1000 + 3 * M15, 110, 115, 108, 114)
+    c2_2 = make_candle(1000 + 4 * M15, 114, 135, 113, 133)
+    c3_2 = make_candle(1000 + 5 * M15, 133, 140, 120, 136)
+    fvg_high = FVG("Bullish", 120, 115, c1_2, c2_2, c3_2, formed_at=c3_2.timestamp, timeframe="15m")
+
+    best = select_extreme_ltf_fvg([fvg_high, fvg_low], direction="Bullish")
+    assert best == fvg_low  # Lowest price has highest probability!
+
+
+def test_extreme_ranking_bearish_selects_highest():
+    # Two unmitigated Bearish FVGs
+    # FVG 1: lower at [100 - 105] (top=105)
+    c1_1 = make_candle(1000, 115, 118, 105, 106)
+    c2_1 = make_candle(1000 + M15, 106, 107, 90, 92)
+    c3_1 = make_candle(1000 + 2 * M15, 92, 100, 88, 91)
+    fvg_low = FVG("Bearish", 105, 100, c1_1, c2_1, c3_1, formed_at=c3_1.timestamp, timeframe="15m")
+
+    # FVG 2: higher at [120 - 125] (top=125)
+    c1_2 = make_candle(1000 + 3 * M15, 135, 138, 125, 126)
+    c2_2 = make_candle(1000 + 4 * M15, 126, 127, 110, 112)
+    c3_2 = make_candle(1000 + 5 * M15, 112, 120, 108, 110)
+    fvg_high = FVG("Bearish", 125, 120, c1_2, c2_2, c3_2, formed_at=c3_2.timestamp, timeframe="15m")
+
+    best = select_extreme_ltf_fvg([fvg_low, fvg_high], direction="Bearish")
+    assert best == fvg_high  # Highest price has highest probability!
+
+
+def test_trade_setup_entry_sl_and_targets_bullish():
+    c1 = make_candle(0, 95, 100, 90, 98)          # low = 90
+    c2 = make_candle(H4, 98, 120, 96, 118)        # low = 96
+    c3 = make_candle(2 * H4, 118, 125, 105, 120)  # low = 105
+    anchor_fvg = FVG("Bullish", 105, 100, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
+    anchor = TouchedAnchor(anchor_fvg, first_touch_timestamp=3 * H4, most_recent_touch_timestamp=3 * H4)
+
+    # LTF Bullish FVG: [100 - 105]
+    ltf_c1 = make_candle(3 * H4, 92, 100, 88, 97)         # low = 88
+    ltf_c2 = make_candle(3 * H4 + M15, 97, 115, 95, 114)  # low = 95
+    ltf_c3 = make_candle(3 * H4 + 2 * M15, 114, 120, 105, 118)  # low = 105
+    ltf_fvg = FVG("Bullish", 105, 100, ltf_c1, ltf_c2, ltf_c3, formed_at=3 * H4 + 2 * M15, timeframe="15m")
+
+    setup = build_extreme_trade_setup("BTC", anchor, ltf_fvg, ltf_timeframe="15m")
+
+    # Outer boundary entry:
+    assert setup.entry_price == 105.0  # fvg.top
+    # SL is lowest wick of forming candles: min(88, 95, 105) = 88.0
+    assert setup.stop_loss == 88.0
+    # Risk: 105 - 88 = 17.0
+    assert setup.risk_r == 17.0
+    # Targets: 1R, 2R, 3R
+    assert setup.tp_1r == 105.0 + 17.0  # 122.0
+    assert setup.tp_2r == 105.0 + 34.0  # 139.0
+    assert setup.tp_3r == 105.0 + 51.0  # 156.0
+
+
+def test_trade_setup_entry_sl_and_targets_bearish():
+    c1 = make_candle(0, 110, 112, 100, 102)
+    c2 = make_candle(H4, 102, 103, 80, 82)
+    c3 = make_candle(2 * H4, 82, 95, 80, 85)
+    anchor_fvg = FVG("Bearish", 100, 95, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
+    anchor = TouchedAnchor(anchor_fvg, first_touch_timestamp=3 * H4, most_recent_touch_timestamp=3 * H4)
+
+    # LTF Bearish FVG: [95 - 100]
+    ltf_c1 = make_candle(3 * H4, 105, 108, 100, 101)        # high = 108
+    ltf_c2 = make_candle(3 * H4 + M15, 101, 102, 85, 87)    # high = 102
+    ltf_c3 = make_candle(3 * H4 + 2 * M15, 87, 95, 84, 86)  # high = 95
+    ltf_fvg = FVG("Bearish", 100, 95, ltf_c1, ltf_c2, ltf_c3, formed_at=3 * H4 + 2 * M15, timeframe="15m")
+
+    setup = build_extreme_trade_setup("ETH", anchor, ltf_fvg, ltf_timeframe="15m")
+
+    # Outer boundary entry:
+    assert setup.entry_price == 95.0  # fvg.bottom
+    # SL is highest wick of forming candles: max(108, 102, 95) = 108.0
+    assert setup.stop_loss == 108.0
+    # Risk: 108 - 95 = 13.0
+    assert setup.risk_r == 13.0
+    # Targets: 1R, 2R, 3R
+    assert setup.tp_1r == 95.0 - 13.0  # 82.0
+    assert setup.tp_2r == 95.0 - 26.0  # 69.0
+    assert setup.tp_3r == 95.0 - 39.0  # 56.0
 

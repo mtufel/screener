@@ -6,7 +6,7 @@ Focuses on:
 3. Incremental caching (HTFFVGCache) with bootstrap and delta scans for high-performance execution.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 import logging
 import os
@@ -717,5 +717,241 @@ async def get_most_recent_touched_anchor_for_symbol(
         current_price=current_price,
         candles_ltf=candles_ltf,
         ltf_timeframe=ltf_timeframe,
+    )
+
+
+# ==============================================================================
+# STEP 3: UNMITIGATED LTF FVG DISCOVERY, EXTREME RANKING & TRADE SETUP
+# ==============================================================================
+@dataclass
+class ExtremeTradeSetup:
+    """Represents a validated trade setup ready for execution under strategy_extreme_fvg."""
+    symbol: str
+    direction: Literal["Bullish", "Bearish"]
+    anchor: TouchedAnchor
+    ltf_fvg: FVG
+    entry_price: float
+    stop_loss: float
+    risk_r: float
+    tp_1r: float
+    tp_2r: float
+    tp_3r: float
+    ltf_timeframe: str = "15m"
+    all_unmitigated_fvgs: List[FVG] = field(default_factory=list)
+
+    @property
+    def risk_pct(self) -> float:
+        return (self.risk_r / self.entry_price) * 100 if self.entry_price > 0 else 0.0
+
+    @property
+    def is_valid_risk(self) -> bool:
+        return self.risk_r > 0
+
+
+def find_unmitigated_ltf_fvgs(
+    candles_ltf: List[Candle],
+    after_timestamp: int,
+    direction: Literal["Bullish", "Bearish"],
+    current_price: float = 0.0,
+    current_time_ms: Optional[int] = None,
+    ltf_timeframe: str = "15m",
+) -> List[FVG]:
+    """
+    Scans candles_ltf for FVGs matching direction that formed strictly AFTER after_timestamp,
+    and filters for 'Not Traded Yet' (unmitigated):
+    From the moment the LTF FVG formed until the current bar, price has never entered between [bottom, top].
+    """
+    duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
+    now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
+
+    # Only closed LTF candles
+    closed_ltf = filter_closed_candles(candles_ltf, duration_ms, current_time_ms=now_ms)
+    if len(closed_ltf) < 3:
+        return []
+
+    unmitigated: List[FVG] = []
+
+    for i in range(len(closed_ltf) - 2):
+        c1 = closed_ltf[i]
+        c2 = closed_ltf[i + 1]
+        c3 = closed_ltf[i + 2]
+
+        c3_close_ts = c3.timestamp + duration_ms
+        # Must be formed strictly at or after the 4H anchor first touch timestamp
+        if c3_close_ts < after_timestamp:
+            continue
+
+        cand: Optional[FVG] = None
+        if direction == "Bullish" and c3.low > c1.high:
+            cand = FVG(
+                direction="Bullish",
+                top=c3.low,
+                bottom=c1.high,
+                c1=c1,
+                c2=c2,
+                c3=c3,
+                formed_at=c3.timestamp,
+                timeframe=ltf_timeframe,
+            )
+        elif direction == "Bearish" and c3.high < c1.low:
+            cand = FVG(
+                direction="Bearish",
+                top=c1.low,
+                bottom=c3.high,
+                c1=c1,
+                c2=c2,
+                c3=c3,
+                formed_at=c3.timestamp,
+                timeframe=ltf_timeframe,
+            )
+
+        if cand is None:
+            continue
+
+        # Check 'Not Traded Yet' (zero intermediate touches from c3 close to now)
+        is_traded = False
+        for k in range(i + 3, len(closed_ltf)):
+            sub = closed_ltf[k]
+            if cand.direction == "Bullish":
+                # Price pulled back down into [bottom, top]
+                if sub.low <= cand.top:
+                    is_traded = True
+                    break
+            else:
+                # Price rallied up into [bottom, top]
+                if sub.high >= cand.bottom:
+                    is_traded = True
+                    break
+
+        # Check current price
+        if not is_traded and current_price > 0:
+            if cand.direction == "Bullish" and current_price <= cand.top:
+                is_traded = True
+            elif cand.direction == "Bearish" and current_price >= cand.bottom:
+                is_traded = True
+
+        if not is_traded:
+            unmitigated.append(cand)
+
+    return unmitigated
+
+
+def select_extreme_ltf_fvg(
+    unmitigated_fvgs: List[FVG],
+    direction: Literal["Bullish", "Bearish"],
+) -> Optional[FVG]:
+    """
+    Selects the #1 Extreme FVG from the unmitigated pool:
+    - Bullish: Lowest price FVG (deepest/closest to 4H zone) -> min by bottom/midpoint.
+    - Bearish: Highest price FVG (deepest/closest to 4H zone) -> max by top/midpoint.
+    """
+    if not unmitigated_fvgs:
+        return None
+
+    if direction == "Bullish":
+        # Lowest price has highest probability
+        return min(unmitigated_fvgs, key=lambda f: f.bottom)
+    else:
+        # Highest price has highest probability
+        return max(unmitigated_fvgs, key=lambda f: f.top)
+
+
+def build_extreme_trade_setup(
+    symbol: str,
+    anchor: TouchedAnchor,
+    ltf_fvg: FVG,
+    ltf_timeframe: str = "15m",
+    all_unmitigated_fvgs: Optional[List[FVG]] = None,
+) -> ExtremeTradeSetup:
+    """
+    Calculates exact trade setup parameters:
+    - Entry: Outer boundary (Bullish: top, Bearish: bottom).
+    - Stop Loss: Exact extreme wick across [c1, c2, c3] forming the LTF FVG.
+    - 1R, 2R, 3R targets.
+    """
+    direction = anchor.fvg.direction
+    c1, c2, c3 = ltf_fvg.c1, ltf_fvg.c2, ltf_fvg.c3
+
+    if direction == "Bullish":
+        entry_price = ltf_fvg.top
+        stop_loss = min(c1.low, c2.low, c3.low)
+        risk_r = max(0.0, entry_price - stop_loss)
+        tp_1r = entry_price + 1.0 * risk_r
+        tp_2r = entry_price + 2.0 * risk_r
+        tp_3r = entry_price + 3.0 * risk_r
+    else:
+        entry_price = ltf_fvg.bottom
+        stop_loss = max(c1.high, c2.high, c3.high)
+        risk_r = max(0.0, stop_loss - entry_price)
+        tp_1r = entry_price - 1.0 * risk_r
+        tp_2r = entry_price - 2.0 * risk_r
+        tp_3r = entry_price - 3.0 * risk_r
+
+    return ExtremeTradeSetup(
+        symbol=symbol,
+        direction=direction,
+        anchor=anchor,
+        ltf_fvg=ltf_fvg,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        risk_r=risk_r,
+        tp_1r=tp_1r,
+        tp_2r=tp_2r,
+        tp_3r=tp_3r,
+        ltf_timeframe=ltf_timeframe,
+        all_unmitigated_fvgs=all_unmitigated_fvgs or [ltf_fvg],
+    )
+
+
+async def get_extreme_setup_for_symbol(
+    symbol: str,
+    ltf_timeframe: str = "15m",
+    client: Optional[HyperliquidClient] = None,
+    use_close_invalidation: bool = False,
+) -> Optional[ExtremeTradeSetup]:
+    """
+    End-to-end pipeline:
+    1. Finds the most recent touched 4H FVG anchor.
+    2. Scans for unmitigated LTF FVGs formed post-touch.
+    3. Selects the #1 Extreme FVG (lowest for Bullish, highest for Bearish).
+    4. Computes Entry, SL, and 1R/2R/3R targets.
+    """
+    cli = client or hyperliquid_client
+    anchor = await get_most_recent_touched_anchor_for_symbol(
+        symbol=symbol,
+        ltf_timeframe=ltf_timeframe,
+        client=cli,
+        use_close_invalidation=use_close_invalidation,
+    )
+    if not anchor:
+        return None
+
+    raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
+    if not raw_ltf:
+        return None
+
+    candles_ltf = [Candle.from_dict(c) for c in raw_ltf]
+    current_price = candles_ltf[-1].close if candles_ltf else 0.0
+
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=candles_ltf,
+        after_timestamp=anchor.first_touch_timestamp,
+        direction=anchor.fvg.direction,
+        current_price=current_price,
+        ltf_timeframe=ltf_timeframe,
+    )
+    if not unmitigated:
+        return None
+
+    best_ltf = select_extreme_ltf_fvg(unmitigated, anchor.fvg.direction)
+    if not best_ltf:
+        return None
+
+    return build_extreme_trade_setup(
+        symbol=symbol,
+        anchor=anchor,
+        ltf_fvg=best_ltf,
+        ltf_timeframe=ltf_timeframe,
+        all_unmitigated_fvgs=unmitigated,
     )
 

@@ -19,7 +19,11 @@ from strategy_extreme_fvg import (
     FVG,
     HTFFVGCache,
     TouchedAnchor,
+    ExtremeTradeSetup,
     get_most_recent_touched_4h_fvg,
+    find_unmitigated_ltf_fvgs,
+    select_extreme_ltf_fvg,
+    build_extreme_trade_setup,
     HTF_CANDLE_DURATION_MS,
     TIMEFRAME_MS,
 )
@@ -112,7 +116,52 @@ async def inspect_symbol_live(
         print(f"     • Formed At (4H Close):    {f.formed_time_ist}")
         print(f"     • Most Recent Touch:       {anchor.most_recent_touch_time_ist}")
         print(f"     • First Touch Time:        {anchor.first_touch_time_ist} ({time_since_first_touch_hrs:.1f} hrs ago)")
-        print(f"     • Ready for Step 3:        ✅ YES (LTF FVG scan will start from: {anchor.first_touch_time_ist})")
+
+        # =====================================================================
+        # STEP 3: Unmitigated LTF FVG Discovery, Extreme Ranking & Trade Setup
+        # =====================================================================
+        print(f"\n--- [STEP 3] Unmitigated LTF FVGs ({ltf_timeframe}) & Extreme Trade Setup ---")
+        unmitigated_fvgs = find_unmitigated_ltf_fvgs(
+            candles_ltf=candles_ltf,
+            after_timestamp=anchor.first_touch_timestamp,
+            direction=f.direction,
+            current_price=current_price,
+            ltf_timeframe=ltf_timeframe,
+        )
+
+        if not unmitigated_fvgs:
+            print(f"  ⏳ No unmitigated {ltf_timeframe} {f.direction} FVGs found since 4H touch.")
+            print(f"     (Waiting for new {f.direction} {ltf_timeframe} FVG to form)")
+        else:
+            rank_rule = "Lowest Price" if f.direction == "Bullish" else "Highest Price"
+            print(f"  ⚡ Found {len(unmitigated_fvgs)} unmitigated {ltf_timeframe} {f.direction} FVG(s) (Ranking by {rank_rule}):")
+            for idx, uf in enumerate(unmitigated_fvgs[:5], 1):
+                print(f"    {idx:2d}. {uf.direction:7s} [${uf.bottom:,.2f} - ${uf.top:,.2f}] | Formed: {uf.formed_time_ist}")
+            if len(unmitigated_fvgs) > 5:
+                print(f"    ... and {len(unmitigated_fvgs) - 5} more")
+
+            # Select extreme FVG
+            best_ltf = select_extreme_ltf_fvg(unmitigated_fvgs, f.direction)
+            if best_ltf:
+                setup = build_extreme_trade_setup(
+                    symbol=symbol,
+                    anchor=anchor,
+                    ltf_fvg=best_ltf,
+                    ltf_timeframe=ltf_timeframe,
+                    all_unmitigated_fvgs=unmitigated_fvgs,
+                )
+                side = "LONG" if setup.direction == "Bullish" else "SHORT"
+                print(f"\n  🚀 #1 EXTREME TRADE SETUP GENERATED ({side}):")
+                print(f"     • Target LTF FVG:     [${best_ltf.bottom:,.2f} - ${best_ltf.top:,.2f}] (Formed: {best_ltf.formed_time_ist})")
+                print(f"     • Entry Price Point:  ${setup.entry_price:,.2f} (Outer Boundary)")
+                print(f"     • Stop Loss (SL):     ${setup.stop_loss:,.2f} (Exact 3-candle wick extreme)")
+                print(f"     • Risk ($R$):          ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)")
+                print(f"     • Targets:")
+                print(f"       - TP 1R (1:1):      ${setup.tp_1r:,.2f}")
+                print(f"       - TP 2R (1:2):      ${setup.tp_2r:,.2f}")
+                print(f"       - TP 3R (1:3):      ${setup.tp_3r:,.2f}")
+                dist_to_entry = ((current_price - setup.entry_price) / setup.entry_price) * 100
+                print(f"     • Live Distance:      {dist_to_entry:+.2f}% to entry (Current: ${current_price:,.2f})")
     else:
         print(f"  ⏳ Status: WAITING FOR RETRACE")
         print(f"     None of the {len(active_fvgs)} active 4H FVGs have been touched post-close yet.")
