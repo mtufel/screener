@@ -15,7 +15,8 @@ from strategy_extreme_fvg import (
     TouchedAnchor,
     compute_all_active_4h_fvgs,
     filter_closed_candles,
-    get_4h_fvg_most_recent_touch,
+    get_4h_fvg_first_touch_ts,
+    get_4h_fvg_most_recent_touch_ts,
     get_most_recent_touched_4h_fvg,
     HTF_CANDLE_DURATION_MS,
 )
@@ -281,15 +282,16 @@ def test_4h_touch_strictly_post_close():
     fvg = FVG("Bullish", 115, 110, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
 
     # With only c1, c2, c3, touch must be None
-    touch = get_4h_fvg_most_recent_touch([c1, c2, c3], fvg, current_price=132.0)
+    touch = get_4h_fvg_first_touch_ts([c1, c2, c3], fvg, current_price=132.0)
     assert touch is None
 
     # When c4 (strictly post-close) dips into [110, 115] with low=113
     c4 = make_candle(3 * H4, 132, 133, 113, 125)
-    touch_c4 = get_4h_fvg_most_recent_touch([c1, c2, c3, c4], fvg, current_price=125.0)
+    touch_c4 = get_4h_fvg_first_touch_ts([c1, c2, c3, c4], fvg, current_price=125.0)
     assert touch_c4 is not None
-    assert touch_c4.touch_timestamp == 3 * H4
-    assert touch_c4.touch_timeframe == "4h"
+    ts, tf = touch_c4
+    assert ts == 3 * H4
+    assert tf == "4h"
 
 
 def test_most_recent_touched_fvg_selection():

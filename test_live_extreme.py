@@ -105,14 +105,14 @@ async def inspect_symbol_live(
 
     if anchor:
         f = anchor.fvg
-        time_since_touch_hrs = (now_ms - anchor.touch_timestamp) / (3600 * 1000)
+        time_since_first_touch_hrs = (now_ms - anchor.first_touch_timestamp) / (3600 * 1000)
         print(f"  🎯 ACTIVE 4H ANCHOR ISOLATED:")
-        print(f"     • Direction:           {f.direction.upper()}")
-        print(f"     • Zone:                [${f.bottom:,.2f} - ${f.top:,.2f}]")
-        print(f"     • Formed At (4H Close): {f.formed_time_ist}")
-        print(f"     • Exact Touch At:      {anchor.touch_time_ist} (on {anchor.touch_timeframe} bar)")
-        print(f"     • Time Since Touch:    {time_since_touch_hrs:.1f} hours ago")
-        print(f"     • Ready for Step 3:    ✅ YES (Search LTF FVGs starting from {anchor.touch_time_ist})")
+        print(f"     • Direction:               {f.direction.upper()}")
+        print(f"     • Zone:                    [${f.bottom:,.2f} - ${f.top:,.2f}]")
+        print(f"     • Formed At (4H Close):    {f.formed_time_ist}")
+        print(f"     • Most Recent Touch:       {anchor.most_recent_touch_time_ist}")
+        print(f"     • First Touch Time:        {anchor.first_touch_time_ist} ({time_since_first_touch_hrs:.1f} hrs ago)")
+        print(f"     • Ready for Step 3:        ✅ YES (LTF FVG scan will start from: {anchor.first_touch_time_ist})")
     else:
         print(f"  ⏳ Status: WAITING FOR RETRACE")
         print(f"     None of the {len(active_fvgs)} active 4H FVGs have been touched post-close yet.")
