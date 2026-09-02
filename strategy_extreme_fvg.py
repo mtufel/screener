@@ -748,7 +748,7 @@ class ExtremeTradeSetup:
     state: Literal["PENDING_RETRACE", "TRADE_ACTIVE", "TP1_HIT", "TP2_HIT", "TP3_HIT", "STOPPED_OUT", "INVALIDATED"] = "PENDING_RETRACE"
     entry_timestamp: Optional[int] = None
     floating_r: float = 0.0
-    completion_target: Literal["1R", "2R", "3R"] = "1R"
+    completion_target: Literal["1R", "2R", "3R"] = "2R"
     ltf_timeframe: str = "15m"
     all_unmitigated_fvgs: List[FVG] = field(default_factory=list)
 
@@ -771,7 +771,7 @@ def evaluate_ltf_setup_lifecycle(
     ltf_fvg: FVG,
     subsequent_candles: List[Candle],
     current_price: float = 0.0,
-    completion_target: Literal["1R", "2R", "3R"] = "1R",
+    completion_target: Literal["1R", "2R", "3R"] = "2R",
 ) -> Tuple[str, Optional[int], float]:
     """
     Evaluates the lifecycle state of a candidate LTF FVG from formation across subsequent candles up to current_price.
@@ -880,7 +880,7 @@ def find_unmitigated_ltf_fvgs(
     current_time_ms: Optional[int] = None,
     ltf_timeframe: str = "15m",
     min_gap_pct: float = 0.05,
-    completion_target: Literal["1R", "2R", "3R"] = "1R",
+    completion_target: Literal["1R", "2R", "3R"] = "2R",
 ) -> List[FVG]:
     """
     Scans candles_ltf for FVGs matching direction that formed strictly AFTER after_timestamp,
@@ -984,7 +984,7 @@ def build_extreme_trade_setup(
     anchor: TouchedAnchor,
     ltf_fvg: FVG,
     ltf_timeframe: str = "15m",
-    completion_target: Literal["1R", "2R", "3R"] = "1R",
+    completion_target: Literal["1R", "2R", "3R"] = "2R",
     all_unmitigated_fvgs: Optional[List[FVG]] = None,
 ) -> ExtremeTradeSetup:
     """
@@ -1038,7 +1038,7 @@ async def get_extreme_setup_for_symbol(
     client: Optional[HyperliquidClient] = None,
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
-    completion_target: Literal["1R", "2R", "3R"] = "1R",
+    completion_target: Literal["1R", "2R", "3R"] = "2R",
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:

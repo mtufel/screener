@@ -41,7 +41,7 @@ async def inspect_symbol_live(
     ltf_timeframe: str = "15m",
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
-    completion_target: str = "1R",
+    completion_target: str = "2R",
 ):
     print("\n" + "=" * 80)
     print(f"  🔍 LIVE SCAN: {symbol} (LTF Refinement: {ltf_timeframe})")
@@ -190,7 +190,7 @@ async def main():
     parser.add_argument("--ltf", default="15m", choices=["1m", "5m", "15m", "1h"], help="LTF timeframe for touch refinement")
     parser.add_argument("--invalidation", default="wick", choices=["wick", "close"], help="Invalidation mode: wick or close (default: wick)")
     parser.add_argument("--min-gap-pct", type=float, default=0.05, help="Minimum LTF FVG gap size in %% (default: 0.05%%)")
-    parser.add_argument("--target", default="1R", choices=["1R", "2R", "3R"], help="Completion target (default: 1R)")
+    parser.add_argument("--target", default="2R", choices=["1R", "2R", "3R"], help="Completion target (default: 2R)")
     parser.add_argument("--all", action="store_true", help="Scan entire top crypto universe")
     args = parser.parse_args()
 
