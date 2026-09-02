@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
 import os
+import time
 from typing import Any, Dict, List, Literal, Optional
 
 from dotenv import load_dotenv
@@ -593,8 +594,9 @@ async def phase1_filter(
                 f_dt = datetime.fromtimestamp(htf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
                 touch_ts = get_4h_fvg_touch_timestamp(candles_4h, htf_fvg, current_price=current_price, max_candles_since_test=max_htf_retrace_candles)
                 if touch_ts is not None:
-                    t_dt = datetime.fromtimestamp(touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
-                    logger.info("  ✅ 4H %s FVG [$%.2f - $%.2f] formed %s -> TOUCHED at %s", htf_fvg.direction, htf_fvg.bottom, htf_fvg.top, f_dt, t_dt)
+                    t_start = datetime.fromtimestamp(touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p")
+                    t_end = datetime.fromtimestamp((touch_ts + 4 * 3600 * 1000) / 1000.0, tz=IST).strftime("%I:%M %p IST")
+                    logger.info("  ✅ 4H %s FVG [$%.2f - $%.2f] formed %s (4H close) -> TOUCHED on 4H bar (%s - %s)", htf_fvg.direction, htf_fvg.bottom, htf_fvg.top, f_dt, t_start, t_end)
                     passed.append(
                         Phase1Result(
                             symbol=symbol,
@@ -631,10 +633,16 @@ async def phase2_check(
     ltf_duration_ms = TIMEFRAME_MS.get(ltf, 5 * 60 * 1000)
 
     try:
+        # Determine sufficient lookback to cover back to the 4H touch timestamp
+        needed_candles = 200
+        if phase1_coin.htf_touch_ts:
+            time_diff_ms = int(time.time() * 1000) - phase1_coin.htf_touch_ts
+            needed_candles = max(200, min(1000, int(time_diff_ms / ltf_duration_ms) + 50))
+
         candles_ltf = await get_last_n_candles(
             symbol=symbol,
             timeframe=ltf,
-            n=LOOKBACK_CANDLES,
+            n=needed_candles,
             client=cli,
         )
         if len(candles_ltf) < 3:
@@ -642,6 +650,7 @@ async def phase2_check(
 
         # Refine touch timestamp to exact LTF candle entry strictly after FVG close
         effective_touch_ts = phase1_coin.htf_touch_ts
+        refined_to_ltf = False
         if effective_touch_ts is not None and candles_ltf:
             c_start = max(effective_touch_ts, phase1_coin.htf_fvg.close_timestamp)
             c_end = effective_touch_ts + (4 * 3600 * 1000)
@@ -650,14 +659,25 @@ async def phase2_check(
                     if direction == "Bullish":
                         if ltf_c.low <= phase1_coin.htf_fvg.top and ltf_c.high >= phase1_coin.htf_fvg.bottom:
                             effective_touch_ts = ltf_c.timestamp
+                            refined_to_ltf = True
                             break
                     else:
                         if ltf_c.high >= phase1_coin.htf_fvg.bottom and ltf_c.low <= phase1_coin.htf_fvg.top:
                             effective_touch_ts = ltf_c.timestamp
+                            refined_to_ltf = True
                             break
 
-        touch_str = datetime.fromtimestamp(effective_touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST") if effective_touch_ts else "None"
-        logger.info("[Phase 2 Scan] %s (%s %s) — Searching for nearest LTF FVG post 4H touch at %s", symbol, direction, ltf, touch_str)
+        if effective_touch_ts:
+            if refined_to_ltf:
+                t_open = datetime.fromtimestamp(effective_touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p")
+                t_close = datetime.fromtimestamp((effective_touch_ts + ltf_duration_ms) / 1000.0, tz=IST).strftime("%I:%M %p IST")
+                touch_str = f"exact {ltf} bar ({t_open} - {t_close})"
+            else:
+                touch_str = datetime.fromtimestamp(effective_touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+        else:
+            touch_str = "None"
+
+        logger.info("[Phase 2 Scan] %s (%s %s) — 4H FVG touched on %s. Searching for nearest LTF FVG post-touch...", symbol, direction, ltf, touch_str)
 
         # If effective_touch_ts is specified, scan chronologically forward from touch timestamp
         # to find the FIRST LTF FVG formed post 4H touch. Otherwise fallback to backwards search.
@@ -690,8 +710,9 @@ async def phase2_check(
                 timeframe=ltf,
             )
 
-            fvg_formed_dt = datetime.fromtimestamp(ltf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
-            logger.info("  🎯 Found Nearest LTF %s FVG [%.2f - %.2f] formed at %s", direction, ltf_fvg.bottom, ltf_fvg.top, fvg_formed_dt)
+            ltf_open_dt = datetime.fromtimestamp(c3.timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p")
+            ltf_close_dt = datetime.fromtimestamp(ltf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%I:%M %p IST")
+            logger.info("  🎯 Found Nearest LTF %s FVG [%.2f - %.2f] formed %s (bar %s - %s)", direction, ltf_fvg.bottom, ltf_fvg.top, ltf_close_dt, ltf_open_dt, ltf_close_dt)
 
             # Determine Stop Loss reference
             if direction == "Bullish":
