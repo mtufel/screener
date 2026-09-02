@@ -594,3 +594,87 @@ def test_G2_only_one_direction_active_per_coin():
 
     alerted_bear, _, _ = tracker.register_or_update_setup(setup_bear, [c1, c2, c3])
     assert alerted_bear is False, "Bearish setup must be suppressed while Bullish is active on same coin"
+
+
+# ==============================================================================
+# H. TIMING REFINEMENTS & TRADE COMPLETION LIFECYCLE
+# ==============================================================================
+
+def test_H1_formation_time_as_candle_close_time():
+    """FVG formation time displays the Candle Close Time (c3 close = formed_at + duration)."""
+    c1 = make_candle(1000, 100, 105, 95, 104)
+    c2 = make_candle(2000, 104, 120, 103, 118)
+    c3 = make_candle(3000, 118, 125, 110, 122)
+    
+    # 4H FVG: duration = 4 * 3600 * 1000 = 14,400,000 ms
+    htf_fvg = FVG("Bullish", top=130, bottom=90, c1=c1, c2=c2, c3=c3, formed_at=3000, timeframe="4h")
+    assert htf_fvg.close_timestamp == 3000 + (4 * 3600 * 1000), "4H FVG close timestamp must be c3 close"
+
+    # 15m FVG: duration = 15 * 60 * 1000 = 900,000 ms
+    ltf_fvg = FVG("Bullish", top=120, bottom=110, c1=c1, c2=c2, c3=c3, formed_at=3000, timeframe="15m")
+    assert ltf_fvg.close_timestamp == 3000 + (15 * 60 * 1000), "15m FVG close timestamp must be c3 close"
+
+
+@pytest.mark.asyncio
+async def test_H2_exact_touch_timestamp_from_ltf_breach():
+    """Phase 2 refines 4H touch timestamp to the exact LTF candle that breached the boundary."""
+    # 4H candle opens at ts=10,000,000, spans until 24,400,000
+    # Inside this window, 15m candle at ts=12,700,000 is the first to enter [100, 120]
+    c1 = make_candle(1000, 90, 95, 85, 92)
+    c2 = make_candle(2000, 92, 130, 90, 128)
+    c3 = make_candle(3000, 128, 135, 122, 130)
+    htf_fvg = FVG("Bullish", top=122, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=3000, timeframe="4h")
+
+    ltf_c1 = make_candle(10_000_000, 140, 142, 130, 135) # Outside zone (> 122)
+    ltf_c2 = make_candle(12_700_000, 135, 136, 118, 120) # Low=118 <= 122 -> Exact Touch!
+    ltf_c3 = make_candle(13_600_000, 120, 122, 115, 119) # Also inside
+
+    p1 = Phase1Result("PAXG", "Bullish", htf_fvg, 120.0, [htf_fvg], htf_touch_ts=10_000_000)
+
+    # Subsequent candles to allow an LTF FVG formation
+    ltf_c4 = make_candle(14_500_000, 119, 121, 117, 120)
+    ltf_c5 = make_candle(15_400_000, 120, 130, 119, 129)
+    ltf_c6 = make_candle(16_300_000, 129, 135, 125, 133) # LTF Bullish FVG: [121, 125]
+    ltf_c7 = make_candle(17_200_000, 133, 134, 132, 133)
+
+    all_candles = [ltf_c1, ltf_c2, ltf_c3, ltf_c4, ltf_c5, ltf_c6, ltf_c7]
+    setup = await phase2_check(p1, client=make_dummy_client(all_candles), ltf_timeframe="15m")
+
+    assert setup is not None
+    assert setup.ltf_fvg.formed_at > 12_700_000
+
+
+def test_H3_wait_for_trade_completion_before_new_touch():
+    """A 4H FVG occupied by an active trade suppresses any new setup until the trade completes."""
+    from trade_tracker import TradeTracker
+    from strategy import SetupResult
+    tracker = TradeTracker(single_active_position=False, persistence_file=None)
+
+    c1 = make_candle(1000, 100, 105, 95, 104)
+    c2 = make_candle(2000, 104, 120, 103, 118)
+    c3 = make_candle(3000, 118, 125, 110, 122)
+    htf_fvg = FVG("Bullish", top=130, bottom=90, c1=c1, c2=c2, c3=c3, formed_at=3000)
+    
+    ltf_fvg1 = FVG("Bullish", top=115, bottom=110, c1=c1, c2=c2, c3=c3, formed_at=4000)
+    ltf_fvg2 = FVG("Bullish", top=118, bottom=113, c1=c1, c2=c2, c3=c3, formed_at=8000)
+    tp = calculate_tp_levels("Bullish", 110.0, 95.0)
+
+    setup1 = SetupResult("BTC", "Bullish", "PENDING_RETRACE", htf_fvg, ltf_fvg1, 110.0, 110.0, 95.0, tp, 0.8, "5m")
+    setup2 = SetupResult("BTC", "Bullish", "PENDING_RETRACE", htf_fvg, ltf_fvg2, 113.0, 113.0, 95.0, tp, 0.8, "5m")
+
+    # Register first setup on this 4H FVG
+    alerted1, _, _ = tracker.register_or_update_setup(setup1, [c1, c2, c3])
+    assert alerted1 is True, "First trade setup on 4H FVG must be accepted"
+
+    # Re-touch arrives with new LTF FVG while setup1 is still active
+    alerted2, _, _ = tracker.register_or_update_setup(setup2, [c1, c2, c3])
+    assert alerted2 is False, "New setup on same 4H FVG must be suppressed while previous trade is active"
+
+    # Close first trade on TP
+    trade1 = tracker.trades[tracker.get_setup_id(setup1)]
+    trade1.stage = "CLOSED_TP"
+
+    # Now that prior trade completed, a new setup on that 4H FVG is accepted
+    alerted3, _, _ = tracker.register_or_update_setup(setup2, [c1, c2, c3])
+    assert alerted3 is True, "New setup on 4H FVG must be accepted after prior trade completes"
+

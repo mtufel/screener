@@ -82,6 +82,7 @@ class FVG:
     c3: Candle       # Newest candle in 3-candle sequence
     formed_at: int   # Timestamp (ms) of the newest candle (c3)
     is_valid: bool = True
+    timeframe: str = "4h"
 
     @property
     def width(self) -> float:
@@ -92,6 +93,12 @@ class FVG:
     def midpoint(self) -> float:
         """Midpoint price of the gap."""
         return (self.top + self.bottom) / 2.0
+
+    @property
+    def close_timestamp(self) -> int:
+        """Timestamp (ms) when candle 3 closed (when FVG fully completed)."""
+        duration_ms = TIMEFRAME_MS.get(self.timeframe, 4 * 3600 * 1000)
+        return self.formed_at + duration_ms
 
 
 @dataclass
@@ -200,16 +207,37 @@ class SetupResult:
 # ==============================================================================
 # FVG COMPUTATION & ACTIVE CACHE WITH INVALIDATION
 # ==============================================================================
+# Timeframe duration in milliseconds
+TIMEFRAME_MS: Dict[str, int] = {
+    "1m": 60 * 1000,
+    "3m": 3 * 60 * 1000,
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "30m": 30 * 60 * 1000,
+    "1h": 3600 * 1000,
+    "2h": 2 * 3600 * 1000,
+    "4h": 4 * 3600 * 1000,
+    "1d": 24 * 3600 * 1000,
+}
+
+
 def compute_fvg(
     candles: List[Candle],
     direction: Optional[Literal["Bullish", "Bearish"]] = None,
+    timeframe: str = "5m",
 ) -> Optional[FVG]:
     """
-    Computes the most recent 3-candle Fair Value Gap (FVG) from a list of candles.
+    Identifies the most recent Fair Value Gap (FVG) from a sequence of candles.
+    A valid FVG requires a 3-candle pattern:
+    - Bullish FVG: Candle 3 Low > Candle 1 High (Gap between C1 High and C3 Low)
+    - Bearish FVG: Candle 3 High < Candle 1 Low (Gap between C3 High and C1 Low)
     """
     if len(candles) < 3:
         return None
 
+    duration_ms = TIMEFRAME_MS.get(timeframe, 5 * 60 * 1000)
+
+    # Search backwards for the most recent completed FVG
     for i in range(len(candles) - 1, 1, -1):
         c1 = candles[i - 2]
         c2 = candles[i - 1]
@@ -226,6 +254,7 @@ def compute_fvg(
                     c2=c2,
                     c3=c3,
                     formed_at=c3.timestamp,
+                    timeframe=timeframe,
                 )
 
         # Bearish FVG: c3.high < c1.low
@@ -239,6 +268,7 @@ def compute_fvg(
                     c2=c2,
                     c3=c3,
                     formed_at=c3.timestamp,
+                    timeframe=timeframe,
                 )
 
     return None
@@ -276,6 +306,7 @@ def compute_all_active_4h_fvgs(
                 c2=c2,
                 c3=c3,
                 formed_at=c3.timestamp,
+                timeframe="4h",
             )
         elif c3.high < c1.low:
             candidate = FVG(
@@ -286,6 +317,7 @@ def compute_all_active_4h_fvgs(
                 c2=c2,
                 c3=c3,
                 formed_at=c3.timestamp,
+                timeframe="4h",
             )
 
         if candidate is None:
@@ -458,13 +490,28 @@ def get_4h_fvg_touch_timestamp(
     fvg: FVG,
     current_price: float,
     max_candles_since_test: Optional[int] = None,
+    candles_ltf: Optional[List[Candle]] = None,
 ) -> Optional[int]:
     """
-    Returns the timestamp (ms) of the true FIRST candle (or live price event) that tapped
+    Returns the exact timestamp (ms) of the true FIRST candle (or live price event) that tapped
     into the 4H FVG zone strictly after the FVG was formed.
+    If candles_ltf is provided, returns the exact minute/candle timestamp of the breach.
     """
     fvg_creation_ts = fvg.formed_at
-    subsequent_candles = [c for c in candles_4h if c.timestamp > fvg_creation_ts]
+
+    # 1. If LTF candles are provided, find the exact first LTF candle that entered the zone
+    if candles_ltf:
+        subsequent_ltf = [c for c in candles_ltf if c.timestamp >= fvg_creation_ts]
+        for c in subsequent_ltf:
+            if fvg.direction == "Bullish":
+                if c.low <= fvg.top and c.high >= fvg.bottom:
+                    return c.timestamp
+            else:
+                if c.high >= fvg.bottom and c.low <= fvg.top:
+                    return c.timestamp
+
+    # 2. Otherwise scan 4H candles formed strictly after creation
+    subsequent_candles = [c for c in candles_4h if c.timestamp >= fvg_creation_ts]
     if not subsequent_candles:
         if price_in_fvg(current_price, fvg):
             return fvg.formed_at
@@ -582,6 +629,7 @@ async def phase2_check(
     direction = phase1_coin.direction
     current_price = phase1_coin.current_price
     ltf = ltf_timeframe or os.getenv("LTF_TIMEFRAME", LTF_TIMEFRAME)
+    ltf_duration_ms = TIMEFRAME_MS.get(ltf, 5 * 60 * 1000)
 
     try:
         candles_ltf = await get_last_n_candles(
@@ -593,15 +641,31 @@ async def phase2_check(
         if len(candles_ltf) < 3:
             return None
 
-        touch_str = datetime.fromtimestamp(phase1_coin.htf_touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST") if phase1_coin.htf_touch_ts else "None"
+        # Refine touch timestamp to exact LTF candle entry if available
+        effective_touch_ts = phase1_coin.htf_touch_ts
+        if effective_touch_ts is not None and candles_ltf:
+            c_start = effective_touch_ts
+            c_end = c_start + (4 * 3600 * 1000)
+            for ltf_c in candles_ltf:
+                if c_start <= ltf_c.timestamp < c_end:
+                    if direction == "Bullish":
+                        if ltf_c.low <= phase1_coin.htf_fvg.top and ltf_c.high >= phase1_coin.htf_fvg.bottom:
+                            effective_touch_ts = ltf_c.timestamp
+                            break
+                    else:
+                        if ltf_c.high >= phase1_coin.htf_fvg.bottom and ltf_c.low <= phase1_coin.htf_fvg.top:
+                            effective_touch_ts = ltf_c.timestamp
+                            break
+
+        touch_str = datetime.fromtimestamp(effective_touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST") if effective_touch_ts else "None"
         logger.info("[Phase 2 Scan] %s (%s %s) — Searching for nearest LTF FVG post 4H touch at %s", symbol, direction, ltf, touch_str)
 
-        # If htf_touch_ts is specified, scan chronologically forward from touch timestamp
+        # If effective_touch_ts is specified, scan chronologically forward from touch timestamp
         # to find the FIRST LTF FVG formed post 4H touch. Otherwise fallback to backwards search.
-        if phase1_coin.htf_touch_ts is not None:
+        if effective_touch_ts is not None:
             candidate_indices = [
                 i for i in range(2, len(candles_ltf))
-                if candles_ltf[i].timestamp > phase1_coin.htf_touch_ts
+                if candles_ltf[i].timestamp > effective_touch_ts
             ]
         else:
             candidate_indices = list(range(len(candles_ltf) - 1, 1, -1))
@@ -624,9 +688,10 @@ async def phase2_check(
                 c2=c2,
                 c3=c3,
                 formed_at=c3.timestamp,
+                timeframe=ltf,
             )
 
-            fvg_formed_dt = datetime.fromtimestamp(c3.timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+            fvg_formed_dt = datetime.fromtimestamp(ltf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
             logger.info("  🎯 Found Nearest LTF %s FVG [%.2f - %.2f] formed at %s", direction, ltf_fvg.bottom, ltf_fvg.top, fvg_formed_dt)
 
             # Determine Stop Loss reference
@@ -643,7 +708,7 @@ async def phase2_check(
                         return None
                     continue
 
-            fvg_formation_time_ist = datetime.fromtimestamp(ltf_fvg.formed_at / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
+            fvg_formation_time_ist = datetime.fromtimestamp(ltf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
 
             # Stage classification & Retrace Detection:
             # Retrace MUST happen on a candle or tick AFTER the FVG formation candle

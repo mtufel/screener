@@ -420,7 +420,9 @@ async def run_historical_backtest(
     last_trade_candle_idx = -candle_gap
     active_trade_exit_idx = -1
     htf_candle_duration_ms = 4 * 3600 * 1000
+    ltf_candle_duration_ms = 60 * 1000 if ltf == "1m" else (15 * 60 * 1000 if ltf == "15m" else 5 * 60 * 1000)
     active_sessions: Dict[str, int] = {}
+    fvg_busy_until: Dict[str, int] = {}
 
     # Iterate through LTF candles chronologically
     for i in range(15, len(candles_ltf) - 1):
@@ -446,9 +448,17 @@ async def run_historical_backtest(
         matched_htf_fvg: Optional[FVG] = None
         matched_touch_ts: Optional[int] = None
         for htf_fvg in fvgs_to_check:
-            touch_ts = get_4h_fvg_touch_timestamp(htf_slice, htf_fvg, current_price=curr_price, max_candles_since_test=max_htf_retrace_candles)
+            fvg_id = f"{htf_fvg.direction}_{htf_fvg.formed_at}"
+            # Wait for active trade on this 4H FVG to complete before allowing new touch/trade
+            if curr_ts <= fvg_busy_until.get(fvg_id, 0):
+                continue
+            touch_ts = get_4h_fvg_touch_timestamp(
+                htf_slice, htf_fvg, current_price=curr_price,
+                max_candles_since_test=max_htf_retrace_candles,
+                candles_ltf=candles_ltf[:i+1]
+            )
             if touch_ts is not None:
-                session_key = f"{htf_fvg.direction}_{htf_fvg.formed_at}_{touch_ts}"
+                session_key = f"{fvg_id}_{touch_ts}"
                 if session_key in active_sessions:
                     continue
                 matched_htf_fvg = htf_fvg
@@ -471,7 +481,8 @@ async def run_historical_backtest(
             continue
 
         # Found the first / nearest LTF FVG post 4H touch — consume this touch session permanently
-        session_key = f"{matched_htf_fvg.direction}_{matched_htf_fvg.formed_at}_{matched_touch_ts}"
+        matched_fvg_id = f"{matched_htf_fvg.direction}_{matched_htf_fvg.formed_at}"
+        session_key = f"{matched_fvg_id}_{matched_touch_ts}"
         active_sessions[session_key] = matched_touch_ts
 
         ltf_fvg = FVG(
@@ -481,7 +492,7 @@ async def run_historical_backtest(
             c1=c1_ltf,
             c2=c2_ltf,
             c3=c3_ltf,
-            formed_at=c3_ltf.timestamp,
+            formed_at=c3_ltf.timestamp + ltf_candle_duration_ms,
         )
 
         # Stop loss calculation
@@ -518,6 +529,8 @@ async def run_historical_backtest(
                     break
 
         if retrace_idx is None or retrace_entry_price is None:
+            # Nearest FVG invalidated without retrace: wait until after lookahead before considering new setup
+            fvg_busy_until[matched_fvg_id] = candles_ltf[max_lookahead - 1].timestamp
             continue
 
         score = score_coin(matched_htf_fvg, ltf_fvg, retrace_entry_price)
@@ -535,8 +548,11 @@ async def run_historical_backtest(
             ltf_fvg=ltf_fvg,
             score=score,
             ltf_timeframe=ltf,
-            htf_mode=h_mode,
         )
+
+        # Lock this 4H FVG until this trade completes!
+        if trade.exit_timestamp:
+            fvg_busy_until[matched_fvg_id] = trade.exit_timestamp
 
         trades.append(trade)
         last_trade_candle_idx = retrace_idx

@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
-from strategy import SetupResult, TPLevels, Candle
+from strategy import SetupResult, TPLevels, Candle, FVG
 from chart_generator import generate_setup_chart
 
 logger = logging.getLogger("crypto_screener.trade_tracker")
@@ -162,6 +162,14 @@ class TradeTracker:
                     return t
         return None
 
+    def has_active_trade_for_htf_fvg(self, htf_fvg: FVG) -> Optional[TrackedTrade]:
+        """Checks if there is already an active trade for this specific 4H FVG."""
+        for t in self.trades.values():
+            if t.stage in ("ACTIVATED", "PENDING_RETRACE"):
+                if t.htf_fvg_bottom == htf_fvg.bottom and t.htf_fvg_top == htf_fvg.top and t.direction == htf_fvg.direction:
+                    return t
+        return None
+
     def register_or_update_setup(
         self,
         setup: SetupResult,
@@ -170,6 +178,7 @@ class TradeTracker:
         """
         Processes a setup from the live screener:
         - If single_active_position is True and coin already has an active trade: suppresses new overlapping setup.
+        - If the 4H FVG already has an active trade: waits for it to complete before accepting a new setup.
         - If setup is new and in PENDING_RETRACE: triggers Alert 1 once.
         - If setup transitions to ACTIVATED: triggers Alert 2 once.
         - If already alerted for this stage: skips sending duplicates.
@@ -180,7 +189,19 @@ class TradeTracker:
         setup_id = self.get_setup_id(setup)
         now_ist = datetime.now(IST).strftime("%d-%b-%Y %I:%M %p IST")
 
-        # 1. Check single active position restriction (if configured)
+        # 1. Check if this 4H FVG is currently occupied by an active trade
+        existing_fvg_trade = self.has_active_trade_for_htf_fvg(setup.htf_fvg)
+        if existing_fvg_trade and existing_fvg_trade.setup_id != setup_id:
+            logger.info(
+                "Suppressed new %s %s setup (%s) because 4H FVG is currently occupied by active trade %s.",
+                setup.symbol,
+                setup.direction,
+                setup_id,
+                existing_fvg_trade.setup_id,
+            )
+            return False, None, None
+
+        # 2. Check single active position restriction (if configured)
         if self.single_active_position:
             existing_active = self.has_active_trade_for_symbol(setup.symbol)
             if existing_active and existing_active.setup_id != setup_id:
