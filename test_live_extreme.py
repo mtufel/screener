@@ -40,6 +40,7 @@ async def inspect_symbol_live(
     symbol: str,
     ltf_timeframe: str = "15m",
     use_close_invalidation: bool = False,
+    min_gap_pct: float = 0.05,
 ):
     print("\n" + "=" * 80)
     print(f"  🔍 LIVE SCAN: {symbol} (LTF Refinement: {ltf_timeframe})")
@@ -120,23 +121,24 @@ async def inspect_symbol_live(
         # =====================================================================
         # STEP 3: Unmitigated LTF FVG Discovery, Extreme Ranking & Trade Setup
         # =====================================================================
-        print(f"\n--- [STEP 3] Unmitigated LTF FVGs ({ltf_timeframe}) & Extreme Trade Setup ---")
+        print(f"\n--- [STEP 3] Unmitigated LTF FVGs ({ltf_timeframe}) & Extreme Trade Setup (Min Gap: {min_gap_pct:.2f}%) ---")
         unmitigated_fvgs = find_unmitigated_ltf_fvgs(
             candles_ltf=candles_ltf,
             after_timestamp=anchor.first_touch_timestamp,
             direction=f.direction,
             current_price=current_price,
             ltf_timeframe=ltf_timeframe,
+            min_gap_pct=min_gap_pct,
         )
 
         if not unmitigated_fvgs:
-            print(f"  ⏳ No unmitigated {ltf_timeframe} {f.direction} FVGs found since 4H touch.")
+            print(f"  ⏳ No unmitigated {ltf_timeframe} {f.direction} FVGs (>= {min_gap_pct:.2f}%) found since 4H touch.")
             print(f"     (Waiting for new {f.direction} {ltf_timeframe} FVG to form)")
         else:
             rank_rule = "Lowest Price" if f.direction == "Bullish" else "Highest Price"
             print(f"  ⚡ Found {len(unmitigated_fvgs)} unmitigated {ltf_timeframe} {f.direction} FVG(s) (Ranking by {rank_rule}):")
             for idx, uf in enumerate(unmitigated_fvgs[:5], 1):
-                print(f"    {idx:2d}. {uf.direction:7s} [${uf.bottom:,.2f} - ${uf.top:,.2f}] | Formed: {uf.formed_time_ist}")
+                print(f"    {idx:2d}. {uf.direction:7s} [${uf.bottom:,.2f} - ${uf.top:,.2f}] | Gap: ${uf.width:,.2f} ({uf.gap_pct:.3f}%) | Formed: {uf.formed_time_ist}")
             if len(unmitigated_fvgs) > 5:
                 print(f"    ... and {len(unmitigated_fvgs) - 5} more")
 
@@ -152,7 +154,8 @@ async def inspect_symbol_live(
                 )
                 side = "LONG" if setup.direction == "Bullish" else "SHORT"
                 print(f"\n  🚀 #1 EXTREME TRADE SETUP GENERATED ({side}):")
-                print(f"     • Target LTF FVG:     [${best_ltf.bottom:,.2f} - ${best_ltf.top:,.2f}] (Formed: {best_ltf.formed_time_ist})")
+                print(f"     • Target LTF FVG:     [${best_ltf.bottom:,.2f} - ${best_ltf.top:,.2f}] (Gap: ${best_ltf.width:,.2f} / {best_ltf.gap_pct:.3f}%)")
+                print(f"     • Formed At:          {best_ltf.formed_time_ist}")
                 print(f"     • Entry Price Point:  ${setup.entry_price:,.2f} (Outer Boundary)")
                 print(f"     • Stop Loss (SL):     ${setup.stop_loss:,.2f} (Exact 3-candle wick extreme)")
                 print(f"     • Risk ($R$):          ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)")
@@ -172,6 +175,7 @@ async def main():
     parser.add_argument("symbol", nargs="?", default="PAXG", help="Crypto symbol to scan (e.g. BTC, ETH, SOL, PAXG)")
     parser.add_argument("--ltf", default="15m", choices=["1m", "5m", "15m", "1h"], help="LTF timeframe for touch refinement")
     parser.add_argument("--invalidation", default="wick", choices=["wick", "close"], help="Invalidation mode: wick or close (default: wick)")
+    parser.add_argument("--min-gap-pct", type=float, default=0.05, help="Minimum LTF FVG gap size in %% (default: 0.05%%)")
     parser.add_argument("--all", action="store_true", help="Scan entire top crypto universe")
     args = parser.parse_args()
 
@@ -179,7 +183,12 @@ async def main():
     symbols = DEFAULT_UNIVERSE if args.all else [args.symbol.upper()]
 
     for sym in symbols:
-        await inspect_symbol_live(sym, ltf_timeframe=args.ltf, use_close_invalidation=use_close)
+        await inspect_symbol_live(
+            sym,
+            ltf_timeframe=args.ltf,
+            use_close_invalidation=use_close,
+            min_gap_pct=args.min_gap_pct,
+        )
 
     print("\n" + "=" * 80)
     print("  ✅ Live scan complete!")

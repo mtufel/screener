@@ -81,6 +81,12 @@ class FVG:
         return (self.top + self.bottom) / 2.0
 
     @property
+    def gap_pct(self) -> float:
+        """Gap width as a percentage of midpoint price."""
+        mid = self.midpoint
+        return (self.width / mid) * 100.0 if mid > 0 else 0.0
+
+    @property
     def close_timestamp(self) -> int:
         """Timestamp (ms) when candle 3 closed (when FVG fully completed)."""
         duration_ms = TIMEFRAME_MS.get(self.timeframe, HTF_CANDLE_DURATION_MS)
@@ -755,11 +761,13 @@ def find_unmitigated_ltf_fvgs(
     current_price: float = 0.0,
     current_time_ms: Optional[int] = None,
     ltf_timeframe: str = "15m",
+    min_gap_pct: float = 0.05,
 ) -> List[FVG]:
     """
     Scans candles_ltf for FVGs matching direction that formed strictly AFTER after_timestamp,
     and filters for 'Not Traded Yet' (unmitigated):
     From the moment the LTF FVG formed until the current bar, price has never entered between [bottom, top].
+    Optionally enforces min_gap_pct to ignore microscopic spread noise.
     """
     duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
     now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
@@ -806,6 +814,10 @@ def find_unmitigated_ltf_fvgs(
             )
 
         if cand is None:
+            continue
+
+        # Check minimum gap size filter
+        if min_gap_pct > 0 and cand.gap_pct < min_gap_pct:
             continue
 
         # Check 'Not Traded Yet' (zero intermediate touches from c3 close to now)
@@ -908,11 +920,12 @@ async def get_extreme_setup_for_symbol(
     ltf_timeframe: str = "15m",
     client: Optional[HyperliquidClient] = None,
     use_close_invalidation: bool = False,
+    min_gap_pct: float = 0.0,
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:
     1. Finds the most recent touched 4H FVG anchor.
-    2. Scans for unmitigated LTF FVGs formed post-touch.
+    2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter).
     3. Selects the #1 Extreme FVG (lowest for Bullish, highest for Bearish).
     4. Computes Entry, SL, and 1R/2R/3R targets.
     """
@@ -939,6 +952,7 @@ async def get_extreme_setup_for_symbol(
         direction=anchor.fvg.direction,
         current_price=current_price,
         ltf_timeframe=ltf_timeframe,
+        min_gap_pct=min_gap_pct,
     )
     if not unmitigated:
         return None
