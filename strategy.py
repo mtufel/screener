@@ -454,7 +454,7 @@ def is_4h_fvg_retraced_after_creation(
 ) -> bool:
     """
     Verifies that price has actually RETRACED / TAPPED into the 4H FVG
-    STRICTLY AFTER the FVG was formed (on candles subsequent to c3, or live price).
+    STRICTLY AFTER the FVG was formed (on candles strictly after c3, or live price).
     
     If price has never pulled back / retraced into the 4H FVG after creation,
     this FVG remains untested and cannot trigger LTF trade setups.
@@ -494,14 +494,12 @@ def get_4h_fvg_touch_timestamp(
 ) -> Optional[int]:
     """
     Returns the exact timestamp (ms) of the true FIRST candle (or live price event) that tapped
-    into the 4H FVG zone strictly after the FVG was formed.
-    If candles_ltf is provided, returns the exact minute/candle timestamp of the breach.
+    into the 4H FVG zone strictly after the FVG was formed (after c3 closed).
+    The candle that formed the FVG (c3) can NEVER count as its own touch!
     """
-    fvg_creation_ts = fvg.formed_at
-
-    # 1. If LTF candles are provided, find the exact first LTF candle that entered the zone
+    # 1. If LTF candles are provided, find the exact first LTF candle strictly after FVG closed
     if candles_ltf:
-        subsequent_ltf = [c for c in candles_ltf if c.timestamp >= fvg_creation_ts]
+        subsequent_ltf = [c for c in candles_ltf if c.timestamp >= fvg.close_timestamp]
         for c in subsequent_ltf:
             if fvg.direction == "Bullish":
                 if c.low <= fvg.top and c.high >= fvg.bottom:
@@ -510,11 +508,12 @@ def get_4h_fvg_touch_timestamp(
                 if c.high >= fvg.bottom and c.low <= fvg.top:
                     return c.timestamp
 
-    # 2. Otherwise scan 4H candles formed strictly after creation
-    subsequent_candles = [c for c in candles_4h if c.timestamp >= fvg_creation_ts]
+    # 2. Scan 4H candles formed strictly after creation (c.timestamp > c3.timestamp)
+    fvg_creation_ts = fvg.formed_at
+    subsequent_candles = [c for c in candles_4h if c.timestamp > fvg_creation_ts]
     if not subsequent_candles:
         if price_in_fvg(current_price, fvg):
-            return fvg.formed_at
+            return fvg.close_timestamp
         return None
 
     # Scan chronologically forward from formation to find the earliest touch
@@ -591,7 +590,7 @@ async def phase1_filter(
             fvgs_to_check = [active_fvgs[0]] if htf_mode == "MOST_RECENT" else active_fvgs
 
             for htf_fvg in fvgs_to_check:
-                f_dt = datetime.fromtimestamp(htf_fvg.formed_at / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+                f_dt = datetime.fromtimestamp(htf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
                 touch_ts = get_4h_fvg_touch_timestamp(candles_4h, htf_fvg, current_price=current_price, max_candles_since_test=max_htf_retrace_candles)
                 if touch_ts is not None:
                     t_dt = datetime.fromtimestamp(touch_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
@@ -641,13 +640,13 @@ async def phase2_check(
         if len(candles_ltf) < 3:
             return None
 
-        # Refine touch timestamp to exact LTF candle entry if available
+        # Refine touch timestamp to exact LTF candle entry strictly after FVG close
         effective_touch_ts = phase1_coin.htf_touch_ts
         if effective_touch_ts is not None and candles_ltf:
-            c_start = effective_touch_ts
-            c_end = c_start + (4 * 3600 * 1000)
+            c_start = max(effective_touch_ts, phase1_coin.htf_fvg.close_timestamp)
+            c_end = effective_touch_ts + (4 * 3600 * 1000)
             for ltf_c in candles_ltf:
-                if c_start <= ltf_c.timestamp < c_end:
+                if c_start <= ltf_c.timestamp <= c_end:
                     if direction == "Bullish":
                         if ltf_c.low <= phase1_coin.htf_fvg.top and ltf_c.high >= phase1_coin.htf_fvg.bottom:
                             effective_touch_ts = ltf_c.timestamp
