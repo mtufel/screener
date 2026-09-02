@@ -718,6 +718,127 @@ async def backtest_endpoint(
     return JSONResponse(content={"status": "success", "data": summary.to_dict()})
 
 
+# ==============================================================================
+# EXTREME LTF STRATEGY ENDPOINTS (STEP 5)
+# ==============================================================================
+@app.get("/api/extreme/scan", summary="Scan for Extreme LTF FVG Setups")
+async def api_extreme_scan(
+    symbols: Optional[str] = Query(default=None, description="Comma-separated symbols or leave empty for whitelist"),
+    ltf: str = Query(default="15m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
+    invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
+    min_gap_pct: float = Query(default=0.05, ge=0.0, description="Minimum LTF FVG gap size %"),
+    target: str = Query(default="2R", pattern="^(1R|2R|3R)$", description="Completion target"),
+):
+    from strategy_extreme_fvg import get_extreme_setup_for_symbol
+    from hyperliquid_client import SYMBOL_ALIASES
+
+    whitelist_raw = symbols or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL,PAXG")
+    coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
+    use_close = (invalidation == "close")
+
+    setups_out = []
+    mids = await hyperliquid_client.get_all_mids()
+
+    for sym in coin_list:
+        try:
+            raw_sym = SYMBOL_ALIASES.get(sym, sym)
+            setup = await get_extreme_setup_for_symbol(
+                symbol=raw_sym,
+                ltf_timeframe=ltf,
+                use_close_invalidation=use_close,
+                min_gap_pct=min_gap_pct,
+                completion_target=target,
+            )
+            if setup:
+                curr_px = float(mids.get(raw_sym, setup.entry_price))
+                dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
+                setups_out.append({
+                    "symbol": sym,
+                    "direction": setup.direction,
+                    "state": setup.state,
+                    "entry_price": setup.entry_price,
+                    "current_price": curr_px,
+                    "dist_pct": round(dist_pct, 2),
+                    "stop_loss": setup.stop_loss,
+                    "risk_r": round(setup.risk_r, 4),
+                    "risk_pct": round(setup.risk_pct, 2),
+                    "tp_1r": round(setup.tp_1r, 4),
+                    "tp_2r": round(setup.tp_2r, 4),
+                    "tp_3r": round(setup.tp_3r, 4),
+                    "floating_r": round(setup.floating_r, 2),
+                    "entry_time_ist": setup.entry_time_ist,
+                    "completion_target": setup.completion_target,
+                    "ltf_timeframe": setup.ltf_timeframe,
+                    "anchor": {
+                        "direction": setup.anchor.fvg.direction,
+                        "bottom": setup.anchor.fvg.bottom,
+                        "top": setup.anchor.fvg.top,
+                        "formed_time_ist": setup.anchor.fvg.formed_time_ist,
+                        "first_touch_time_ist": setup.anchor.first_touch_time_ist,
+                        "most_recent_touch_time_ist": setup.anchor.most_recent_touch_time_ist,
+                    },
+                    "target_fvg": {
+                        "direction": setup.ltf_fvg.direction,
+                        "bottom": setup.ltf_fvg.bottom,
+                        "top": setup.ltf_fvg.top,
+                        "width": setup.ltf_fvg.width,
+                        "gap_pct": round(setup.ltf_fvg.gap_pct, 3),
+                        "formed_time_ist": setup.ltf_fvg.formed_time_ist,
+                    },
+                    "unmitigated_count": len(setup.all_unmitigated_fvgs),
+                })
+        except Exception as exc:
+            logger.warning("Failed to get extreme setup for %s: %s", sym, exc)
+
+    return JSONResponse(content={"status": "success", "count": len(setups_out), "setups": setups_out})
+
+
+@app.get("/api/extreme/backtest", summary="Run Historical Backtest on Extreme Strategy")
+async def api_extreme_backtest(
+    symbol: str = Query(default="BTC", description="Coin symbol"),
+    days: int = Query(default=14, ge=1, le=90, description="Lookback days"),
+    ltf: str = Query(default="15m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
+    invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
+    min_gap_pct: float = Query(default=0.05, ge=0.0, description="Min gap size %"),
+):
+    from backtest_extreme_fvg import run_extreme_backtest
+
+    use_close = (invalidation == "close")
+    report = await run_extreme_backtest(
+        symbol=symbol.strip().upper(),
+        days=days,
+        ltf_timeframe=ltf,
+        use_close_invalidation=use_close,
+        min_gap_pct=min_gap_pct,
+    )
+    return JSONResponse(content={
+        "status": "success",
+        "symbol": report.symbol,
+        "days": report.days,
+        "ltf_timeframe": report.ltf_timeframe,
+        "invalidation_mode": report.invalidation_mode,
+        "min_gap_pct": report.min_gap_pct,
+        "total_trades": report.total_trades,
+        "wins_1r": report.wins_1r,
+        "wins_2r": report.wins_2r,
+        "wins_3r": report.wins_3r,
+        "losses": report.losses,
+        "win_rate_1r": round(report.win_rate_1r, 1),
+        "win_rate_2r": round(report.win_rate_2r, 1),
+        "win_rate_3r": round(report.win_rate_3r, 1),
+        "net_pnl_1r": round(report.net_pnl_1r, 1),
+        "net_pnl_2r": round(report.net_pnl_2r, 1),
+        "net_pnl_3r": round(report.net_pnl_3r, 1),
+        "profit_factor_1r": round(report.profit_factor_1r, 2) if report.profit_factor_1r != float("inf") else 999.0,
+        "profit_factor_2r": round(report.profit_factor_2r, 2) if report.profit_factor_2r != float("inf") else 999.0,
+        "profit_factor_3r": round(report.profit_factor_3r, 2) if report.profit_factor_3r != float("inf") else 999.0,
+        "max_drawdown_r": round(report.max_drawdown_r, 1),
+        "avg_trade_duration_min": round(report.avg_trade_duration_min, 1),
+        "avg_mfe_r": round(report.avg_mfe_r, 2),
+        "trades": [t.to_dict() for t in report.trades],
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
