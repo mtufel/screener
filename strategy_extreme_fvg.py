@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import os
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from dotenv import load_dotenv
 from hyperliquid_client import HyperliquidClient, hyperliquid_client
@@ -461,3 +461,154 @@ async def get_active_4h_fvgs_for_symbol(
         use_close_invalidation=use_close_invalidation,
         enforce_closed_filter=True,
     )
+
+
+# ==============================================================================
+# STEP 2: 4H TOUCH DETECTION & MOST RECENT TOUCHED ANCHOR
+# ==============================================================================
+@dataclass
+class TouchedAnchor:
+    """Represents a 4H FVG that has been touched post-close and acts as the single active anchor."""
+    fvg: FVG
+    touch_timestamp: int
+    touch_timeframe: str = "4h"
+
+    @property
+    def touch_time_ist(self) -> str:
+        """Formatted touch time in IST with candle interval."""
+        duration_ms = TIMEFRAME_MS.get(self.touch_timeframe, HTF_CANDLE_DURATION_MS)
+        t_open = datetime.fromtimestamp(self.touch_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p")
+        t_close = datetime.fromtimestamp((self.touch_timestamp + duration_ms) / 1000.0, tz=IST).strftime("%I:%M %p IST")
+        return f"{t_open} - {t_close}"
+
+
+def get_4h_fvg_first_touch_ts(
+    candles_4h: List[Candle],
+    fvg: FVG,
+    current_price: float = 0.0,
+    candles_ltf: Optional[List[Candle]] = None,
+    ltf_timeframe: str = "15m",
+) -> Optional[Tuple[int, str]]:
+    """
+    Returns (touch_timestamp, timeframe) of the true FIRST touch into the 4H FVG zone
+    strictly after the FVG was formed (after c3 closed).
+    The candle that formed the FVG (c3) can NEVER count as its own touch!
+    """
+    fvg_close_ts = fvg.close_timestamp
+
+    # 1. If LTF candles are provided, scan for the earliest LTF candle strictly at or after 4H FVG close
+    if candles_ltf:
+        subsequent_ltf = [c for c in candles_ltf if c.timestamp >= fvg_close_ts]
+        for c in subsequent_ltf:
+            if fvg.direction == "Bullish":
+                if c.low <= fvg.top and c.high >= fvg.bottom:
+                    return (c.timestamp, ltf_timeframe)
+            else:
+                if c.high >= fvg.bottom and c.low <= fvg.top:
+                    return (c.timestamp, ltf_timeframe)
+
+    # 2. Otherwise scan 4H candles formed strictly after creation (c4 onwards, c.timestamp > c3.timestamp)
+    subsequent_4h = [c for c in candles_4h if c.timestamp > fvg.formed_at]
+    first_touch_ts = None
+    for c in subsequent_4h:
+        if fvg.direction == "Bullish":
+            if c.low <= fvg.top and c.high >= fvg.bottom:
+                first_touch_ts = c.timestamp
+                break
+        else:
+            if c.high >= fvg.bottom and c.low <= fvg.top:
+                first_touch_ts = c.timestamp
+                break
+
+    if first_touch_ts is not None:
+        return (first_touch_ts, "4h")
+
+    # 3. If live price is currently inside the 4H FVG zone post-close
+    if current_price > 0 and fvg.bottom <= current_price <= fvg.top:
+        now_ms = int(time.time() * 1000)
+        if now_ms >= fvg_close_ts:
+            return (now_ms, "live")
+
+    return None
+
+
+def get_most_recent_touched_4h_fvg(
+    candles_4h: List[Candle],
+    active_fvgs: List[FVG],
+    current_price: float = 0.0,
+    candles_ltf: Optional[List[Candle]] = None,
+    ltf_timeframe: str = "15m",
+) -> Optional[TouchedAnchor]:
+    """
+    Evaluates all active, non-invalidated 4H FVGs and identifies the SINGLE
+    most recent touched 4H FVG.
+    If multiple 4H FVGs have been touched, selects the one with the latest touch timestamp.
+    Returns None if no 4H FVG has been touched.
+    """
+    touched_anchors: List[TouchedAnchor] = []
+
+    for fvg in active_fvgs:
+        touch_info = get_4h_fvg_first_touch_ts(
+            candles_4h=candles_4h,
+            fvg=fvg,
+            current_price=current_price,
+            candles_ltf=candles_ltf,
+            ltf_timeframe=ltf_timeframe,
+        )
+        if touch_info is not None:
+            ts, tf = touch_info
+            touched_anchors.append(
+                TouchedAnchor(
+                    fvg=fvg,
+                    touch_timestamp=ts,
+                    touch_timeframe=tf,
+                )
+            )
+
+    if not touched_anchors:
+        return None
+
+    # Sort by touch_timestamp descending (most recent touch first)
+    touched_anchors.sort(key=lambda a: a.touch_timestamp, reverse=True)
+    return touched_anchors[0]
+
+
+async def get_most_recent_touched_anchor_for_symbol(
+    symbol: str,
+    ltf_timeframe: str = "15m",
+    client: Optional[HyperliquidClient] = None,
+    use_close_invalidation: bool = False,
+) -> Optional[TouchedAnchor]:
+    """
+    Fetches live 4H and LTF candles for symbol and returns the single
+    most recent touched 4H FVG anchor.
+    """
+    cli = client or hyperliquid_client
+    raw_4h = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
+    if not raw_4h:
+        return None
+
+    candles_4h = [Candle.from_dict(c) for c in raw_4h]
+    current_price = candles_4h[-1].close if candles_4h else 0.0
+
+    # Get active non-invalidated 4H FVGs via cache
+    active_fvgs = await get_active_4h_fvgs_for_symbol(
+        symbol=symbol,
+        client=cli,
+        use_close_invalidation=use_close_invalidation,
+    )
+    if not active_fvgs:
+        return None
+
+    # Fetch LTF candles to pinpoint exact touch timestamp
+    raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
+    candles_ltf = [Candle.from_dict(c) for c in raw_ltf] if raw_ltf else None
+
+    return get_most_recent_touched_4h_fvg(
+        candles_4h=candles_4h,
+        active_fvgs=active_fvgs,
+        current_price=current_price,
+        candles_ltf=candles_ltf,
+        ltf_timeframe=ltf_timeframe,
+    )
+

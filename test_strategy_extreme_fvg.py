@@ -12,8 +12,11 @@ from strategy_extreme_fvg import (
     Candle,
     FVG,
     HTFFVGCache,
+    TouchedAnchor,
     compute_all_active_4h_fvgs,
     filter_closed_candles,
+    get_4h_fvg_first_touch_ts,
+    get_most_recent_touched_4h_fvg,
     HTF_CANDLE_DURATION_MS,
 )
 
@@ -263,3 +266,111 @@ def test_htf_fvg_cache_ignores_unfinished_candle_in_delta():
     # c4 was open, so it should not be processed for new FVG formation
     assert cache.last_processed_candle_ts["AVAX"] == 2 * H4
     assert len(updated) == 0
+
+
+# ==============================================================================
+# 5. Step 2: Touch Detection & Most Recent Touched Anchor Tests
+# ==============================================================================
+def test_4h_touch_strictly_post_close():
+    # Bullish FVG [110 - 115] formed by c1, c2, c3
+    c1 = make_candle(0, 100, 110, 95, 105)
+    c2 = make_candle(H4, 105, 130, 104, 128)
+    # c3 reaches low of 112 during formation, but c3 CANNOT touch its own FVG!
+    c3 = make_candle(2 * H4, 128, 135, 112, 132)
+
+    fvg = FVG("Bullish", 115, 110, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
+
+    # With only c1, c2, c3, touch must be None
+    touch = get_4h_fvg_first_touch_ts([c1, c2, c3], fvg, current_price=132.0)
+    assert touch is None
+
+    # When c4 (strictly post-close) dips into [110, 115] with low=113
+    c4 = make_candle(3 * H4, 132, 133, 113, 125)
+    touch_c4 = get_4h_fvg_first_touch_ts([c1, c2, c3, c4], fvg, current_price=125.0)
+    assert touch_c4 is not None
+    ts, tf = touch_c4
+    assert ts == 3 * H4
+    assert tf == "4h"
+
+
+def test_most_recent_touched_fvg_selection():
+    # Create two Bullish 4H FVGs:
+    # FVG A formed earlier, touched at 3 * H4
+    c1_a = make_candle(0, 100, 110, 95, 105)
+    c2_a = make_candle(H4, 105, 130, 104, 128)
+    c3_a = make_candle(2 * H4, 128, 135, 115, 132)
+    fvg_a = FVG("Bullish", 115, 110, c1_a, c2_a, c3_a, formed_at=2 * H4, timeframe="4h")
+
+    # FVG B formed later, touched at 5 * H4
+    c1_b = make_candle(3 * H4, 130, 140, 125, 138)
+    c2_b = make_candle(4 * H4, 138, 160, 136, 158)
+    c3_b = make_candle(5 * H4, 158, 165, 145, 162)
+    fvg_b = FVG("Bullish", 145, 140, c1_b, c2_b, c3_b, formed_at=5 * H4, timeframe="4h")
+
+    # Subsequent candles:
+    # c4 dips into FVG A [110 - 115] at 3 * H4
+    c4 = make_candle(3 * H4, 132, 133, 112, 128)
+    # c6 dips into FVG B [140 - 145] at 6 * H4
+    c6 = make_candle(6 * H4, 162, 163, 142, 155)
+
+    all_candles = [c1_a, c2_a, c3_a, c4, c1_b, c2_b, c3_b, c6]
+
+    # get_most_recent_touched_4h_fvg must select FVG B because its touch (6 * H4) is newer than A's touch (3 * H4)
+    anchor = get_most_recent_touched_4h_fvg(
+        candles_4h=all_candles,
+        active_fvgs=[fvg_a, fvg_b],
+        current_price=155.0,
+    )
+
+    assert anchor is not None
+    assert anchor.fvg.bottom == 140.0
+    assert anchor.fvg.top == 145.0
+    assert anchor.touch_timestamp == 6 * H4
+
+
+def test_untouched_fvgs_return_none():
+    c1 = make_candle(0, 100, 110, 95, 105)
+    c2 = make_candle(H4, 105, 130, 104, 128)
+    c3 = make_candle(2 * H4, 128, 135, 115, 132)
+    fvg = FVG("Bullish", 115, 110, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
+
+    # c4 stays high (120 - 130), never enters [110 - 115]
+    c4 = make_candle(3 * H4, 132, 134, 120, 130)
+
+    anchor = get_most_recent_touched_4h_fvg(
+        candles_4h=[c1, c2, c3, c4],
+        active_fvgs=[fvg],
+        current_price=130.0,
+    )
+    assert anchor is None
+
+
+def test_exact_ltf_touch_refinement():
+    # 4H FVG formed at 2 * H4, closed at 3 * H4
+    c1 = make_candle(0, 100, 110, 95, 105)
+    c2 = make_candle(H4, 105, 130, 104, 128)
+    c3 = make_candle(2 * H4, 128, 135, 115, 132)
+    fvg = FVG("Bullish", 115, 110, c1, c2, c3, formed_at=2 * H4, timeframe="4h")
+
+    # 4H candle c4 starts at 3 * H4
+    c4_4h = make_candle(3 * H4, 132, 133, 112, 125)
+
+    # 15m candles during c4:
+    # Bar 1 (3 * H4): High=133, Low=128 (no touch)
+    ltf_1 = make_candle(3 * H4, 132, 133, 128, 130)
+    # Bar 2 (3 * H4 + 15m): Dips to 112 (EXACT TOUCH!)
+    m15 = 15 * 60 * 1000
+    ltf_2 = make_candle(3 * H4 + m15, 130, 131, 112, 118)
+
+    anchor = get_most_recent_touched_4h_fvg(
+        candles_4h=[c1, c2, c3, c4_4h],
+        active_fvgs=[fvg],
+        current_price=118.0,
+        candles_ltf=[ltf_1, ltf_2],
+        ltf_timeframe="15m",
+    )
+
+    assert anchor is not None
+    assert anchor.touch_timestamp == 3 * H4 + m15  # Exactly Bar 2!
+    assert anchor.touch_timeframe == "15m"
+
