@@ -742,14 +742,26 @@
           </div>
         </div>
 
-        <div class="flex items-center space-x-2">
+        <div class="flex items-center space-x-3">
+          <div class="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-dark-900 border border-dark-700 text-xs font-mono">
+            <span id="extremeDaemonIndicator" class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span id="extremeDaemonText" class="text-slate-300">Daemon Active (30s)</span>
+            <button
+              onclick="toggleExtremeDaemon()"
+              id="btnToggleDaemon"
+              class="px-2 py-0.5 rounded bg-dark-700 hover:bg-dark-600 text-slate-300 text-[10px] ml-1 transition-all"
+            >
+              Pause
+            </button>
+          </div>
+
           <button
             onclick="loadExtremeSetups()"
             id="btnScanExtreme"
             class="px-4 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white shadow-lg shadow-amber-500/20 active:scale-95 transition-all flex items-center space-x-2"
           >
             <i class="fa-solid fa-bolt"></i>
-            <span>Scan Extreme Setups</span>
+            <span>Scan Now</span>
           </button>
           <button
             onclick="runExtremeBacktest()"
@@ -757,7 +769,7 @@
             class="px-4 py-2 rounded-xl text-xs font-semibold bg-dark-700 hover:bg-dark-600 text-slate-200 border border-dark-600 active:scale-95 transition-all flex items-center space-x-2"
           >
             <i class="fa-solid fa-chart-line text-indigo-400"></i>
-            <span>Quick Backtest</span>
+            <span>Backtest</span>
           </button>
         </div>
       </div>
@@ -910,6 +922,129 @@
       }
     }
 
+    function renderExtremeSetups(setups) {
+      const container = document.getElementById('extremeSetupsContainer');
+      if (!setups || setups.length === 0) {
+        container.innerHTML = `<div class="col-span-2 p-8 rounded-2xl bg-dark-800/60 border border-dark-700 text-center text-slate-400 text-xs">⏳ No active or pending Extreme setups found at this moment (Waiting for 4H touch / LTF formation).</div>`;
+        return;
+      }
+
+      let html = '';
+      setups.forEach(s => {
+        const isBullish = s.direction === 'Bullish';
+        const isActive = s.state === 'TRADE_ACTIVE';
+        const badgeColor = isActive ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border-amber-500/30';
+        const badgeText = isActive ? `🚀 ACTIVE (${s.floating_r > 0 ? '+' : ''}${s.floating_r}R)` : `⏳ PENDING RETRACE (${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%)`;
+        const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
+        const dirBg = isBullish ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20';
+
+        html += `
+          <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700 shadow-xl space-y-4 hover:border-dark-600 transition-all">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2.5">
+                <span class="text-base font-extrabold text-white font-mono">${s.symbol}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${dirBg} ${dirColor} border">${s.direction}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${badgeColor}">${badgeText}</span>
+              </div>
+              <div class="text-xs font-mono text-slate-300">
+                Live: <strong class="text-white">$${formatNumber(s.current_price)}</strong>
+              </div>
+            </div>
+
+            <!-- Setup Details Grid -->
+            <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-dark-900/70 p-3 rounded-xl border border-dark-700/60">
+              <div>
+                <span class="text-slate-400 text-[10px] block">4H ANCHOR ZONE</span>
+                <span class="text-slate-200 font-semibold">$${formatNumber(s.anchor.bottom)} - $${formatNumber(s.anchor.top)}</span>
+                <span class="text-[10px] text-slate-500 block">First Touch: ${s.anchor.first_touch_time_ist || '--'}</span>
+              </div>
+              <div>
+                <span class="text-slate-400 text-[10px] block">TARGET ${s.ltf_timeframe} FVG</span>
+                <span class="text-slate-200 font-semibold">$${formatNumber(s.target_fvg.bottom)} - $${formatNumber(s.target_fvg.top)}</span>
+                <span class="text-[10px] text-slate-500 block">Gap: ${s.target_fvg.gap_pct}% ($${formatNumber(s.target_fvg.width)})</span>
+              </div>
+            </div>
+
+            <!-- Trade Execution Parameters -->
+            <div class="grid grid-cols-4 gap-2 text-xs font-mono text-center">
+              <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
+                <span class="text-[10px] text-slate-400 block">ENTRY (OUTER)</span>
+                <span class="text-white font-bold">$${formatNumber(s.entry_price)}</span>
+              </div>
+              <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
+                <span class="text-[10px] text-rose-400 block">STOP LOSS</span>
+                <span class="text-rose-300 font-bold">$${formatNumber(s.stop_loss)}</span>
+              </div>
+              <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
+                <span class="text-[10px] text-indigo-400 block">TARGET 1R</span>
+                <span class="text-indigo-300 font-bold">$${formatNumber(s.tp_1r)}</span>
+              </div>
+              <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50 border-amber-500/30 bg-amber-500/5">
+                <span class="text-[10px] text-amber-400 block">PRIMARY (2R)</span>
+                <span class="text-amber-300 font-bold">$${formatNumber(s.tp_2r)}</span>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+    }
+
+    async function toggleExtremeDaemon() {
+      const btn = document.getElementById('btnToggleDaemon');
+      btn.disabled = true;
+      try {
+        const resp = await fetch('/api/extreme/toggle-daemon', { method: 'POST' });
+        const data = await resp.json();
+        showToast(data.message, data.is_running ? 'success' : 'info');
+        updateExtremeDaemonUI(data.is_running);
+      } catch (err) {
+        showToast('Failed to toggle daemon', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function updateExtremeDaemonUI(isRunning) {
+      const ind = document.getElementById('extremeDaemonIndicator');
+      const txt = document.getElementById('extremeDaemonText');
+      const btn = document.getElementById('btnToggleDaemon');
+      if (!ind || !txt || !btn) return;
+      if (isRunning) {
+        ind.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
+        txt.innerText = 'Daemon Active (30s)';
+        btn.innerText = 'Pause';
+      } else {
+        ind.className = 'h-2 w-2 rounded-full bg-rose-400';
+        txt.innerText = 'Daemon Paused';
+        btn.innerText = 'Resume';
+      }
+    }
+
+    async function pollExtremeStatus() {
+      const extView = document.getElementById('extremeView');
+      if (!extView || extView.classList.contains('hidden')) return;
+
+      try {
+        const resp = await fetch('/api/extreme/status');
+        const data = await resp.json();
+        updateExtremeDaemonUI(data.is_running);
+
+        if (data.last_scan_time_ist) {
+          const timeEl = document.getElementById('extremeScanTime');
+          if (timeEl) timeEl.innerText = `Daemon scan: ${data.last_scan_time_ist} (Cycle #${data.total_cycles})`;
+        }
+
+        if (data.setups && data.setups.length > 0) {
+          renderExtremeSetups(data.setups);
+        }
+      } catch (err) {
+        console.debug('Error polling extreme status:', err);
+      }
+    }
+    setInterval(pollExtremeStatus, 10000);
+
     async function loadExtremeSetups() {
       const btn = document.getElementById('btnScanExtreme');
       const container = document.getElementById('extremeSetupsContainer');
@@ -930,80 +1065,14 @@
         const data = await resp.json();
 
         timeEl.innerText = `Scanned at ${new Date().toLocaleTimeString('en-US', { hour12: true })} IST`;
-
-        if (!data.setups || data.setups.length === 0) {
-          container.innerHTML = `<div class="col-span-2 p-8 rounded-2xl bg-dark-800/60 border border-dark-700 text-center text-slate-400 text-xs">⏳ No active or pending Extreme setups found across ${symbols} (Waiting for 4H touch / LTF formation).</div>`;
-          showToast('Scan complete: No active setups at this moment', 'info');
-          return;
-        }
-
-        let html = '';
-        data.setups.forEach(s => {
-          const isBullish = s.direction === 'Bullish';
-          const isActive = s.state === 'TRADE_ACTIVE';
-          const badgeColor = isActive ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border-amber-500/30';
-          const badgeText = isActive ? `🚀 ACTIVE (${s.floating_r > 0 ? '+' : ''}${s.floating_r}R)` : `⏳ PENDING RETRACE (${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%)`;
-          const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
-          const dirBg = isBullish ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20';
-
-          html += `
-            <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700 shadow-xl space-y-4 hover:border-dark-600 transition-all">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-2.5">
-                  <span class="text-base font-extrabold text-white font-mono">${s.symbol}</span>
-                  <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${dirBg} ${dirColor} border">${s.direction}</span>
-                  <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${badgeColor}">${badgeText}</span>
-                </div>
-                <div class="text-xs font-mono text-slate-300">
-                  Live: <strong class="text-white">$${formatNumber(s.current_price)}</strong>
-                </div>
-              </div>
-
-              <!-- Setup Details Grid -->
-              <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-dark-900/70 p-3 rounded-xl border border-dark-700/60">
-                <div>
-                  <span class="text-slate-400 text-[10px] block">4H ANCHOR ZONE</span>
-                  <span class="text-slate-200 font-semibold">$${formatNumber(s.anchor.bottom)} - $${formatNumber(s.anchor.top)}</span>
-                  <span class="text-[10px] text-slate-500 block">First Touch: ${s.anchor.first_touch_time_ist || '--'}</span>
-                </div>
-                <div>
-                  <span class="text-slate-400 text-[10px] block">TARGET ${s.ltf_timeframe} FVG</span>
-                  <span class="text-slate-200 font-semibold">$${formatNumber(s.target_fvg.bottom)} - $${formatNumber(s.target_fvg.top)}</span>
-                  <span class="text-[10px] text-slate-500 block">Gap: ${s.target_fvg.gap_pct}% ($${formatNumber(s.target_fvg.width)})</span>
-                </div>
-              </div>
-
-              <!-- Trade Execution Parameters -->
-              <div class="grid grid-cols-4 gap-2 text-xs font-mono text-center">
-                <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
-                  <span class="text-[10px] text-slate-400 block">ENTRY (OUTER)</span>
-                  <span class="text-white font-bold">$${formatNumber(s.entry_price)}</span>
-                </div>
-                <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
-                  <span class="text-[10px] text-rose-400 block">STOP LOSS</span>
-                  <span class="text-rose-300 font-bold">$${formatNumber(s.stop_loss)}</span>
-                </div>
-                <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
-                  <span class="text-[10px] text-indigo-400 block">TARGET 1R</span>
-                  <span class="text-indigo-300 font-bold">$${formatNumber(s.tp_1r)}</span>
-                </div>
-                <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50 border-amber-500/30 bg-amber-500/5">
-                  <span class="text-[10px] text-amber-400 block">PRIMARY (2R)</span>
-                  <span class="text-amber-300 font-bold">$${formatNumber(s.tp_2r)}</span>
-                </div>
-              </div>
-            </div>
-          `;
-        });
-
-        container.innerHTML = html;
-        showToast(`Found ${data.setups.length} Extreme setup(s)!`, 'success');
+        renderExtremeSetups(data.setups);
+        showToast(`Found ${data.setups ? data.setups.length : 0} Extreme setup(s)!`, 'success');
       } catch (err) {
         container.innerHTML = `<div class="col-span-2 p-6 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center text-rose-400 text-xs">Error scanning setups: ${err.message}</div>`;
         showToast('Error during extreme scan', 'error');
       } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-bolt"></i><span>Scan Extreme Setups</span>';
+        btn.innerHTML = '<i class="fa-solid fa-bolt"></i><span>Scan Now</span>';
       }
     }
 

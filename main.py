@@ -52,6 +52,12 @@ TOP_N_ALERTS = int(os.getenv("TOP_N_ALERTS", "5"))
 COINS_WHITELIST = os.getenv("COINS_WHITELIST", "BTC,ETH,WTIOIL,SILVER,GOLD,PAXG").strip()
 
 # Global state
+EXTREME_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTREME_SCAN_INTERVAL_SECONDS", "30"))
+EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "15m")
+EXTREME_COMPLETION_TARGET = os.getenv("EXTREME_COMPLETION_TARGET", "2R")
+EXTREME_MIN_GAP_PCT = float(os.getenv("EXTREME_MIN_GAP_PCT", "0.05"))
+EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").lower() == "true"
+
 state: Dict[str, Any] = {
     "is_running": False,
     "scan_interval_minutes": SCAN_INTERVAL_MINUTES,
@@ -73,6 +79,20 @@ state: Dict[str, Any] = {
     "total_scans_completed": 0,
     "background_task": None,
     "monitor_task": None,
+    # Extreme Strategy Daemon State
+    "extreme_is_running": True,
+    "extreme_interval_seconds": EXTREME_SCAN_INTERVAL_SECONDS,
+    "extreme_ltf": EXTREME_LTF_TIMEFRAME,
+    "extreme_target": EXTREME_COMPLETION_TARGET,
+    "extreme_min_gap": EXTREME_MIN_GAP_PCT,
+    "extreme_use_close": EXTREME_USE_CLOSE_INVALIDATION,
+    "extreme_last_scan_time_ist": None,
+    "extreme_setups": [],
+    "extreme_active_count": 0,
+    "extreme_pending_count": 0,
+    "extreme_total_cycles": 0,
+    "extreme_background_task": None,
+    "extreme_notified_states": {},
 }
 
 
@@ -218,25 +238,186 @@ async def screener_background_worker():
 
 
 # ==============================================================================
+# EXTREME LTF BACKGROUND SCREENER DAEMON (STEP 6)
+# ==============================================================================
+async def send_extreme_telegram_alert(message: str) -> bool:
+    """Dispatches HTML alert to configured Telegram chat."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+            return resp.status_code == 200
+    except Exception as exc:
+        logger.warning("Failed to dispatch Extreme Telegram alert: %s", exc)
+        return False
+
+
+async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
+    """Runs a single background scan across whitelisted coins for Extreme LTF setups."""
+    from strategy_extreme_fvg import get_extreme_setup_for_symbol
+    from hyperliquid_client import SYMBOL_ALIASES
+
+    start_time_ist = datetime.now(IST)
+    whitelist_raw = state.get("coins_whitelist", COINS_WHITELIST).strip()
+    coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
+    ltf = state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME)
+    target = state.get("extreme_target", EXTREME_COMPLETION_TARGET)
+    min_gap = state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT)
+    use_close = state.get("extreme_use_close", EXTREME_USE_CLOSE_INVALIDATION)
+
+    setups_out = []
+    mids = await hyperliquid_client.get_all_mids()
+
+    for sym in coin_list:
+        try:
+            raw_sym = SYMBOL_ALIASES.get(sym, sym)
+            setup = await get_extreme_setup_for_symbol(
+                symbol=raw_sym,
+                ltf_timeframe=ltf,
+                use_close_invalidation=use_close,
+                min_gap_pct=min_gap,
+                completion_target=target,
+            )
+            if setup:
+                curr_px = float(mids.get(raw_sym, setup.entry_price))
+                dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
+                setup_dict = {
+                    "symbol": sym,
+                    "direction": setup.direction,
+                    "state": setup.state,
+                    "entry_price": setup.entry_price,
+                    "current_price": curr_px,
+                    "dist_pct": round(dist_pct, 2),
+                    "stop_loss": setup.stop_loss,
+                    "risk_r": round(setup.risk_r, 4),
+                    "risk_pct": round(setup.risk_pct, 2),
+                    "tp_1r": round(setup.tp_1r, 4),
+                    "tp_2r": round(setup.tp_2r, 4),
+                    "tp_3r": round(setup.tp_3r, 4),
+                    "floating_r": round(setup.floating_r, 2),
+                    "entry_time_ist": setup.entry_time_ist,
+                    "completion_target": setup.completion_target,
+                    "ltf_timeframe": setup.ltf_timeframe,
+                    "anchor": {
+                        "direction": setup.anchor.fvg.direction,
+                        "bottom": setup.anchor.fvg.bottom,
+                        "top": setup.anchor.fvg.top,
+                        "formed_time_ist": setup.anchor.fvg.formed_time_ist,
+                        "first_touch_time_ist": setup.anchor.first_touch_time_ist,
+                        "most_recent_touch_time_ist": setup.anchor.most_recent_touch_time_ist,
+                    },
+                    "target_fvg": {
+                        "direction": setup.ltf_fvg.direction,
+                        "bottom": setup.ltf_fvg.bottom,
+                        "top": setup.ltf_fvg.top,
+                        "width": setup.ltf_fvg.width,
+                        "gap_pct": round(setup.ltf_fvg.gap_pct, 3),
+                        "formed_time_ist": setup.ltf_fvg.formed_time_ist,
+                    },
+                    "unmitigated_count": len(setup.all_unmitigated_fvgs),
+                }
+                setups_out.append(setup_dict)
+
+                # State Transition Alerts
+                fvg_key = f"{sym}:{setup.ltf_fvg.formed_at}:{setup.entry_price:.2f}"
+                last_notified = state["extreme_notified_states"].get(fvg_key)
+                curr_state = setup.state
+                side = "LONG" if setup.direction == "Bullish" else "SHORT"
+
+                if curr_state != last_notified:
+                    if curr_state == "PENDING_RETRACE" and last_notified is None:
+                        msg = (
+                            f"🔔 <b>[NEW SETUP] {sym} {side} ({ltf})</b>\n\n"
+                            f"• <b>4H Anchor:</b> {setup.anchor.fvg.direction} [${setup.anchor.fvg.bottom:,.2f} - ${setup.anchor.fvg.top:,.2f}]\n"
+                            f"• <b>Target FVG:</b> [${setup.ltf_fvg.bottom:,.2f} - ${setup.ltf_fvg.top:,.2f}]\n"
+                            f"• <b>Limit Order Entry:</b> <code>${setup.entry_price:,.2f}</code> ({dist_pct:+.2f}% away)\n"
+                            f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
+                            f"• <b>Risk ($R$):</b> ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)\n"
+                            f"• <b>TP 1R:</b> ${setup.tp_1r:,.2f} | <b>TP 2R:</b> ${setup.tp_2r:,.2f} | <b>TP 3R:</b> ${setup.tp_3r:,.2f}\n"
+                            f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
+                        )
+                        logger.info("Fired Telegram Setup Alert for %s %s", sym, side)
+                        await send_extreme_telegram_alert(msg)
+                        state["extreme_notified_states"][fvg_key] = curr_state
+                    elif curr_state == "TRADE_ACTIVE" and last_notified != "TRADE_ACTIVE":
+                        primary_tp = setup.tp_2r if target == "2R" else setup.tp_1r
+                        msg = (
+                            f"🚀 <b>[ENTRY FILLED] {sym} {side} IS NOW LIVE!</b>\n\n"
+                            f"• <b>Filled At:</b> <code>${setup.entry_price:,.2f}</code>\n"
+                            f"• <b>Time:</b> {setup.entry_time_ist}\n"
+                            f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
+                            f"• <b>Primary Target ({target}):</b> <code>${primary_tp:,.2f}</code>\n"
+                            f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
+                        )
+                        logger.info("Fired Telegram Entry Alert for %s %s", sym, side)
+                        await send_extreme_telegram_alert(msg)
+                        state["extreme_notified_states"][fvg_key] = curr_state
+        except Exception as exc:
+            logger.warning("Error in background extreme scan for %s: %s", sym, exc)
+
+    act_count = len([s for s in setups_out if s["state"] == "TRADE_ACTIVE"])
+    pend_count = len([s for s in setups_out if s["state"] == "PENDING_RETRACE"])
+
+    state["extreme_setups"] = setups_out
+    state["extreme_active_count"] = act_count
+    state["extreme_pending_count"] = pend_count
+    state["extreme_last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
+    state["extreme_total_cycles"] += 1
+
+    return setups_out
+
+
+async def extreme_screener_background_worker():
+    """Continuous background loop running the Extreme Screener every EXTREME_SCAN_INTERVAL_SECONDS."""
+    logger.info("Extreme Background Screener Daemon started (Interval: %ds).", state.get("extreme_interval_seconds", 30))
+    while state.get("extreme_is_running", True):
+        try:
+            await execute_extreme_screener_cycle()
+            await asyncio.sleep(state.get("extreme_interval_seconds", 30))
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error("Error in extreme background worker: %s. Retrying in 10s...", exc)
+            await asyncio.sleep(10)
+
+
+# ==============================================================================
 # APPLICATION LIFESPAN
 # ==============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown events for FastAPI."""
-    logger.info("Starting Crypto FVG Screener application (IST & 2-Stage Strategy)...")
+    logger.info("Starting Crypto FVG Screener application (IST & Extreme Strategy Daemon)...")
     state["is_running"] = True
+    state["extreme_is_running"] = True
     worker_task = asyncio.create_task(screener_background_worker())
     monitor_task = asyncio.create_task(trade_monitor_worker())
+    extreme_task = asyncio.create_task(extreme_screener_background_worker())
     state["background_task"] = worker_task
     state["monitor_task"] = monitor_task
+    state["extreme_background_task"] = extreme_task
 
     yield
 
     state["is_running"] = False
+    state["extreme_is_running"] = False
     if state["background_task"]:
         state["background_task"].cancel()
     if state["monitor_task"]:
         state["monitor_task"].cancel()
+    if state["extreme_background_task"]:
+        state["extreme_background_task"].cancel()
 
     await hyperliquid_client.close()
     logger.info("Application shutdown complete.")
@@ -837,6 +1018,37 @@ async def api_extreme_backtest(
         "avg_mfe_r": round(report.avg_mfe_r, 2),
         "trades": [t.to_dict() for t in report.trades],
     })
+
+
+@app.get("/api/extreme/status", summary="Get Extreme Background Daemon Status and Live Setups")
+async def api_extreme_status():
+    return JSONResponse(content={
+        "status": "success",
+        "is_running": state.get("extreme_is_running", False),
+        "interval_seconds": state.get("extreme_interval_seconds", 30),
+        "ltf_timeframe": state.get("extreme_ltf", "15m"),
+        "completion_target": state.get("extreme_target", "2R"),
+        "min_gap_pct": state.get("extreme_min_gap", 0.05),
+        "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
+        "active_count": state.get("extreme_active_count", 0),
+        "pending_count": state.get("extreme_pending_count", 0),
+        "total_cycles": state.get("extreme_total_cycles", 0),
+        "setups": state.get("extreme_setups", []),
+    })
+
+
+@app.post("/api/extreme/toggle-daemon", summary="Start or Pause Extreme Background Daemon")
+async def api_extreme_toggle_daemon(enable: Optional[bool] = Query(default=None)):
+    if enable is None:
+        state["extreme_is_running"] = not state.get("extreme_is_running", True)
+    else:
+        state["extreme_is_running"] = enable
+
+    if state["extreme_is_running"] and (state.get("extreme_background_task") is None or state["extreme_background_task"].done()):
+        state["extreme_background_task"] = asyncio.create_task(extreme_screener_background_worker())
+
+    status_str = "RUNNING" if state["extreme_is_running"] else "STOPPED"
+    return JSONResponse(content={"status": "success", "is_running": state["extreme_is_running"], "message": f"Extreme Daemon is now {status_str}"})
 
 
 if __name__ == "__main__":
