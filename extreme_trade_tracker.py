@@ -129,6 +129,7 @@ class ExtremeTradeTracker:
         self,
         setups: List[Dict[str, Any]],
         current_mids: Dict[str, float],
+        recent_candles_map: Optional[Dict[str, List[Any]]] = None,
     ) -> List[Tuple[str, TrackedExtremeTrade]]:
         """
         Ingests live scanner setups, tracks new entries, monitors open positions,
@@ -202,7 +203,7 @@ class ExtremeTradeTracker:
                     trade.status_detail = "Active (Just Filled)"
                     events.append(("ENTRY_FILLED", trade))
 
-        # 2. Monitor all open TRADE_ACTIVE trades against current live prices
+        # 2. Monitor all open TRADE_ACTIVE trades against current live prices & candle extremes
         to_close = []
         for trade_id, trade in list(self.active_trades.items()):
             if trade.state != "TRADE_ACTIVE":
@@ -215,14 +216,20 @@ class ExtremeTradeTracker:
             target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
             target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
 
+            candles = (recent_candles_map.get(trade.symbol, []) or []) if recent_candles_map else []
+            recent_high = max([getattr(c, "high", c.get("h", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
+            recent_low = min([getattr(c, "low", c.get("l", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
+
             # Update MFE & Floating R
             if trade.direction == "Bullish":
+                effective_high = max(curr_px, recent_high)
+                effective_low = min(curr_px, recent_low)
                 trade.floating_r = round((curr_px - trade.entry_price) / risk_r, 2)
-                trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, curr_px)
+                trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, effective_high)
                 trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
 
                 # Check TP Hit
-                if curr_px >= target_tp:
+                if effective_high >= target_tp:
                     trade.state = "COMPLETED_TP"
                     trade.realized_r = target_mult
                     trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
@@ -233,7 +240,7 @@ class ExtremeTradeTracker:
                     to_close.append((trade_id, "TP_HIT", trade))
 
                 # Check SL Hit
-                elif curr_px <= trade.stop_loss:
+                elif effective_low <= trade.stop_loss:
                     trade.state = "STOPPED_OUT"
                     trade.realized_r = -1.0
                     trade.status_detail = "STOP LOSS HIT (-1.0R)"
@@ -246,12 +253,14 @@ class ExtremeTradeTracker:
                     trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
 
             else:  # Bearish
+                effective_high = max(curr_px, recent_high)
+                effective_low = min(curr_px, recent_low)
                 trade.floating_r = round((trade.entry_price - curr_px) / risk_r, 2)
-                trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, curr_px)
+                trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, effective_low)
                 trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
 
                 # Check TP Hit
-                if curr_px <= target_tp:
+                if effective_low <= target_tp:
                     trade.state = "COMPLETED_TP"
                     trade.realized_r = target_mult
                     trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
@@ -262,7 +271,7 @@ class ExtremeTradeTracker:
                     to_close.append((trade_id, "TP_HIT", trade))
 
                 # Check SL Hit
-                elif curr_px >= trade.stop_loss:
+                elif effective_high >= trade.stop_loss:
                     trade.state = "STOPPED_OUT"
                     trade.realized_r = -1.0
                     trade.status_detail = "STOP LOSS HIT (-1.0R)"

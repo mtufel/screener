@@ -650,22 +650,22 @@ def generate_extreme_setup_chart(
     ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
     ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
 
-    # 5. Mark the Entry Candle
+    # 5. Mark the Entry Candle (Strictly the candle that touches entry_price post-formation)
     entry_idx = None
-    if entry_time_ts:
+    for idx, c in enumerate(view_candles):
+        if ltf_fvg_formed_ts and c.timestamp < ltf_fvg_formed_ts:
+            continue
+        if direction == "Bullish" and c.low <= entry_price:
+            entry_idx = idx
+            break
+        elif direction == "Bearish" and c.high >= entry_price:
+            entry_idx = idx
+            break
+
+    # Fallback to entry_time_ts if touch candle not found directly
+    if entry_idx is None and entry_time_ts:
         for idx, c in enumerate(view_candles):
             if abs(c.timestamp - entry_time_ts) < 60000 or (c.timestamp <= entry_time_ts < c.timestamp + 15 * 60 * 1000):
-                entry_idx = idx
-                break
-
-    if entry_idx is None and state in ("TRADE_ACTIVE", "COMPLETED_TP", "STOPPED_OUT", "TP1_HIT", "TP2_HIT", "TP3_HIT"):
-        for idx, c in enumerate(view_candles):
-            if ltf_fvg_formed_ts and c.timestamp <= ltf_fvg_formed_ts:
-                continue
-            if direction == "Bullish" and c.low <= entry_price:
-                entry_idx = idx
-                break
-            elif direction == "Bearish" and c.high >= entry_price:
                 entry_idx = idx
                 break
 

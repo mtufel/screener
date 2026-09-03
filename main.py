@@ -361,8 +361,17 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
 
+    recent_candles_map = {}
+    for sym in coin_list:
+        raw_sym = SYMBOL_ALIASES.get(sym, sym)
+        try:
+            c_list = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=20)
+            recent_candles_map[sym] = c_list
+        except Exception:
+            pass
+
     # Process all setups through ExtremeTradeTracker
-    events = extreme_trade_tracker.process_live_setups(setups_out, mids)
+    events = extreme_trade_tracker.process_live_setups(setups_out, mids, recent_candles_map=recent_candles_map)
 
     for evt_type, tr in events:
         raw_sym = SYMBOL_ALIASES.get(tr.symbol, tr.symbol)
