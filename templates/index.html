@@ -1121,6 +1121,8 @@
       setups.forEach(s => {
         const isBullish = s.direction === 'Bullish';
         const isActive = s.state === 'TRADE_ACTIVE';
+        const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
+        const dirBg = isBullish ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20';
         const badgeColor = isActive ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border-amber-500/30';
         const entrySubText = isActive
           ? `<span class="text-[9px] text-emerald-400 font-semibold block">Filled: ${s.entry_time_ist || 'Active'}</span>`
