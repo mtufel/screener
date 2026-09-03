@@ -650,22 +650,25 @@ def generate_extreme_setup_chart(
     ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
     ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
 
-    # 5. Mark the Entry Candle (Strictly the candle that touches entry_price post-formation)
+    # 5. Mark the Entry Candle (Strictly the first candle POST-FVG formation that touches entry_price)
     entry_idx = None
-    for idx, c in enumerate(view_candles):
-        if ltf_fvg_formed_ts and c.timestamp < ltf_fvg_formed_ts:
-            continue
-        if direction == "Bullish" and c.low <= entry_price:
-            entry_idx = idx
-            break
-        elif direction == "Bearish" and c.high >= entry_price:
-            entry_idx = idx
-            break
+    c_dur = 15 * 60 * 1000 if ltf_timeframe == "15m" else (5 * 60 * 1000 if ltf_timeframe == "5m" else (60 * 60 * 1000 if ltf_timeframe == "1h" else 60 * 1000))
+    min_post_formation_ts = (ltf_fvg_formed_ts + c_dur) if ltf_fvg_formed_ts else 0
 
-    # Fallback to entry_time_ts if touch candle not found directly
-    if entry_idx is None and entry_time_ts:
+    if entry_time_ts and entry_time_ts >= min_post_formation_ts:
         for idx, c in enumerate(view_candles):
-            if abs(c.timestamp - entry_time_ts) < 60000 or (c.timestamp <= entry_time_ts < c.timestamp + 15 * 60 * 1000):
+            if abs(c.timestamp - entry_time_ts) < (c_dur / 2) or (c.timestamp <= entry_time_ts < c.timestamp + c_dur):
+                entry_idx = idx
+                break
+
+    if entry_idx is None:
+        for idx, c in enumerate(view_candles):
+            if min_post_formation_ts and c.timestamp < min_post_formation_ts:
+                continue
+            if direction == "Bullish" and c.low <= entry_price:
+                entry_idx = idx
+                break
+            elif direction == "Bearish" and c.high >= entry_price:
                 entry_idx = idx
                 break
 
