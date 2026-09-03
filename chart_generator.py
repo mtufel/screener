@@ -655,7 +655,7 @@ def generate_extreme_setup_chart(
     c_dur = 15 * 60 * 1000 if ltf_timeframe == "15m" else (5 * 60 * 1000 if ltf_timeframe == "5m" else (60 * 60 * 1000 if ltf_timeframe == "1h" else 60 * 1000))
     min_post_formation_ts = (ltf_fvg_formed_ts + c_dur) if ltf_fvg_formed_ts else 0
 
-    if entry_time_ts and entry_time_ts >= min_post_formation_ts:
+    if entry_time_ts and entry_time_ts > 0:
         for idx, c in enumerate(view_candles):
             if abs(c.timestamp - entry_time_ts) < (c_dur / 2) or (c.timestamp <= entry_time_ts < c.timestamp + c_dur):
                 entry_idx = idx

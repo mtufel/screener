@@ -336,6 +336,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                     "tp_3r": round(setup.tp_3r, 4),
                     "floating_r": round(setup.floating_r, 2),
                     "entry_time_ist": setup.entry_time_ist,
+                    "entry_timestamp": setup.entry_timestamp,
                     "completion_target": setup.completion_target,
                     "ltf_timeframe": setup.ltf_timeframe,
                     "anchor": {
@@ -1080,6 +1081,7 @@ async def api_extreme_scan(
                     "tp_3r": round(setup.tp_3r, 4),
                     "floating_r": round(setup.floating_r, 2),
                     "entry_time_ist": setup.entry_time_ist,
+                    "entry_timestamp": setup.entry_timestamp,
                     "completion_target": setup.completion_target,
                     "ltf_timeframe": setup.ltf_timeframe,
                     "anchor": {
