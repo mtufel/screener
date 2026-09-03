@@ -1323,11 +1323,15 @@ async def api_extreme_chart(
 @app.get("/api/extreme/live-history", summary="Get Tracked Live Trade History for Extreme Strategy")
 async def api_extreme_live_history():
     from extreme_trade_tracker import extreme_trade_tracker
+    active = [t.to_dict() for t in extreme_trade_tracker.active_trades.values()]
+    hist = [t.to_dict() for t in extreme_trade_tracker.history]
+    all_trades = active + hist
     return JSONResponse(content={
         "status": "success",
         "summary": extreme_trade_tracker.get_summary(),
-        "active_trades": [t.to_dict() for t in extreme_trade_tracker.active_trades.values()],
-        "history": [t.to_dict() for t in extreme_trade_tracker.history],
+        "trades": all_trades,
+        "active_trades": active,
+        "history": hist,
     })
 
 

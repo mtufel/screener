@@ -1418,13 +1418,13 @@
       const tbody = document.getElementById('extremeLiveHistoryTableBody');
       if (!tbody) return;
 
-      const trades = data.trades || [];
-      if (trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="py-6 text-center text-slate-500 font-mono text-xs">No trades tracked in live session yet. Trades auto-populate as daemon detects FVG fills.</td></tr>';
+      const trades = (data.trades && data.trades.length > 0) ? data.trades : [...(data.active_trades || []), ...(data.history || [])];
+      if (!trades || trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="py-8 text-center text-slate-500 font-mono text-xs">No daemon trades recorded yet in this session. Active positions and closed trades will appear here automatically.</td></tr>';
         return;
       }
 
-      tbody.innerHTML = trades.slice().reverse().map((t, idx) => {
+      tbody.innerHTML = trades.map((t, idx) => {
         const isBull = t.direction === 'Bullish';
         const dirBadge = isBull ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold text-[10px]">LONG</span>' : '<span class="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-[10px]">SHORT</span>';
         
@@ -1441,39 +1441,51 @@
         }
 
         const targetTp = t.completion_target === '1R' ? t.tp_1r : (t.completion_target === '3R' ? t.tp_3r : t.tp_2r);
+        const htf = t.htf_anchor || {};
+        const ltf = t.ltf_fvg || {};
 
         return `
           <tr class="hover:bg-dark-750/50 transition-colors">
-            <td class="py-3 px-4 font-bold text-white font-mono flex items-center space-x-1.5">
-              <span>${t.symbol}</span>
-              <span class="text-[10px] text-slate-500">${t.ltf_timeframe}</span>
-            </td>
-            <td class="py-3 px-4">${dirBadge}</td>
             <td class="py-3 px-4">${stateBadge}</td>
-            <td class="py-3 px-4">
-              <span class="text-slate-200 font-bold block">$${formatNumber(t.entry_price)}</span>
-              <span class="text-[9px] text-slate-500 block">${t.entry_time_ist || '--'}</span>
+            <td class="py-3 px-4 font-mono">
+              <div class="flex items-center space-x-1.5">
+                <span class="font-bold text-white">${t.symbol}</span>
+                ${dirBadge}
+              </div>
+              <span class="text-[10px] text-slate-500 block">${t.ltf_timeframe}</span>
             </td>
-            <td class="py-3 px-4">
+            <td class="py-3 px-4 font-mono">
+              <span class="text-slate-200 block">$${formatNumber(htf.bottom)} - $${formatNumber(htf.top)}</span>
+              <span class="text-[9px] text-slate-500 block">Touch: ${htf.first_touch_time_ist || '--'}</span>
+            </td>
+            <td class="py-3 px-4 font-mono">
+              <span class="text-slate-200 block">$${formatNumber(ltf.bottom)} - $${formatNumber(ltf.top)}</span>
+              <span class="text-[9px] text-amber-400/80 block">Gap: ${ltf.gap_pct || 0}%</span>
+            </td>
+            <td class="py-3 px-4 font-mono">
+              <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
+              <span class="text-[9px] text-slate-400 block">${t.entry_filled_at_ist ? `Filled: ${t.entry_filled_at_ist}` : (t.created_at_ist ? `Created: ${t.created_at_ist}` : '--')}</span>
+            </td>
+            <td class="py-3 px-4 font-mono">
               <span class="text-rose-400 font-bold block">$${formatNumber(t.stop_loss)}</span>
               <span class="text-[9px] text-slate-500 block">Risk: $${formatNumber(t.risk_r)}</span>
             </td>
-            <td class="py-3 px-4">
+            <td class="py-3 px-4 font-mono">
               <span class="text-amber-400 font-bold block">$${formatNumber(targetTp)}</span>
               <span class="text-[9px] text-slate-500 block">Target: ${t.completion_target}</span>
             </td>
-            <td class="py-3 px-4">
+            <td class="py-3 px-4 font-mono">
               <span class="font-bold ${t.realized_r > 0 ? 'text-emerald-400' : (t.realized_r < 0 ? 'text-rose-400' : 'text-slate-400')}">
                 ${t.realized_r !== 0 ? `${t.realized_r > 0 ? '+' : ''}${t.realized_r.toFixed(1)}R` : (isActive ? `${t.floating_r > 0 ? '+' : ''}${t.floating_r.toFixed(2)}R (fl)` : '--')}
               </span>
             </td>
-            <td class="py-3 px-4">
+            <td class="py-3 px-4 font-mono">
               <span class="text-slate-300 font-semibold">+${(t.mfe_r || 0).toFixed(2)}R</span>
               ${t.duration_min ? `<span class="text-[9px] text-slate-500 block">${t.duration_min}m</span>` : ''}
             </td>
             <td class="py-3 px-4 text-center">
               <button
-                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${t.htf_anchor.bottom || 0}, ${t.htf_anchor.top || 0}, ${t.ltf_fvg.bottom || 0}, ${t.ltf_fvg.top || 0}, ${t.ltf_fvg.formed_at || 0}, '${t.htf_anchor.first_touch_time_ist || ''}', '${t.state}', ${t.realized_r || t.floating_r || 0}, ${t.entry_timestamp || 0}, ${t.closed_timestamp || 0})"
+                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltf.bottom || 0}, ${ltf.top || 0}, ${ltf.formed_at || 0}, '${htf.first_touch_time_ist || ''}', '${t.state}', ${t.realized_r || t.floating_r || 0}, ${t.entry_timestamp || 0}, ${t.closed_timestamp || 0})"
                 class="p-1.5 rounded-lg bg-dark-900 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 border border-dark-700 hover:border-amber-500/40 transition-colors"
                 title="View TradingView Chart"
               >
