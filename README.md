@@ -6,30 +6,21 @@ The engine scans perpetual markets for multi-timeframe Fair Value Gaps (4H Highe
 
 ---
 
-## 📌 Strategy Logic Overview
+## 📌 Dual Strategy Suite Overview
 
-### 1. Fair Value Gap (FVG) Definition
-Evaluates 3-candle rolling sequences `[c1, c2, c3]` (`c1` oldest, `c3` newest):
-* **Bullish FVG**: `c3.low > c1.high`
-  * Bottom of Gap: `c1.high`
-  * Top of Gap: `c3.low`
-* **Bearish FVG**: `c3.high < c1.low`
-  * Bottom of Gap: `c3.high`
-  * Top of Gap: `c1.low`
+For full technical and algorithmic specifications, see **[STRATEGIES.md](STRATEGIES.md)**.
 
-### 2. Entry Conditions
-* **Phase 1 (Higher Timeframe - 4H)**: Computes the most recent valid 4H FVG. Passes if `fvg.bottom <= current_price <= fvg.top`.
-* **Phase 2 (Lower Timeframe - 15m)**: For coins passing Phase 1, checks the 15m timeframe for a matching FVG in the same direction. Passes if price is inside the 15m FVG.
+### 🏛️ Strategy 1: 2-Stage Standard Multi-Timeframe FVG
+* **Phase 1 (4H Macro Anchor)**: Checks if price is inside or recently retraced into an active 4H FVG zone. Supports `ANY_VALID`, `RECENT_FORMED`, and `TOUCH_WINDOW` modes with wick/close invalidation.
+* **Phase 2 (15m/5m Micro Confirmation)**: Identifies matching LTF FVG and ranks opportunities via composite scoring (Tightness + Center Proximity).
+* **Stop Loss Reference**: Extreme wick of the 3 candles forming the LTF FVG.
 
-### 3. Stop Loss Reference
-* **Bullish Setup**: `min(c1.low, c2.low, c3.low)` of the 3 candles forming the 15m FVG.
-* **Bearish Setup**: `max(c1.high, c2.high, c3.high)` of the 3 candles forming the 15m FVG.
-
-### 4. Ranking & Scoring Formula
-* **Tightness on 4H & 15m**: Lower percentage gap width relative to price is preferred.
-* **4H Center Proximity**: Price near the midpoint of the 4H FVG scores higher than at boundary edges.
-* Score formula:
-  $$\text{Score} = 0.35 \times \text{Tightness}_{\text{4H}} + 0.35 \times \text{Tightness}_{\text{15m}} + 0.30 \times \text{CenterProximity}$$
+### ⚡ Strategy 2: ⚡ Extreme LTF FVG Strategy
+* **4H Touch Anchor**: Pinpoints the exact timestamp when price first touched an active 4H FVG post-close (`first_touch_timestamp`).
+* **Post-Touch LTF Discovery**: Scans LTF FVGs (15m) formed strictly post-touch with a minimum gap threshold ($\ge 0.05\%$).
+* **#1 Extreme Ranking**: Selects the deepest FVG closest to the 4H zone (Lowest for Longs, Highest for Shorts).
+* **Execution Parameters**: Entry at outer FVG boundary, Stop Loss at extreme 3-candle wick, with 1R, 2R (Primary $\star$), and 3R targets.
+* **Immutable Active Trade Ledger**: Automatically tracks live floating $R$, MFE, and resolves TP/SL hits via candle extremes.
 
 ---
 
@@ -37,18 +28,22 @@ Evaluates 3-candle rolling sequences `[c1, c2, c3]` (`c1` oldest, `c3` newest):
 
 ```
 crypto-fvg-screener/
-├── .env.example            # Configuration template
-├── .env                    # Local environment variables
-├── .gitignore              # Git ignore configuration
-├── requirements.txt        # Python dependencies
-├── hyperliquid_client.py   # Async Hyperliquid client (Token Bucket, 429 Cooldown)
-├── strategy.py             # FVG math, filters, SL calculations, scoring
-├── telegram_client.py      # Telegram alert dispatcher & HTML formatting
-├── main.py                 # FastAPI app, background scheduler & Web UI
+├── .env.example                # Configuration template
+├── .env                        # Local environment variables
+├── requirements.txt            # Python dependencies
+├── hyperliquid_client.py       # Async Hyperliquid client (Token Bucket, 429 Cooldown)
+├── strategy.py                 # Strategy 1 (Standard 2-Stage FVG math & scoring)
+├── strategy_extreme_fvg.py     # Strategy 2 (Extreme LTF FVG engine & state machine)
+├── extreme_trade_tracker.py    # Strategy 2 Immutable Active Trade Ledger
+├── backtest.py                 # Strategy 1 backtester engine
+├── backtest_extreme_fvg.py     # Strategy 2 Extreme backtester engine
+├── chart_generator.py          # High-contrast TradingView-style candlestick chart generator
+├── telegram_client.py          # Telegram alert dispatcher & photo attachments
+├── main.py                     # FastAPI app, dual background daemons & Web UI
 ├── templates/
-│   └── index.html          # Real-time Web Dashboard interface
-├── test_screener.py        # Automated test suite
-└── README.md               # Documentation
+│   └── index.html              # Real-time Web Dashboard interface
+├── STRATEGIES.md               # Complete Strategy Architecture & Math Specs
+└── README.md                   # Setup & operational documentation
 ```
 
 ---
