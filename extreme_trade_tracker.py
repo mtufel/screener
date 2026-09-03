@@ -106,6 +106,25 @@ class ExtremeTradeTracker:
         except Exception as exc:
             logger.warning("Failed to save extreme live trades to %s: %s", self.storage_path, exc)
 
+    def get_active_trade_for_symbol(self, symbol: str) -> Optional[TrackedExtremeTrade]:
+        """
+        Returns the active open trade for a symbol if one is currently in position (TRADE_ACTIVE).
+        While active in the ledger, its entry price, SL, targets, and FVG anchor are strictly immutable.
+        """
+        clean_sym = symbol.strip().upper()
+        for trade in self.active_trades.values():
+            if trade.symbol.strip().upper() == clean_sym and trade.state == "TRADE_ACTIVE":
+                return trade
+        return None
+
+    def get_pending_trade_for_symbol(self, symbol: str) -> Optional[TrackedExtremeTrade]:
+        """Returns the pending retrace trade for a symbol if one exists."""
+        clean_sym = symbol.strip().upper()
+        for trade in self.active_trades.values():
+            if trade.symbol.strip().upper() == clean_sym and trade.state == "PENDING_RETRACE":
+                return trade
+        return None
+
     def process_live_setups(
         self,
         setups: List[Dict[str, Any]],
@@ -122,15 +141,21 @@ class ExtremeTradeTracker:
         now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         # 1. Ingest/Update setups from scanner
-        seen_keys = set()
+        seen_symbols = set()
         for s in setups:
-            sym = s["symbol"]
+            sym = s["symbol"].strip().upper()
+            curr_px = float(current_mids.get(sym, s.get("current_price", s["entry_price"])))
+
+            # If symbol already has an ACTIVE trade in the ledger, its entry price is LOCKED.
+            existing_active = self.get_active_trade_for_symbol(sym)
+            if existing_active:
+                seen_symbols.add(sym)
+                continue
+
             fvg_formed_at = s.get("target_fvg", {}).get("formed_at", 0)
             entry_px = s["entry_price"]
             trade_id = f"{sym}:{fvg_formed_at}:{entry_px:.2f}"
-            seen_keys.add(trade_id)
-
-            curr_px = float(current_mids.get(sym, s.get("current_price", entry_px)))
+            seen_symbols.add(sym)
 
             if trade_id not in self.active_trades:
                 # Register new setup
@@ -158,7 +183,7 @@ class ExtremeTradeTracker:
                     floating_r=s.get("floating_r", 0.0),
                     max_favorable_price=curr_px,
                     mfe_r=max(0.0, s.get("floating_r", 0.0)),
-                    entry_timestamp=now_ts if is_active else None,
+                    entry_timestamp=s.get("entry_timestamp") or (now_ts if is_active else None),
                 )
                 self.active_trades[trade_id] = trade
                 events.append(("NEW_SETUP", trade))
@@ -173,7 +198,7 @@ class ExtremeTradeTracker:
                 if old_state == "PENDING_RETRACE" and new_state == "TRADE_ACTIVE":
                     trade.state = "TRADE_ACTIVE"
                     trade.entry_filled_at_ist = s.get("entry_time_ist") or now_ist_str
-                    trade.entry_timestamp = now_ts
+                    trade.entry_timestamp = s.get("entry_timestamp") or now_ts
                     trade.status_detail = "Active (Just Filled)"
                     events.append(("ENTRY_FILLED", trade))
 

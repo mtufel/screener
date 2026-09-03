@@ -262,12 +262,54 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     min_gap = state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT)
     use_close = state.get("extreme_use_close", EXTREME_USE_CLOSE_INVALIDATION)
 
+    from extreme_trade_tracker import extreme_trade_tracker
+
     setups_out = []
     mids = await hyperliquid_client.get_all_mids()
 
     for sym in coin_list:
+        raw_sym = SYMBOL_ALIASES.get(sym, sym)
+        curr_px = float(mids.get(raw_sym, mids.get(sym, 0.0)))
+
+        # 1. LEDGER CHECK: Is there an existing open TRADE_ACTIVE position?
+        active_trade = extreme_trade_tracker.get_active_trade_for_symbol(sym)
+        if active_trade:
+            # Entry price, SL, targets, and FVG anchor are LOCKED IMMUTABLE in the ledger.
+            risk_r = active_trade.risk_r if active_trade.risk_r > 0 else (active_trade.entry_price * 0.001)
+            if curr_px == 0.0:
+                curr_px = active_trade.entry_price
+            if active_trade.direction == "Bullish":
+                floating_r = (curr_px - active_trade.entry_price) / risk_r
+            else:
+                floating_r = (active_trade.entry_price - curr_px) / risk_r
+            dist_pct = ((curr_px - active_trade.entry_price) / active_trade.entry_price) * 100
+
+            setups_out.append({
+                "symbol": sym,
+                "direction": active_trade.direction,
+                "state": "TRADE_ACTIVE",
+                "entry_price": active_trade.entry_price,
+                "current_price": curr_px,
+                "dist_pct": round(dist_pct, 2),
+                "stop_loss": active_trade.stop_loss,
+                "risk_r": round(active_trade.risk_r, 4),
+                "risk_pct": round(active_trade.risk_pct, 2),
+                "tp_1r": round(active_trade.tp_1r, 4),
+                "tp_2r": round(active_trade.tp_2r, 4),
+                "tp_3r": round(active_trade.tp_3r, 4),
+                "floating_r": round(floating_r, 2),
+                "entry_time_ist": active_trade.entry_filled_at_ist,
+                "entry_timestamp": active_trade.entry_timestamp,
+                "completion_target": active_trade.completion_target,
+                "ltf_timeframe": active_trade.ltf_timeframe,
+                "anchor": active_trade.htf_anchor,
+                "target_fvg": active_trade.ltf_fvg,
+                "unmitigated_count": 1,
+            })
+            continue
+
+        # 2. If no active trade in ledger, scan for new setups / pending retrace
         try:
-            raw_sym = SYMBOL_ALIASES.get(sym, sym)
             setup = await get_extreme_setup_for_symbol(
                 symbol=raw_sym,
                 ltf_timeframe=ltf,
@@ -276,7 +318,8 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 completion_target=target,
             )
             if setup:
-                curr_px = float(mids.get(raw_sym, setup.entry_price))
+                if curr_px == 0.0:
+                    curr_px = float(mids.get(raw_sym, setup.entry_price))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
                 setup_dict = {
                     "symbol": sym,
@@ -319,7 +362,6 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
 
     # Process all setups through ExtremeTradeTracker
-    from extreme_trade_tracker import extreme_trade_tracker
     events = extreme_trade_tracker.process_live_setups(setups_out, mids)
 
     for evt_type, tr in events:
@@ -952,6 +994,7 @@ async def api_extreme_scan(
 ):
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
     from hyperliquid_client import SYMBOL_ALIASES
+    from extreme_trade_tracker import extreme_trade_tracker
 
     whitelist_raw = symbols or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL,PAXG")
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
@@ -961,8 +1004,47 @@ async def api_extreme_scan(
     mids = await hyperliquid_client.get_all_mids()
 
     for sym in coin_list:
+        raw_sym = SYMBOL_ALIASES.get(sym, sym)
+        curr_px = float(mids.get(raw_sym, mids.get(sym, 0.0)))
+
+        # 1. Check ledger for active trade (IMMUTABLE entry price, SL, targets)
+        active_trade = extreme_trade_tracker.get_active_trade_for_symbol(sym)
+        if active_trade:
+            risk_r = active_trade.risk_r if active_trade.risk_r > 0 else (active_trade.entry_price * 0.001)
+            if curr_px == 0.0:
+                curr_px = active_trade.entry_price
+            if active_trade.direction == "Bullish":
+                floating_r = (curr_px - active_trade.entry_price) / risk_r
+            else:
+                floating_r = (active_trade.entry_price - curr_px) / risk_r
+            dist_pct = ((curr_px - active_trade.entry_price) / active_trade.entry_price) * 100
+
+            setups_out.append({
+                "symbol": sym,
+                "direction": active_trade.direction,
+                "state": "TRADE_ACTIVE",
+                "entry_price": active_trade.entry_price,
+                "current_price": curr_px,
+                "dist_pct": round(dist_pct, 2),
+                "stop_loss": active_trade.stop_loss,
+                "risk_r": round(active_trade.risk_r, 4),
+                "risk_pct": round(active_trade.risk_pct, 2),
+                "tp_1r": round(active_trade.tp_1r, 4),
+                "tp_2r": round(active_trade.tp_2r, 4),
+                "tp_3r": round(active_trade.tp_3r, 4),
+                "floating_r": round(floating_r, 2),
+                "entry_time_ist": active_trade.entry_filled_at_ist,
+                "entry_timestamp": active_trade.entry_timestamp,
+                "completion_target": active_trade.completion_target,
+                "ltf_timeframe": active_trade.ltf_timeframe,
+                "anchor": active_trade.htf_anchor,
+                "target_fvg": active_trade.ltf_fvg,
+                "unmitigated_count": 1,
+            })
+            continue
+
+        # 2. If no active trade, scan for new setups
         try:
-            raw_sym = SYMBOL_ALIASES.get(sym, sym)
             setup = await get_extreme_setup_for_symbol(
                 symbol=raw_sym,
                 ltf_timeframe=ltf,
@@ -971,7 +1053,8 @@ async def api_extreme_scan(
                 completion_target=target,
             )
             if setup:
-                curr_px = float(mids.get(raw_sym, setup.entry_price))
+                if curr_px == 0.0:
+                    curr_px = float(mids.get(raw_sym, setup.entry_price))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
                 setups_out.append({
                     "symbol": sym,
@@ -1005,6 +1088,7 @@ async def api_extreme_scan(
                         "width": setup.ltf_fvg.width,
                         "gap_pct": round(setup.ltf_fvg.gap_pct, 3),
                         "formed_time_ist": setup.ltf_fvg.formed_time_ist,
+                        "formed_at": setup.ltf_fvg.formed_at,
                     },
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
                 })
