@@ -100,20 +100,20 @@
       <!-- Upper Strategy Selection Tabs (Upper Level Tabs) -->
       <div class="flex items-center space-x-1.5 p-1 rounded-2xl bg-dark-900 border border-dark-700/90 shadow-inner">
         <button
-          onclick="switchStrategy('strat2')"
-          id="upperTabStrat2"
-          class="px-4 py-2 rounded-xl text-xs font-bold transition-all bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/20 flex items-center space-x-2 border border-amber-500/30"
-        >
-          <i class="fa-solid fa-bolt text-xs text-amber-300"></i>
-          <span>Strategy 2: ⚡ Extreme LTF (Active)</span>
-        </button>
-        <button
           onclick="switchStrategy('strat1')"
           id="upperTabStrat1"
-          class="px-4 py-2 rounded-xl text-xs font-bold transition-all text-slate-500 hover:text-slate-300 flex items-center space-x-2 border border-transparent"
+          class="px-4 py-2 rounded-xl text-xs font-bold transition-all bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20 flex items-center space-x-2 border border-indigo-500/30"
         >
           <i class="fa-solid fa-layer-group text-xs"></i>
-          <span>Strategy 1: Standard (Paused)</span>
+          <span>Strategy 1: 2-Stage Standard</span>
+        </button>
+        <button
+          onclick="switchStrategy('strat2')"
+          id="upperTabStrat2"
+          class="px-4 py-2 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-amber-300 flex items-center space-x-2 border border-transparent"
+        >
+          <i class="fa-solid fa-bolt text-xs text-amber-400"></i>
+          <span>Strategy 2: ⚡ Extreme LTF</span>
         </button>
       </div>
 
@@ -1143,7 +1143,7 @@
       }, 4000);
     }
 
-    let currentStrategy = 'strat2'; // 'strat1' (Standard) | 'strat2' (Extreme LTF)
+    let currentStrategy = 'strat1'; // 'strat1' | 'strat2'
     let currentStrat1Tab = 'live';   // 'live' | 'backtest'
     let currentStrat2Tab = 'live';   // 'live' | 'backtest'
 
@@ -2299,7 +2299,6 @@
     }
 
     initDatePickers();
-    switchStrategy('strat2');
     fetchStatus();
 
     setInterval(() => {
