@@ -338,70 +338,96 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
                 }
                 setups_out.append(setup_dict)
-
-                # State Transition Alerts
-                fvg_key = f"{sym}:{setup.ltf_fvg.formed_at}:{setup.entry_price:.2f}"
-                last_notified = state["extreme_notified_states"].get(fvg_key)
-                curr_state = setup.state
-                side = "LONG" if setup.direction == "Bullish" else "SHORT"
-
-                if curr_state != last_notified:
-                    chart_img = None
-                    try:
-                        candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)
-                        chart_img = generate_extreme_setup_chart(
-                            symbol=sym,
-                            direction=setup.direction,
-                            candles_ltf=candles_ltf,
-                            htf_fvg_bottom=setup.anchor.fvg.bottom,
-                            htf_fvg_top=setup.anchor.fvg.top,
-                            htf_first_touch_ist=setup.anchor.first_touch_time_ist,
-                            ltf_fvg_bottom=setup.ltf_fvg.bottom,
-                            ltf_fvg_top=setup.ltf_fvg.top,
-                            ltf_fvg_formed_ts=setup.ltf_fvg.formed_at,
-                            entry_price=setup.entry_price,
-                            stop_loss=setup.stop_loss,
-                            tp_1r=setup.tp_1r,
-                            tp_2r=setup.tp_2r,
-                            tp_3r=setup.tp_3r,
-                            state=curr_state,
-                            floating_r=setup.floating_r,
-                            ltf_timeframe=ltf,
-                        )
-                    except Exception as c_exc:
-                        logger.debug("Chart generation failed for alert %s: %s", sym, c_exc)
-
-                    if curr_state == "PENDING_RETRACE" and last_notified is None:
-                        msg = (
-                            f"🔔 <b>[NEW SETUP] {sym} {side} ({ltf})</b>\n\n"
-                            f"• <b>4H Anchor:</b> {setup.anchor.fvg.direction} [${setup.anchor.fvg.bottom:,.2f} - ${setup.anchor.fvg.top:,.2f}]\n"
-                            f"  └ <i>Formed:</i> {setup.anchor.fvg.formed_time_ist} | <i>1st Touch:</i> {setup.anchor.first_touch_time_ist or '--'}\n"
-                            f"• <b>Extreme {ltf} FVG:</b> [${setup.ltf_fvg.bottom:,.2f} - ${setup.ltf_fvg.top:,.2f}] ({setup.ltf_fvg.gap_pct:.2f}%)\n"
-                            f"  └ <i>Formed:</i> {setup.ltf_fvg.formed_time_ist}\n"
-                            f"• <b>Limit Order Entry:</b> <code>${setup.entry_price:,.2f}</code> ({dist_pct:+.2f}% away)\n"
-                            f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
-                            f"• <b>Risk ($R$):</b> ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)\n"
-                            f"• <b>TP 1R:</b> ${setup.tp_1r:,.2f} | <b>TP 2R:</b> ${setup.tp_2r:,.2f} | <b>TP 3R:</b> ${setup.tp_3r:,.2f}\n"
-                            f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
-                        )
-                        logger.info("Fired Telegram Setup Alert for %s %s (with chart)", sym, side)
-                        await send_extreme_telegram_alert(msg, image_bytes=chart_img)
-                        state["extreme_notified_states"][fvg_key] = curr_state
-                    elif curr_state == "TRADE_ACTIVE" and last_notified != "TRADE_ACTIVE":
-                        primary_tp = setup.tp_2r if target == "2R" else setup.tp_1r
-                        msg = (
-                            f"🚀 <b>[ENTRY FILLED] {sym} {side} IS NOW LIVE!</b>\n\n"
-                            f"• <b>Filled At:</b> <code>${setup.entry_price:,.2f}</code>\n"
-                            f"• <b>Time:</b> {setup.entry_time_ist}\n"
-                            f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
-                            f"• <b>Primary Target ({target}):</b> <code>${primary_tp:,.2f}</code>\n"
-                            f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
-                        )
-                        logger.info("Fired Telegram Entry Alert for %s %s (with chart)", sym, side)
-                        await send_extreme_telegram_alert(msg, image_bytes=chart_img)
-                        state["extreme_notified_states"][fvg_key] = curr_state
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
+
+    # Process all setups through ExtremeTradeTracker
+    from extreme_trade_tracker import extreme_trade_tracker
+    events = extreme_trade_tracker.process_live_setups(setups_out, mids)
+
+    for evt_type, tr in events:
+        raw_sym = SYMBOL_ALIASES.get(tr.symbol, tr.symbol)
+        side = "LONG" if tr.direction == "Bullish" else "SHORT"
+        chart_img = None
+        try:
+            candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=tr.ltf_timeframe, n=60)
+            chart_img = generate_extreme_setup_chart(
+                symbol=tr.symbol,
+                direction=tr.direction,
+                candles_ltf=candles_ltf,
+                htf_fvg_bottom=tr.htf_anchor.get("bottom", 0.0),
+                htf_fvg_top=tr.htf_anchor.get("top", 0.0),
+                htf_first_touch_ist=tr.htf_anchor.get("first_touch_time_ist"),
+                ltf_fvg_bottom=tr.ltf_fvg.get("bottom", 0.0),
+                ltf_fvg_top=tr.ltf_fvg.get("top", 0.0),
+                ltf_fvg_formed_ts=tr.ltf_fvg.get("formed_at", 0),
+                entry_price=tr.entry_price,
+                stop_loss=tr.stop_loss,
+                tp_1r=tr.tp_1r,
+                tp_2r=tr.tp_2r,
+                tp_3r=tr.tp_3r,
+                state=tr.state,
+                floating_r=tr.floating_r,
+                ltf_timeframe=tr.ltf_timeframe,
+            )
+        except Exception as c_exc:
+            logger.debug("Chart generation failed for event %s: %s", evt_type, c_exc)
+
+        if evt_type == "NEW_SETUP" and tr.state == "PENDING_RETRACE":
+            dist = ((float(mids.get(tr.symbol, tr.entry_price)) - tr.entry_price) / tr.entry_price) * 100
+            msg = (
+                f"🔔 <b>[NEW SETUP] {tr.symbol} {side} ({tr.ltf_timeframe})</b>\n\n"
+                f"• <b>4H Anchor:</b> {tr.htf_anchor.get('direction', '')} [${tr.htf_anchor.get('bottom', 0):,.2f} - ${tr.htf_anchor.get('top', 0):,.2f}]\n"
+                f"  └ <i>Formed:</i> {tr.htf_anchor.get('formed_time_ist', '--')} | <i>1st Touch:</i> {tr.htf_anchor.get('first_touch_time_ist', '--')}\n"
+                f"• <b>Extreme {tr.ltf_timeframe} FVG:</b> [${tr.ltf_fvg.get('bottom', 0):,.2f} - ${tr.ltf_fvg.get('top', 0):,.2f}] ({tr.ltf_fvg.get('gap_pct', 0):.2f}%)\n"
+                f"  └ <i>Formed:</i> {tr.ltf_fvg.get('formed_time_ist', '--')}\n"
+                f"• <b>Limit Order Entry:</b> <code>${tr.entry_price:,.2f}</code> ({dist:+.2f}% away)\n"
+                f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
+                f"• <b>Risk ($R$):</b> ${tr.risk_r:,.2f} ({tr.risk_pct:.2f}%)\n"
+                f"• <b>TP 1R:</b> ${tr.tp_1r:,.2f} | <b>TP 2R:</b> ${tr.tp_2r:,.2f} | <b>TP 3R:</b> ${tr.tp_3r:,.2f}\n"
+                f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
+            )
+            logger.info("Fired Telegram Setup Alert for %s %s (with chart)", tr.symbol, side)
+            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+
+        elif evt_type == "ENTRY_FILLED":
+            primary_tp = tr.tp_2r if tr.completion_target == "2R" else tr.tp_1r
+            msg = (
+                f"🚀 <b>[ENTRY FILLED] {tr.symbol} {side} IS NOW LIVE!</b>\n\n"
+                f"• <b>Filled At:</b> <code>${tr.entry_price:,.2f}</code>\n"
+                f"• <b>Time:</b> {tr.entry_filled_at_ist or 'Live'}\n"
+                f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
+                f"• <b>Primary Target ({tr.completion_target}):</b> <code>${primary_tp:,.2f}</code>\n"
+                f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
+            )
+            logger.info("Fired Telegram Entry Alert for %s %s (with chart)", tr.symbol, side)
+            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+
+        elif evt_type == "TP_HIT":
+            msg = (
+                f"🎉 <b>[TARGET ACHIEVED] {tr.symbol} {side} HIT {tr.completion_target}!</b>\n\n"
+                f"• <b>Realized Gain:</b> <code>+{tr.realized_r:.1f}R</code>\n"
+                f"• <b>Entry Price:</b> <code>${tr.entry_price:,.2f}</code>\n"
+                f"• <b>Exit Time:</b> {tr.closed_at_ist}\n"
+                f"• <b>Duration:</b> {tr.duration_min} minutes\n"
+                f"• <b>Max MFE:</b> +{tr.mfe_r:.2f}R\n"
+                f"• <b>Status:</b> 🏆 TRADE WON"
+            )
+            logger.info("Fired Telegram TP Hit Alert for %s %s", tr.symbol, side)
+            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+
+        elif evt_type == "SL_HIT":
+            msg = (
+                f"🛑 <b>[STOP LOSS HIT] {tr.symbol} {side} CLOSED</b>\n\n"
+                f"• <b>Realized Loss:</b> <code>-1.0R</code>\n"
+                f"• <b>Entry Price:</b> <code>${tr.entry_price:,.2f}</code> | <b>SL:</b> <code>${tr.stop_loss:,.2f}</code>\n"
+                f"• <b>Exit Time:</b> {tr.closed_at_ist}\n"
+                f"• <b>Duration:</b> {tr.duration_min} minutes\n"
+                f"• <b>Max MFE:</b> +{tr.mfe_r:.2f}R\n"
+                f"• <b>Status:</b> ❌ STOPPED OUT"
+            )
+            logger.info("Fired Telegram SL Hit Alert for %s %s", tr.symbol, side)
+            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
 
     act_count = len([s for s in setups_out if s["state"] == "TRADE_ACTIVE"])
     pend_count = len([s for s in setups_out if s["state"] == "PENDING_RETRACE"])
@@ -1200,6 +1226,24 @@ async def api_extreme_chart(
     if not img_bytes:
         raise HTTPException(status_code=500, detail="Failed to generate chart image")
     return Response(content=img_bytes, media_type="image/png")
+
+
+@app.get("/api/extreme/live-history", summary="Get Tracked Live Trade History for Extreme Strategy")
+async def api_extreme_live_history():
+    from extreme_trade_tracker import extreme_trade_tracker
+    return JSONResponse(content={
+        "status": "success",
+        "summary": extreme_trade_tracker.get_summary(),
+        "active_trades": [t.to_dict() for t in extreme_trade_tracker.active_trades.values()],
+        "history": [t.to_dict() for t in extreme_trade_tracker.history],
+    })
+
+
+@app.post("/api/extreme/clear-live-history", summary="Clear Closed Live Trade History")
+async def api_extreme_clear_live_history():
+    from extreme_trade_tracker import extreme_trade_tracker
+    extreme_trade_tracker.clear_history()
+    return JSONResponse(content={"status": "success", "message": "Live trade history cleared successfully"})
 
 
 if __name__ == "__main__":

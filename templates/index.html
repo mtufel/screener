@@ -849,6 +849,95 @@
             </div>
           </div>
         </div>
+
+        <!-- Live Tracked Trade History Section -->
+        <div class="space-y-4 pt-4 border-t border-dark-700">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-sm font-extrabold uppercase tracking-wider text-white flex items-center space-x-2">
+                <i class="fa-solid fa-clock-rotate-left text-amber-400"></i>
+                <span>Live Daemon Tracked Trades Log</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">
+                Real-time tracking and outcome history of every trade scanned and managed by the continuous daemon.
+              </p>
+            </div>
+            <div class="flex items-center space-x-3">
+              <button
+                onclick="fetchExtremeLiveHistory()"
+                class="px-3 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-750 text-slate-300 hover:text-white border border-dark-700 text-xs font-mono font-semibold flex items-center space-x-1.5 transition-all"
+              >
+                <i class="fa-solid fa-rotate text-[11px]"></i>
+                <span>Refresh Log</span>
+              </button>
+              <button
+                onclick="clearExtremeLiveHistory()"
+                class="px-3 py-1.5 rounded-xl bg-dark-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-dark-700 hover:border-rose-500/30 text-xs font-mono font-semibold flex items-center space-x-1.5 transition-all"
+                title="Clear closed trade history"
+              >
+                <i class="fa-solid fa-trash-can text-[11px]"></i>
+                <span>Clear History</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Live Performance KPI Ribbon -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div class="p-3.5 rounded-2xl bg-dark-800/80 border border-dark-700 text-center">
+              <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">Total Tracked</span>
+              <span id="liveHistTotal" class="text-lg font-extrabold text-white font-mono">0</span>
+            </div>
+            <div class="p-3.5 rounded-2xl bg-dark-800/80 border border-dark-700 text-center">
+              <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">Closed Trades</span>
+              <span id="liveHistClosed" class="text-lg font-extrabold text-slate-200 font-mono">0</span>
+            </div>
+            <div class="p-3.5 rounded-2xl bg-dark-800/80 border border-emerald-500/20 bg-emerald-500/5 text-center">
+              <span class="text-[10px] uppercase font-bold text-emerald-400 tracking-wider block">Live Win Rate</span>
+              <span id="liveHistWinRate" class="text-lg font-extrabold text-emerald-400 font-mono">0.0%</span>
+            </div>
+            <div class="p-3.5 rounded-2xl bg-dark-800/80 border border-amber-500/20 bg-amber-500/5 text-center">
+              <span class="text-[10px] uppercase font-bold text-amber-400 tracking-wider block">Net Realized R</span>
+              <span id="liveHistNetR" class="text-lg font-extrabold text-amber-400 font-mono">0.00R</span>
+            </div>
+            <div class="p-3.5 rounded-2xl bg-dark-800/80 border border-dark-700 text-center">
+              <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">Active Positions</span>
+              <span id="liveHistActive" class="text-lg font-extrabold text-indigo-400 font-mono">0</span>
+            </div>
+            <div class="p-3.5 rounded-2xl bg-dark-800/80 border border-dark-700 text-center">
+              <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">Avg Max MFE</span>
+              <span id="liveHistAvgMfe" class="text-lg font-extrabold text-slate-200 font-mono">0.00R</span>
+            </div>
+          </div>
+
+          <!-- Live Trade History Table -->
+          <div class="rounded-2xl bg-dark-800/90 border border-dark-700 overflow-hidden shadow-xl">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs font-mono border-collapse">
+                <thead>
+                  <tr class="bg-dark-900/90 text-[11px] uppercase text-slate-400 border-b border-dark-700">
+                    <th class="py-3 px-4">Status / Outcome</th>
+                    <th class="py-3 px-4">Symbol & Dir</th>
+                    <th class="py-3 px-4">4H Anchor</th>
+                    <th class="py-3 px-4">Extreme LTF FVG</th>
+                    <th class="py-3 px-4">Entry (Price & Time)</th>
+                    <th class="py-3 px-4">Stop Loss</th>
+                    <th class="py-3 px-4">Target (TP)</th>
+                    <th class="py-3 px-4">Realized R</th>
+                    <th class="py-3 px-4">Max MFE</th>
+                    <th class="py-3 px-4 text-center">Chart</th>
+                  </tr>
+                </thead>
+                <tbody id="extremeLiveHistoryTableBody" class="divide-y divide-dark-700/60 text-slate-300">
+                  <tr>
+                    <td colspan="10" class="py-8 text-center text-slate-500">
+                      No daemon trades recorded yet in this session. When the live daemon runs, active and closed trades will be tracked here in real-time.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- STRATEGY 2 INNER TAB 2: HISTORICAL BACKTEST -->
@@ -1273,11 +1362,131 @@
         if (data.setups && data.setups.length > 0) {
           renderExtremeSetups(data.setups);
         }
+
+        fetchExtremeLiveHistory();
       } catch (err) {
         console.debug('Error polling extreme status:', err);
       }
     }
     setInterval(pollExtremeStatus, 10000);
+
+    async function fetchExtremeLiveHistory() {
+      try {
+        const resp = await fetch('/api/extreme/live-history');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderExtremeLiveHistory(data);
+      } catch (err) {
+        console.debug('Failed to fetch extreme live history:', err);
+      }
+    }
+
+    function renderExtremeLiveHistory(data) {
+      if (!data) return;
+      const sum = data.summary || {};
+      if (document.getElementById('liveHistTotal')) document.getElementById('liveHistTotal').innerText = sum.total_tracked_trades || 0;
+      if (document.getElementById('liveHistClosed')) document.getElementById('liveHistClosed').innerText = sum.total_closed_trades || 0;
+      if (document.getElementById('liveHistWinRate')) document.getElementById('liveHistWinRate').innerText = `${sum.win_rate_pct || 0}%`;
+      if (document.getElementById('liveHistNetR')) {
+        const netR = sum.net_realized_r || 0;
+        document.getElementById('liveHistNetR').innerText = `${netR > 0 ? '+' : ''}${netR.toFixed(2)}R`;
+        document.getElementById('liveHistNetR').className = `text-lg font-extrabold font-mono ${netR >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      }
+      if (document.getElementById('liveHistActive')) document.getElementById('liveHistActive').innerText = sum.active_now || 0;
+      if (document.getElementById('liveHistAvgMfe')) document.getElementById('liveHistAvgMfe').innerText = `+${(sum.avg_mfe_r || 0).toFixed(2)}R`;
+
+      const tbody = document.getElementById('extremeLiveHistoryTableBody');
+      if (!tbody) return;
+
+      const allTrades = [...(data.active_trades || []), ...(data.history || [])];
+      if (allTrades.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" class="py-8 text-center text-slate-500">No daemon trades recorded yet in this session. Active positions and closed trades will appear here automatically.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = allTrades.map(t => {
+        const isBullish = t.direction === 'Bullish';
+        const isClosed = ['COMPLETED_TP', 'STOPPED_OUT'].includes(t.state);
+        const isWin = t.state === 'COMPLETED_TP';
+        const isActive = t.state === 'TRADE_ACTIVE';
+
+        let statusBadge = '';
+        if (isWin) {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">🏆 TP HIT (+${t.realized_r.toFixed(1)}R)</span>`;
+        } else if (t.state === 'STOPPED_OUT') {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/40">🛑 STOP LOSS (-1.0R)</span>`;
+        } else if (isActive) {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-indigo-500/20 text-indigo-400 border border-indigo-500/40 animate-pulse">🚀 ACTIVE (${t.floating_r > 0 ? '+' : ''}${t.floating_r.toFixed(2)}R)</span>`;
+        } else {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-amber-500/20 text-amber-400 border border-amber-500/40">⏳ PENDING RETRACE</span>`;
+        }
+
+        const dirBg = isBullish ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
+        const targetTp = t.completion_target === '2R' ? t.tp_2r : (t.completion_target === '1R' ? t.tp_1r : t.tp_3r);
+
+        return `
+          <tr class="hover:bg-dark-750/50 transition-colors">
+            <td class="py-3 px-4">${statusBadge}</td>
+            <td class="py-3 px-4">
+              <span class="font-bold text-white">${t.symbol}</span>
+              <span class="px-1.5 py-0.5 rounded text-[9px] uppercase border ml-1 ${dirBg}">${t.direction}</span>
+              <span class="text-[9px] text-slate-500 block font-normal">${t.ltf_timeframe}</span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="text-slate-200 block">$${formatNumber(t.htf_anchor.bottom)} - $${formatNumber(t.htf_anchor.top)}</span>
+              <span class="text-[9px] text-slate-500 block">Touch: ${t.htf_anchor.first_touch_time_ist || '--'}</span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="text-slate-200 block">$${formatNumber(t.ltf_fvg.bottom)} - $${formatNumber(t.ltf_fvg.top)}</span>
+              <span class="text-[9px] text-amber-400/80 block">Gap: ${t.ltf_fvg.gap_pct || 0}%</span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
+              <span class="text-[9px] ${t.entry_filled_at_ist ? 'text-emerald-400 font-semibold' : 'text-slate-500'} block">
+                ${t.entry_filled_at_ist ? `Filled: ${t.entry_filled_at_ist}` : `Created: ${t.created_at_ist}`}
+              </span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="text-rose-400 font-bold block">$${formatNumber(t.stop_loss)}</span>
+              <span class="text-[9px] text-slate-500 block">Risk: $${formatNumber(t.risk_r)}</span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="text-amber-400 font-bold block">$${formatNumber(targetTp)}</span>
+              <span class="text-[9px] text-slate-500 block">Target: ${t.completion_target}</span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="font-bold ${t.realized_r > 0 ? 'text-emerald-400' : (t.realized_r < 0 ? 'text-rose-400' : 'text-slate-400')}">
+                ${t.realized_r !== 0 ? `${t.realized_r > 0 ? '+' : ''}${t.realized_r.toFixed(1)}R` : (isActive ? `${t.floating_r > 0 ? '+' : ''}${t.floating_r.toFixed(2)}R (fl)` : '--')}
+              </span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="text-slate-300 font-semibold">+${(t.mfe_r || 0).toFixed(2)}R</span>
+              ${t.duration_min ? `<span class="text-[9px] text-slate-500 block">${t.duration_min}m</span>` : ''}
+            </td>
+            <td class="py-3 px-4 text-center">
+              <button
+                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${t.htf_anchor.bottom || 0}, ${t.htf_anchor.top || 0}, ${t.ltf_fvg.bottom || 0}, ${t.ltf_fvg.top || 0}, ${t.ltf_fvg.formed_at || 0}, '${t.htf_anchor.first_touch_time_ist || ''}', '${t.state}', ${t.floating_r || 0})"
+                class="p-1.5 rounded-lg bg-dark-900 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 border border-dark-700 hover:border-amber-500/40 transition-colors"
+                title="View TradingView Chart"
+              >
+                <i class="fa-solid fa-chart-candlestick text-xs"></i>
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function clearExtremeLiveHistory() {
+      if (!confirm('Are you sure you want to clear the closed live trade history?')) return;
+      try {
+        await fetch('/api/extreme/clear-live-history', { method: 'POST' });
+        showToast('Live trade history cleared', 'success');
+        fetchExtremeLiveHistory();
+      } catch (err) {
+        showToast('Failed to clear history', 'error');
+      }
+    }
 
     async function loadExtremeSetups() {
       const btn = document.getElementById('btnScanExtreme');
