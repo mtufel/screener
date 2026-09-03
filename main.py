@@ -240,22 +240,30 @@ async def screener_background_worker():
 # ==============================================================================
 # EXTREME LTF BACKGROUND SCREENER DAEMON (STEP 6)
 # ==============================================================================
-async def send_extreme_telegram_alert(message: str) -> bool:
-    """Dispatches HTML alert to configured Telegram chat."""
+async def send_extreme_telegram_alert(message: str, image_bytes: Optional[bytes] = None) -> bool:
+    """Dispatches HTML alert (with optional high-res chart photo) to configured Telegram chat."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
         return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
+    import httpx
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if image_bytes:
+                url = f"https://api.telegram.org/bot{token}/sendPhoto"
+                files = {"photo": ("chart.png", image_bytes, "image/png")}
+                data = {"chat_id": chat_id, "caption": message, "parse_mode": "HTML"}
+                resp = await client.post(url, data=data, files=files)
+                if resp.status_code == 200:
+                    return True
+            # Fallback to sendMessage
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
             resp = await client.post(url, json=payload)
             return resp.status_code == 200
     except Exception as exc:
@@ -267,6 +275,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     """Runs a single background scan across whitelisted coins for Extreme LTF setups."""
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
     from hyperliquid_client import SYMBOL_ALIASES
+    from chart_generator import generate_extreme_setup_chart
 
     start_time_ist = datetime.now(IST)
     whitelist_raw = state.get("coins_whitelist", COINS_WHITELIST).strip()
@@ -324,6 +333,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                         "width": setup.ltf_fvg.width,
                         "gap_pct": round(setup.ltf_fvg.gap_pct, 3),
                         "formed_time_ist": setup.ltf_fvg.formed_time_ist,
+                        "formed_at": setup.ltf_fvg.formed_at,
                     },
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
                 }
@@ -336,19 +346,46 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 side = "LONG" if setup.direction == "Bullish" else "SHORT"
 
                 if curr_state != last_notified:
+                    chart_img = None
+                    try:
+                        candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)
+                        chart_img = generate_extreme_setup_chart(
+                            symbol=sym,
+                            direction=setup.direction,
+                            candles_ltf=candles_ltf,
+                            htf_fvg_bottom=setup.anchor.fvg.bottom,
+                            htf_fvg_top=setup.anchor.fvg.top,
+                            htf_first_touch_ist=setup.anchor.first_touch_time_ist,
+                            ltf_fvg_bottom=setup.ltf_fvg.bottom,
+                            ltf_fvg_top=setup.ltf_fvg.top,
+                            ltf_fvg_formed_ts=setup.ltf_fvg.formed_at,
+                            entry_price=setup.entry_price,
+                            stop_loss=setup.stop_loss,
+                            tp_1r=setup.tp_1r,
+                            tp_2r=setup.tp_2r,
+                            tp_3r=setup.tp_3r,
+                            state=curr_state,
+                            floating_r=setup.floating_r,
+                            ltf_timeframe=ltf,
+                        )
+                    except Exception as c_exc:
+                        logger.debug("Chart generation failed for alert %s: %s", sym, c_exc)
+
                     if curr_state == "PENDING_RETRACE" and last_notified is None:
                         msg = (
                             f"🔔 <b>[NEW SETUP] {sym} {side} ({ltf})</b>\n\n"
                             f"• <b>4H Anchor:</b> {setup.anchor.fvg.direction} [${setup.anchor.fvg.bottom:,.2f} - ${setup.anchor.fvg.top:,.2f}]\n"
-                            f"• <b>Target FVG:</b> [${setup.ltf_fvg.bottom:,.2f} - ${setup.ltf_fvg.top:,.2f}]\n"
+                            f"  └ <i>Formed:</i> {setup.anchor.fvg.formed_time_ist} | <i>1st Touch:</i> {setup.anchor.first_touch_time_ist or '--'}\n"
+                            f"• <b>Extreme {ltf} FVG:</b> [${setup.ltf_fvg.bottom:,.2f} - ${setup.ltf_fvg.top:,.2f}] ({setup.ltf_fvg.gap_pct:.2f}%)\n"
+                            f"  └ <i>Formed:</i> {setup.ltf_fvg.formed_time_ist}\n"
                             f"• <b>Limit Order Entry:</b> <code>${setup.entry_price:,.2f}</code> ({dist_pct:+.2f}% away)\n"
                             f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
                             f"• <b>Risk ($R$):</b> ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)\n"
                             f"• <b>TP 1R:</b> ${setup.tp_1r:,.2f} | <b>TP 2R:</b> ${setup.tp_2r:,.2f} | <b>TP 3R:</b> ${setup.tp_3r:,.2f}\n"
                             f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
                         )
-                        logger.info("Fired Telegram Setup Alert for %s %s", sym, side)
-                        await send_extreme_telegram_alert(msg)
+                        logger.info("Fired Telegram Setup Alert for %s %s (with chart)", sym, side)
+                        await send_extreme_telegram_alert(msg, image_bytes=chart_img)
                         state["extreme_notified_states"][fvg_key] = curr_state
                     elif curr_state == "TRADE_ACTIVE" and last_notified != "TRADE_ACTIVE":
                         primary_tp = setup.tp_2r if target == "2R" else setup.tp_1r
@@ -360,8 +397,8 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                             f"• <b>Primary Target ({target}):</b> <code>${primary_tp:,.2f}</code>\n"
                             f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
                         )
-                        logger.info("Fired Telegram Entry Alert for %s %s", sym, side)
-                        await send_extreme_telegram_alert(msg)
+                        logger.info("Fired Telegram Entry Alert for %s %s (with chart)", sym, side)
+                        await send_extreme_telegram_alert(msg, image_bytes=chart_img)
                         state["extreme_notified_states"][fvg_key] = curr_state
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
@@ -1098,6 +1135,71 @@ async def api_extreme_config(
             "coins_whitelist": state["coins_whitelist"],
         },
     })
+
+
+@app.get("/api/extreme/chart", summary="Generate TradingView-Style Chart for Extreme Setup")
+async def api_extreme_chart(
+    symbol: str = Query(..., description="Symbol e.g. BTC"),
+    direction: str = Query(default="Bullish", description="Direction"),
+    ltf: str = Query(default="15m", description="LTF Timeframe"),
+    entry_price: float = Query(...),
+    stop_loss: float = Query(...),
+    tp_1r: float = Query(...),
+    tp_2r: float = Query(...),
+    tp_3r: float = Query(...),
+    htf_bottom: float = Query(...),
+    htf_top: float = Query(...),
+    ltf_bottom: float = Query(...),
+    ltf_top: float = Query(...),
+    ltf_formed_ts: Optional[int] = Query(default=0),
+    htf_first_touch_ist: Optional[str] = Query(default=None),
+    state: str = Query(default="PENDING_RETRACE"),
+    floating_r: float = Query(default=0.0),
+):
+    from chart_generator import generate_extreme_setup_chart
+    from hyperliquid_client import SYMBOL_ALIASES
+
+    raw_sym = SYMBOL_ALIASES.get(symbol.strip().upper(), symbol.strip().upper())
+    candles = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)
+    if not candles:
+        import time
+        from strategy import Candle
+        now_ts = int(time.time() * 1000)
+        c_dur = 15 * 60 * 1000 if ltf == "15m" else (5 * 60 * 1000 if ltf == "5m" else 60 * 1000)
+        mid_val = (entry_price + stop_loss) / 2
+        candles = [
+            Candle(
+                timestamp=now_ts - (50 - i) * c_dur,
+                open=mid_val,
+                high=max(entry_price, tp_3r, htf_top),
+                low=min(entry_price, stop_loss, htf_bottom),
+                close=entry_price,
+                volume=100.0,
+            )
+            for i in range(50)
+        ]
+    img_bytes = generate_extreme_setup_chart(
+        symbol=symbol.strip().upper(),
+        direction=direction,
+        candles_ltf=candles,
+        htf_fvg_bottom=htf_bottom,
+        htf_fvg_top=htf_top,
+        htf_first_touch_ist=htf_first_touch_ist,
+        ltf_fvg_bottom=ltf_bottom,
+        ltf_fvg_top=ltf_top,
+        ltf_fvg_formed_ts=ltf_formed_ts or 0,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        tp_1r=tp_1r,
+        tp_2r=tp_2r,
+        tp_3r=tp_3r,
+        state=state,
+        floating_r=floating_r,
+        ltf_timeframe=ltf,
+    )
+    if not img_bytes:
+        raise HTTPException(status_code=500, detail="Failed to generate chart image")
+    return Response(content=img_bytes, media_type="image/png")
 
 
 if __name__ == "__main__":

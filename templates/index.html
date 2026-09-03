@@ -925,19 +925,20 @@
               <thead class="bg-dark-900/60 text-slate-400 border-b border-dark-700 text-[11px]">
                 <tr>
                   <th class="p-3">Direction</th>
-                  <th class="p-3">Entry Time</th>
-                  <th class="p-3">Entry Price</th>
+                  <th class="p-3">4H Anchor Zone</th>
+                  <th class="p-3">Extreme LTF FVG</th>
+                  <th class="p-3">Entry (IST)</th>
                   <th class="p-3">Stop Loss</th>
-                  <th class="p-3">Risk ($R$)</th>
                   <th class="p-3">1R</th>
                   <th class="p-3">2R</th>
                   <th class="p-3">3R</th>
-                  <th class="p-3">Max MFE</th>
-                  <th class="p-3">Exit Reason</th>
+                  <th class="p-3">MFE</th>
+                  <th class="p-3">Exit</th>
+                  <th class="p-3 text-center">Chart</th>
                 </tr>
               </thead>
               <tbody id="extremeTradesTableBody" class="divide-y divide-dark-700/50 text-slate-200">
-                <tr><td colspan="10" class="p-8 text-center text-slate-500">Configure parameters above and click "Run Extreme Backtest".</td></tr>
+                <tr><td colspan="11" class="p-8 text-center text-slate-500">Configure parameters above and click "Run Extreme Backtest".</td></tr>
               </tbody>
             </table>
           </div>
@@ -945,6 +946,28 @@
       </div>
     </div>
   </main>
+
+  <!-- Extreme TradingView Chart Modal -->
+  <div id="extremeChartModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-dark-850 border border-dark-700 rounded-3xl max-w-5xl w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-dark-700/80 pb-3">
+        <div class="flex items-center space-x-2">
+          <i class="fa-solid fa-chart-candlestick text-amber-400 text-base"></i>
+          <h3 id="extremeChartModalTitle" class="text-sm font-bold text-white font-mono">Strategy 2 TradingView Chart</h3>
+        </div>
+        <button onclick="closeExtremeChartModal()" class="h-8 w-8 rounded-lg bg-dark-700 hover:bg-dark-600 text-slate-300 flex items-center justify-center transition-colors">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="relative w-full aspect-[16/9] bg-dark-950 rounded-2xl overflow-hidden flex items-center justify-center border border-dark-700">
+        <div id="extremeChartSpinner" class="text-amber-400 text-sm font-mono flex items-center space-x-2">
+          <i class="fa-solid fa-spinner fa-spin"></i>
+          <span>Rendering TradingView Chart...</span>
+        </div>
+        <img id="extremeChartImg" class="w-full h-full object-contain hidden" alt="Strategy 2 Chart" />
+      </div>
+    </div>
+  </div>
 
   <!-- Toast Notification -->
   <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
@@ -1119,13 +1142,19 @@
             <!-- Setup Details Grid -->
             <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-dark-900/70 p-3 rounded-xl border border-dark-700/60">
               <div>
-                <span class="text-slate-400 text-[10px] block">4H ANCHOR ZONE</span>
-                <span class="text-slate-200 font-semibold">$${formatNumber(s.anchor.bottom)} - $${formatNumber(s.anchor.top)}</span>
-                <span class="text-[10px] text-slate-500 block">First Touch: ${s.anchor.first_touch_time_ist || '--'}</span>
+                <div class="flex items-center justify-between text-slate-400 text-[10px] mb-0.5">
+                  <span>4H ANCHOR ZONE</span>
+                  <span class="text-indigo-400 font-semibold">${s.anchor.formed_time_ist || '--'}</span>
+                </div>
+                <span class="text-slate-200 font-semibold block">$${formatNumber(s.anchor.bottom)} - $${formatNumber(s.anchor.top)}</span>
+                <span class="text-[10px] text-slate-500 block">1st Touch: ${s.anchor.first_touch_time_ist || '--'}</span>
               </div>
               <div>
-                <span class="text-slate-400 text-[10px] block">TARGET ${s.ltf_timeframe} FVG</span>
-                <span class="text-slate-200 font-semibold">$${formatNumber(s.target_fvg.bottom)} - $${formatNumber(s.target_fvg.top)}</span>
+                <div class="flex items-center justify-between text-slate-400 text-[10px] mb-0.5">
+                  <span>EXTREME ${s.ltf_timeframe} FVG</span>
+                  <span class="text-amber-400 font-semibold">${s.target_fvg.formed_time_ist || '--'}</span>
+                </div>
+                <span class="text-slate-200 font-semibold block">$${formatNumber(s.target_fvg.bottom)} - $${formatNumber(s.target_fvg.top)}</span>
                 <span class="text-[10px] text-slate-500 block">Gap: ${s.target_fvg.gap_pct}% ($${formatNumber(s.target_fvg.width)})</span>
               </div>
             </div>
@@ -1133,7 +1162,7 @@
             <!-- Trade Execution Parameters -->
             <div class="grid grid-cols-4 gap-2 text-xs font-mono text-center">
               <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
-                <span class="text-[10px] text-slate-400 block">ENTRY (OUTER)</span>
+                <span class="text-[10px] text-slate-400 block">ENTRY</span>
                 <span class="text-white font-bold">$${formatNumber(s.entry_price)}</span>
               </div>
               <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
@@ -1148,6 +1177,20 @@
                 <span class="text-[10px] text-amber-400 block">PRIMARY (2R)</span>
                 <span class="text-amber-300 font-bold">$${formatNumber(s.tp_2r)}</span>
               </div>
+            </div>
+
+            <!-- Action Bar -->
+            <div class="flex items-center justify-between pt-2 border-t border-dark-700/60">
+              <div class="text-[11px] text-slate-400 font-mono">
+                Risk: <span class="text-slate-200 font-semibold">$${s.risk_r}</span> (${s.risk_pct}%)
+              </div>
+              <button
+                onclick="openExtremeLiveChart('${s.symbol}', '${s.direction}', '${s.ltf_timeframe}', ${s.entry_price}, ${s.stop_loss}, ${s.tp_1r}, ${s.tp_2r}, ${s.tp_3r}, ${s.anchor.bottom}, ${s.anchor.top}, ${s.target_fvg.bottom}, ${s.target_fvg.top}, ${s.target_fvg.formed_at || 0}, '${s.anchor.first_touch_time_ist || ''}', '${s.state}', ${s.floating_r})"
+                class="px-3 py-1.5 rounded-xl bg-dark-900 hover:bg-dark-750 text-amber-400 hover:text-amber-300 border border-dark-700 hover:border-amber-500/40 text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-sm"
+              >
+                <i class="fa-solid fa-chart-candlestick"></i>
+                <span>TradingView Chart</span>
+              </button>
             </div>
           </div>
         `;
@@ -1307,25 +1350,50 @@
             const r1 = t.hit_1r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
             const r2 = t.hit_2r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
             const r3 = t.hit_3r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
+            const htf = t.htf_anchor || {};
+            const ltfFvg = t.ltf_fvg || {};
 
             rows += `
               <tr class="hover:bg-dark-700/30 transition-colors">
                 <td class="p-3 ${dirColor} font-bold">${t.direction}</td>
-                <td class="p-3 text-slate-400">${t.entry_time}</td>
-                <td class="p-3 text-white">$${formatNumber(t.entry_price)}</td>
-                <td class="p-3 text-rose-300">$${formatNumber(t.stop_loss)}</td>
-                <td class="p-3 text-slate-300">$${t.risk_r}</td>
+                <td class="p-3 text-slate-300">
+                  <span class="block font-semibold">$${formatNumber(htf.bottom)} - $${formatNumber(htf.top)}</span>
+                  <span class="text-[10px] text-slate-400 block">Touch: ${htf.first_touch_time || '--'}</span>
+                  <span class="text-[9px] text-slate-500 block">Formed: ${htf.formed_time || '--'}</span>
+                </td>
+                <td class="p-3 text-slate-300">
+                  <span class="block font-semibold">$${formatNumber(ltfFvg.bottom)} - $${formatNumber(ltfFvg.top)}</span>
+                  <span class="text-[10px] text-amber-400 block">Gap: ${ltfFvg.gap_pct}%</span>
+                  <span class="text-[9px] text-slate-500 block">Formed: ${ltfFvg.formed_time || '--'}</span>
+                </td>
+                <td class="p-3">
+                  <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
+                  <span class="text-[10px] text-slate-400 block">${t.entry_time}</span>
+                </td>
+                <td class="p-3 text-rose-300">
+                  <span class="font-bold block">$${formatNumber(t.stop_loss)}</span>
+                  <span class="text-[10px] text-slate-400 block">Risk: $${t.risk_r}</span>
+                </td>
                 <td class="p-3">${r1}</td>
-                <td class="p-3">${r2}</td>
+                <td class="p-3 font-bold">${r2}</td>
                 <td class="p-3">${r3}</td>
-                <td class="p-3 text-amber-300">+${t.mfe_r}R</td>
-                <td class="p-3 text-slate-400">${t.exit_reason}</td>
+                <td class="p-3 text-amber-300 font-bold">+${t.mfe_r}R</td>
+                <td class="p-3 text-slate-400 text-[10px]">${t.exit_reason}</td>
+                <td class="p-3 text-center">
+                  <button
+                    onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${ltf}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltfFvg.bottom || 0}, ${ltfFvg.top || 0}, ${t.fvg_formation_timestamp || 0}, '${htf.first_touch_time || ''}', 'HISTORICAL_${t.exit_reason}', ${t.mfe_r})"
+                    class="h-7 w-7 rounded-lg bg-dark-900 hover:bg-dark-700 text-amber-400 hover:text-amber-300 border border-dark-700 inline-flex items-center justify-center transition-colors"
+                    title="View TradingView Chart"
+                  >
+                    <i class="fa-solid fa-chart-line text-xs"></i>
+                  </button>
+                </td>
               </tr>
             `;
           });
           tbody.innerHTML = rows;
         } else {
-          tbody.innerHTML = '<tr><td colspan="10" class="p-4 text-center text-slate-500">No trades triggered in this period.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="11" class="p-4 text-center text-slate-500">No trades triggered in this period.</td></tr>';
         }
 
         showToast(`Backtest complete: ${data.total_trades} trades simulated`, 'success');
@@ -1334,8 +1402,58 @@
         showToast('Backtest failed', 'error');
       } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-chart-line text-indigo-400"></i><span>Quick Backtest</span>';
+        btn.innerHTML = '<i class="fa-solid fa-play"></i><span>Run Extreme Backtest</span>';
       }
+    }
+
+    function openExtremeLiveChart(symbol, direction, ltf, entry, sl, r1, r2, r3, htfBot, htfTop, ltfBot, ltfTop, ltfTs, touchIst, state, floatingR) {
+      const modal = document.getElementById('extremeChartModal');
+      const title = document.getElementById('extremeChartModalTitle');
+      const spinner = document.getElementById('extremeChartSpinner');
+      const img = document.getElementById('extremeChartImg');
+      
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+      title.innerText = `${symbol}-PERP · ${ltf} | Extreme Strategy (${direction}) | ${state}`;
+      spinner.classList.remove('hidden');
+      img.classList.add('hidden');
+
+      const params = new URLSearchParams({
+        symbol: symbol,
+        direction: direction,
+        ltf: ltf,
+        entry_price: entry,
+        stop_loss: sl,
+        tp_1r: r1,
+        tp_2r: r2,
+        tp_3r: r3,
+        htf_bottom: htfBot,
+        htf_top: htfTop,
+        ltf_bottom: ltfBot,
+        ltf_top: ltfTop,
+        ltf_formed_ts: ltfTs || 0,
+        htf_first_touch_ist: touchIst || '',
+        state: state,
+        floating_r: floatingR || 0.0
+      });
+
+      const url = `/api/extreme/chart?${params.toString()}`;
+      img.onload = () => {
+        spinner.classList.add('hidden');
+        img.classList.remove('hidden');
+      };
+      img.onerror = () => {
+        spinner.innerHTML = '<span class="text-rose-400">Failed to load TradingView chart</span>';
+      };
+      img.src = url;
+    }
+
+    function closeExtremeChartModal() {
+      const modal = document.getElementById('extremeChartModal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      const img = document.getElementById('extremeChartImg');
+      if (img) img.src = '';
     }
 
     function setLiveLtf(ltf) {

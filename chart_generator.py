@@ -459,3 +459,183 @@ def generate_setup_chart(
             f.write(img_bytes)
 
     return img_bytes
+
+
+def generate_extreme_setup_chart(
+    symbol: str,
+    direction: str,
+    candles_ltf: List[Candle],
+    htf_fvg_bottom: float,
+    htf_fvg_top: float,
+    htf_first_touch_ist: Optional[str],
+    ltf_fvg_bottom: float,
+    ltf_fvg_top: float,
+    ltf_fvg_formed_ts: int,
+    entry_price: float,
+    stop_loss: float,
+    tp_1r: float,
+    tp_2r: float,
+    tp_3r: float,
+    state: str = "PENDING_RETRACE",
+    floating_r: float = 0.0,
+    ltf_timeframe: str = "15m",
+    entry_time_ts: Optional[int] = None,
+    output_path: Optional[str] = None,
+) -> bytes:
+    """
+    Renders a high-resolution TradingView-style chart for Strategy 2 (Extreme LTF FVG).
+    Highlights 4H Anchor Zone (purple), Extreme LTF FVG (amber), Entry, SL, and 1R/2R/3R targets.
+    """
+    if not candles_ltf:
+        return b""
+
+    # Smart Window Slicing
+    anchor_ms = ltf_fvg_formed_ts or entry_time_ts or (candles_ltf[-1].timestamp if candles_ltf else 0)
+    if anchor_ms and len(candles_ltf) > 30:
+        anchor_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - anchor_ms))
+        start_win = max(0, anchor_idx - 16)
+        end_win = min(len(candles_ltf), anchor_idx + 36)
+        view_candles = candles_ltf[start_win:end_win]
+    else:
+        view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
+
+    n_candles = len(view_candles)
+    if n_candles == 0:
+        return b""
+
+    fig, ax = plt.subplots(figsize=(13, 7.2), dpi=130)
+    fig.patch.set_facecolor(BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+
+    candle_width = 0.62
+    wick_width = 1.3
+
+    # 1. Draw Candlesticks
+    for idx, c in enumerate(view_candles):
+        is_green = c.close >= c.open
+        color = BULL_COLOR if is_green else BEAR_COLOR
+        lower_body = min(c.open, c.close)
+        body_height = max(abs(c.close - c.open), (c.high - c.low) * 0.03)
+
+        ax.plot([idx, idx], [c.low, c.high], color=color, linewidth=wick_width, zorder=3)
+        rect = patches.Rectangle(
+            (idx - candle_width / 2, lower_body),
+            candle_width,
+            body_height,
+            linewidth=0.8,
+            edgecolor=color,
+            facecolor=color,
+            zorder=4,
+        )
+        ax.add_patch(rect)
+
+    # 2. Draw 4H Anchor Zone (Purple)
+    ax.axhspan(
+        htf_fvg_bottom,
+        htf_fvg_top,
+        xmin=0,
+        xmax=1,
+        color=HTF_FVG_COLOR,
+        alpha=0.18,
+        label="4H Anchor Zone",
+        zorder=2,
+    )
+    ax.axhline(htf_fvg_top, color=HTF_FVG_COLOR, linestyle=":", linewidth=1.0, alpha=0.6)
+    ax.axhline(htf_fvg_bottom, color=HTF_FVG_COLOR, linestyle=":", linewidth=1.0, alpha=0.6)
+
+    # 3. Draw Extreme LTF FVG (Amber)
+    ltf_start_idx = 0
+    if ltf_fvg_formed_ts:
+        for idx, c in enumerate(view_candles):
+            if c.timestamp >= ltf_fvg_formed_ts:
+                ltf_start_idx = max(0, idx - 2)
+                break
+
+    ltf_fvg_rect = patches.Rectangle(
+        (ltf_start_idx, min(ltf_fvg_bottom, ltf_fvg_top)),
+        n_candles - ltf_start_idx + 3,
+        abs(ltf_fvg_top - ltf_fvg_bottom),
+        linewidth=1.2,
+        edgecolor=LTF_FVG_COLOR,
+        facecolor=LTF_FVG_COLOR,
+        alpha=0.28,
+        zorder=2,
+    )
+    ax.add_patch(ltf_fvg_rect)
+
+    # 4. Draw Trade Position Lines (Entry, SL, TP 1R, 2R, 3R)
+    entry_line_color = "#38bdf8" if direction == "Bullish" else "#fb923c"
+    ax.axhline(entry_price, color=entry_line_color, linestyle="-", linewidth=1.8, label=f"Entry: ${entry_price:,.2f}", zorder=5)
+    ax.axhline(stop_loss, color=STOP_RED_BOX, linestyle="--", linewidth=1.6, label=f"Stop Loss: ${stop_loss:,.2f}", zorder=5)
+    ax.axhline(tp_1r, color="#22d3ee", linestyle=":", linewidth=1.2, label=f"TP 1R: ${tp_1r:,.2f}", zorder=5)
+    ax.axhline(tp_2r, color=TARGET_GREEN_BOX, linestyle="-", linewidth=2.0, label=f"TP 2R (Primary): ${tp_2r:,.2f}", zorder=5)
+    ax.axhline(tp_3r, color="#34d399", linestyle=":", linewidth=1.2, label=f"TP 3R: ${tp_3r:,.2f}", zorder=5)
+
+    # Annotations on the right price axis
+    right_x = n_candles - 0.5
+    ax.text(right_x, entry_price, f" ENTRY ${entry_price:,.2f}", color=entry_line_color, fontsize=8.5, fontweight="bold", fontfamily="monospace", va="center")
+    ax.text(right_x, stop_loss, f" SL ${stop_loss:,.2f}", color=STOP_RED_BOX, fontsize=8.5, fontweight="bold", fontfamily="monospace", va="center")
+    ax.text(right_x, tp_1r, f" 1R ${tp_1r:,.2f}", color="#22d3ee", fontsize=8, fontfamily="monospace", va="center")
+    ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8.5, fontweight="bold", fontfamily="monospace", va="center")
+    ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=8, fontfamily="monospace", va="center")
+
+    # 4H Zone label
+    mid_htf = (htf_fvg_bottom + htf_fvg_top) / 2
+    touch_info = f" (1st Touch: {htf_first_touch_ist})" if htf_first_touch_ist else ""
+    ax.text(2, mid_htf, f"4H ANCHOR ZONE [${htf_fvg_bottom:,.2f} - ${htf_fvg_top:,.2f}]{touch_info}", color="#c084fc", fontsize=8, fontfamily="monospace", va="center")
+
+    # Styling and Grid
+    ax.grid(True, color=GRID_COLOR, linestyle="--", linewidth=0.5, alpha=0.7)
+    ax.set_xlim(-1, n_candles + 4)
+
+    all_prices = [c.high for c in view_candles] + [c.low for c in view_candles] + [stop_loss, tp_3r, htf_fvg_top, htf_fvg_bottom]
+    y_min, y_max = min(all_prices), max(all_prices)
+    y_pad = (y_max - y_min) * 0.08
+    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    # X-axis Timestamps in IST
+    step = max(1, n_candles // 7)
+    x_indices = list(range(0, n_candles, step))
+    x_labels = [datetime.fromtimestamp(view_candles[i].timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p") for i in x_indices]
+    ax.set_xticks(x_indices)
+    ax.set_xticklabels(x_labels, color=TEXT_MUTED, fontsize=8, fontfamily="monospace")
+    ax.yaxis.tick_right()
+    ax.tick_params(colors=TEXT_MUTED, labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_color(BORDER_COLOR)
+
+    # Header and Status
+    status_str = f"ACTIVE (+{floating_r:.2f}R)" if state == "TRADE_ACTIVE" else "PENDING RETRACE"
+    now_ist_str = datetime.now(IST).strftime("%d-%b-%Y %I:%M:%S %p IST")
+    plt.title(
+        f"{symbol}-PERP · {ltf_timeframe}  |  EXTREME LTF STRATEGY  [{status_str}]",
+        color=TEXT_COLOR,
+        fontsize=12,
+        fontweight="bold",
+        fontfamily="monospace",
+        loc="left",
+        pad=14,
+    )
+    plt.suptitle(
+        f"IST: {now_ist_str}",
+        color=TEXT_MUTED,
+        fontsize=8.5,
+        fontfamily="monospace",
+        x=0.86,
+        y=0.96,
+    )
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", facecolor=BG_COLOR, edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    img_bytes = buf.getvalue()
+
+    if output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(img_bytes)
+
+    return img_bytes
+

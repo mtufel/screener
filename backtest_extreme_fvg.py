@@ -73,6 +73,10 @@ class ExtremeHistoricalTrade:
     htf_fvg_bottom: float
     htf_fvg_top: float
     fvg_formation_timestamp: int
+    htf_formed_timestamp: int = 0
+    htf_first_touch_timestamp: int = 0
+    htf_most_recent_touch_timestamp: int = 0
+    ltf_gap_pct: float = 0.0
 
     @property
     def entry_time_ist(self) -> str:
@@ -81,6 +85,30 @@ class ExtremeHistoricalTrade:
     @property
     def exit_time_ist(self) -> str:
         return datetime.fromtimestamp(self.exit_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+    @property
+    def htf_formed_time_ist(self) -> str:
+        if not self.htf_formed_timestamp:
+            return "--"
+        return datetime.fromtimestamp(self.htf_formed_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+    @property
+    def htf_first_touch_time_ist(self) -> str:
+        if not self.htf_first_touch_timestamp:
+            return "--"
+        return datetime.fromtimestamp(self.htf_first_touch_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+    @property
+    def htf_most_recent_touch_time_ist(self) -> str:
+        if not self.htf_most_recent_touch_timestamp:
+            return "--"
+        return datetime.fromtimestamp(self.htf_most_recent_touch_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+    @property
+    def ltf_formed_time_ist(self) -> str:
+        if not self.fvg_formation_timestamp:
+            return "--"
+        return datetime.fromtimestamp(self.fvg_formation_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -91,6 +119,9 @@ class ExtremeHistoricalTrade:
             "entry_price": self.entry_price,
             "stop_loss": self.stop_loss,
             "risk_r": round(self.risk_r, 2),
+            "tp_1r": round(self.tp_1r, 2),
+            "tp_2r": round(self.tp_2r, 2),
+            "tp_3r": round(self.tp_3r, 2),
             "hit_1r": self.hit_1r,
             "hit_2r": self.hit_2r,
             "hit_3r": self.hit_3r,
@@ -98,6 +129,21 @@ class ExtremeHistoricalTrade:
             "mfe_r": round(self.mfe_r, 2),
             "mae_r": round(self.mae_r, 2),
             "duration_min": self.duration_minutes,
+            "htf_anchor": {
+                "bottom": self.htf_fvg_bottom,
+                "top": self.htf_fvg_top,
+                "formed_time": self.htf_formed_time_ist,
+                "first_touch_time": self.htf_first_touch_time_ist,
+                "most_recent_touch_time": self.htf_most_recent_touch_time_ist,
+            },
+            "ltf_fvg": {
+                "bottom": self.ltf_fvg_bottom,
+                "top": self.ltf_fvg_top,
+                "gap_pct": round(self.ltf_gap_pct, 3),
+                "formed_time": self.ltf_formed_time_ist,
+            },
+            "fvg_formation_timestamp": self.fvg_formation_timestamp,
+            "entry_timestamp": self.entry_timestamp,
         }
 
 
@@ -244,6 +290,10 @@ def simulate_trade_execution(
         htf_fvg_bottom=anchor.fvg.bottom,
         htf_fvg_top=anchor.fvg.top,
         fvg_formation_timestamp=ltf_fvg.formed_at,
+        htf_formed_timestamp=anchor.fvg.formed_at,
+        htf_first_touch_timestamp=anchor.first_touch_timestamp,
+        htf_most_recent_touch_timestamp=anchor.most_recent_touch_timestamp,
+        ltf_gap_pct=ltf_fvg.gap_pct,
     )
 
 
