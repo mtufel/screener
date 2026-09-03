@@ -490,14 +490,12 @@ async def extreme_screener_background_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown events for FastAPI."""
-    logger.info("Starting Crypto FVG Screener application (IST & Extreme Strategy Daemon)...")
-    state["is_running"] = True
-    state["extreme_is_running"] = True
-    worker_task = asyncio.create_task(screener_background_worker())
-    monitor_task = asyncio.create_task(trade_monitor_worker())
+    logger.info("Starting Crypto FVG Screener application (Strategy 1 Disabled, Strategy 2 Extreme Daemon Active)...")
+    state["is_running"] = False  # Strategy 1 disabled
+    state["extreme_is_running"] = True  # Strategy 2 active
+    state["background_task"] = None
+    state["monitor_task"] = None
     extreme_task = asyncio.create_task(extreme_screener_background_worker())
-    state["background_task"] = worker_task
-    state["monitor_task"] = monitor_task
     state["extreme_background_task"] = extreme_task
 
     yield
