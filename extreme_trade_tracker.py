@@ -217,8 +217,15 @@ class ExtremeTradeTracker:
             target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
 
             candles = (recent_candles_map.get(trade.symbol, []) or []) if recent_candles_map else []
-            recent_high = max([getattr(c, "high", c.get("h", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
-            recent_low = min([getattr(c, "low", c.get("l", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
+            entry_t = trade.entry_timestamp or 0
+            subsequent_candles = []
+            for c in candles:
+                c_ts = getattr(c, "timestamp", c.get("t", 0) if isinstance(c, dict) else 0)
+                if c_ts >= entry_t:
+                    subsequent_candles.append(c)
+
+            recent_high = max([getattr(c, "high", c.get("h", curr_px) if isinstance(c, dict) else curr_px) for c in subsequent_candles], default=curr_px) if subsequent_candles else curr_px
+            recent_low = min([getattr(c, "low", c.get("l", curr_px) if isinstance(c, dict) else curr_px) for c in subsequent_candles], default=curr_px) if subsequent_candles else curr_px
 
             # Update MFE & Floating R
             if trade.direction == "Bullish":

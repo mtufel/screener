@@ -196,6 +196,10 @@ class HyperliquidClient:
                         str(exc),
                     )
 
+                    if status_code == 500 and payload.get("type") == "candleSnapshot" and payload.get("req", {}).get("coin") in ("WTIOIL", "SILVER"):
+                        logger.debug("Unsupported candleSnapshot for %s (500), skipping retries.", payload.get("req", {}).get("coin"))
+                        raise
+
                     if attempt == retries:
                         logger.error(
                             "Hyperliquid request permanently failed after %d retries. Payload: %s",
@@ -315,6 +319,8 @@ class HyperliquidClient:
                             res = await client.get(url)
                             if res.status_code == 200:
                                 raw = res.json()
+                                break
+                            elif res.status_code == 400:
                                 break
                             elif res.status_code == 429:
                                 await asyncio.sleep(2.0 * attempt)
