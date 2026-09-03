@@ -241,34 +241,11 @@ async def screener_background_worker():
 # EXTREME LTF BACKGROUND SCREENER DAEMON (STEP 6)
 # ==============================================================================
 async def send_extreme_telegram_alert(message: str, image_bytes: Optional[bytes] = None) -> bool:
-    """Dispatches HTML alert (with optional high-res chart photo) to configured Telegram chat."""
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        return False
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            if image_bytes:
-                url = f"https://api.telegram.org/bot{token}/sendPhoto"
-                files = {"photo": ("chart.png", image_bytes, "image/png")}
-                data = {"chat_id": chat_id, "caption": message, "parse_mode": "HTML"}
-                resp = await client.post(url, data=data, files=files)
-                if resp.status_code == 200:
-                    return True
-            # Fallback to sendMessage
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            }
-            resp = await client.post(url, json=payload)
-            return resp.status_code == 200
-    except Exception as exc:
-        logger.warning("Failed to dispatch Extreme Telegram alert: %s", exc)
-        return False
+    """Dispatches HTML alert (with optional high-res chart photo) to configured Telegram chat with retries."""
+    from telegram_client import send_telegram_alert, send_telegram_photo
+    if image_bytes:
+        return await send_telegram_photo(photo_bytes=image_bytes, caption=message)
+    return await send_telegram_alert(text=message)
 
 
 async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:

@@ -140,8 +140,9 @@ async def send_telegram_alert(
     text: str,
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
+    retries: int = 3,
 ) -> bool:
-    """Sends a single text message to Telegram."""
+    """Sends a single text message to Telegram with automatic retries and exponential backoff."""
     token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
     chat = (chat_id or TELEGRAM_CHAT_ID).strip()
 
@@ -157,18 +158,34 @@ async def send_telegram_alert(
         "disable_web_page_preview": True,
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(url, json=payload)
-            if response.status_code == 200:
-                logger.info("Telegram message successfully sent to chat %s.", chat)
-                return True
-            else:
-                logger.error("Failed to send Telegram message. HTTP %d: %s", response.status_code, response.text)
-                return False
-    except Exception as exc:
-        logger.error("Error communicating with Telegram API: %s", exc)
-        return False
+    timeout_cfg = httpx.Timeout(15.0, connect=5.0)
+    for attempt in range(1, retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                response = await client.post(url, json=payload)
+                if response.status_code == 200:
+                    logger.info("Telegram message successfully sent to chat %s.", chat)
+                    return True
+                elif response.status_code == 429:
+                    retry_after = 2.0 * attempt
+                    try:
+                        resp_json = response.json()
+                        retry_after = float(resp_json.get("parameters", {}).get("retry_after", retry_after))
+                    except Exception:
+                        pass
+                    logger.warning("Telegram rate limited (429). Retrying in %.1fs (attempt %d/%d)", retry_after, attempt, retries)
+                    await asyncio.sleep(retry_after)
+                else:
+                    logger.warning("Telegram message failed (HTTP %d, attempt %d/%d): %s", response.status_code, attempt, retries, response.text)
+                    if attempt < retries:
+                        await asyncio.sleep(1.0 * attempt)
+        except Exception as exc:
+            logger.warning("Error communicating with Telegram API (attempt %d/%d): %s", attempt, retries, exc)
+            if attempt < retries:
+                await asyncio.sleep(1.0 * attempt)
+
+    logger.error("Failed to send Telegram message after %d attempts.", retries)
+    return False
 
 
 async def send_telegram_photo(
@@ -176,8 +193,9 @@ async def send_telegram_photo(
     caption: str,
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
+    retries: int = 3,
 ) -> bool:
-    """Sends a photo with caption to Telegram."""
+    """Sends a photo with caption to Telegram with automatic retries, falling back to text."""
     token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
     chat = (chat_id or TELEGRAM_CHAT_ID).strip()
 
@@ -190,22 +208,38 @@ async def send_telegram_photo(
         "caption": caption[:1024],  # Telegram caption max 1024 chars
         "parse_mode": "HTML",
     }
-    files = {
-        "photo": ("chart.png", photo_bytes, "image/png")
-    }
 
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(url, data=data, files=files)
-            if response.status_code == 200:
-                logger.info("Telegram chart photo successfully sent to chat %s.", chat)
-                return True
-            else:
-                logger.warning("Failed to send photo (HTTP %d: %s). Falling back to text message.", response.status_code, response.text)
-                return await send_telegram_alert(caption, bot_token=token, chat_id=chat)
-    except Exception as exc:
-        logger.error("Error sending Telegram photo: %s. Falling back to text.", exc)
-        return await send_telegram_alert(caption, bot_token=token, chat_id=chat)
+    timeout_cfg = httpx.Timeout(20.0, connect=6.0)
+    for attempt in range(1, retries + 1):
+        try:
+            files = {
+                "photo": ("chart.png", photo_bytes, "image/png")
+            }
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                response = await client.post(url, data=data, files=files)
+                if response.status_code == 200:
+                    logger.info("Telegram chart photo successfully sent to chat %s.", chat)
+                    return True
+                elif response.status_code == 429:
+                    retry_after = 2.0 * attempt
+                    try:
+                        resp_json = response.json()
+                        retry_after = float(resp_json.get("parameters", {}).get("retry_after", retry_after))
+                    except Exception:
+                        pass
+                    logger.warning("Telegram photo rate limited (429). Retrying in %.1fs (attempt %d/%d)", retry_after, attempt, retries)
+                    await asyncio.sleep(retry_after)
+                else:
+                    logger.warning("Failed to send photo (HTTP %d, attempt %d/%d): %s", response.status_code, attempt, retries, response.text)
+                    if attempt < retries:
+                        await asyncio.sleep(1.0 * attempt)
+        except Exception as exc:
+            logger.warning("Error sending Telegram photo (attempt %d/%d): %s", attempt, retries, exc)
+            if attempt < retries:
+                await asyncio.sleep(1.0 * attempt)
+
+    logger.warning("Photo send exhausted retries. Falling back to text alert.")
+    return await send_telegram_alert(caption, bot_token=token, chat_id=chat, retries=retries)
 
 
 async def broadcast_trade_updates(updates: List[str]) -> int:

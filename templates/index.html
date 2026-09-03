@@ -1103,6 +1103,26 @@
       }
     }
 
+    async function fetchWithRetry(url, options = {}, timeoutMs = 25000, maxRetries = 2) {
+      let lastError;
+      for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, { ...options, signal: controller.signal });
+          clearTimeout(timer);
+          return res;
+        } catch (err) {
+          clearTimeout(timer);
+          lastError = err;
+          if (attempt <= maxRetries) {
+            await new Promise(r => setTimeout(r, 600 * attempt));
+          }
+        }
+      }
+      throw lastError;
+    }
+
     function showToast(msg, type = 'success') {
       const toast = document.getElementById('toast');
       const toastMsg = document.getElementById('toastMsg');
@@ -1302,7 +1322,7 @@
       const btn = document.getElementById('btnToggleDaemon');
       btn.disabled = true;
       try {
-        const resp = await fetch('/api/extreme/toggle-daemon', { method: 'POST' });
+        const resp = await fetchWithRetry('/api/extreme/toggle-daemon', { method: 'POST' });
         const data = await resp.json();
         showToast(data.message, data.is_running ? 'success' : 'info');
         updateExtremeDaemonUI(data.is_running);
@@ -1336,7 +1356,7 @@
 
     async function changeExtremeInterval(newSeconds) {
       try {
-        const resp = await fetch(`/api/extreme/config?interval_seconds=${newSeconds}`, { method: 'POST' });
+        const resp = await fetchWithRetry(`/api/extreme/config?interval_seconds=${newSeconds}`, { method: 'POST' });
         const data = await resp.json();
         showToast(`Daemon interval updated to ${newSeconds}s`, 'success');
         updateExtremeDaemonUI(data.config.is_running !== false, newSeconds);
@@ -1350,7 +1370,7 @@
       if (!s2Wrap || s2Wrap.classList.contains('hidden')) return;
 
       try {
-        const resp = await fetch('/api/extreme/status');
+        const resp = await fetchWithRetry('/api/extreme/status', {}, 10000, 1);
         const data = await resp.json();
         updateExtremeDaemonUI(data.is_running, data.interval_seconds);
 
@@ -1372,7 +1392,7 @@
 
     async function fetchExtremeLiveHistory() {
       try {
-        const resp = await fetch('/api/extreme/live-history');
+        const resp = await fetchWithRetry('/api/extreme/live-history', {}, 10000, 1);
         if (!resp.ok) return;
         const data = await resp.json();
         renderExtremeLiveHistory(data);
@@ -1398,53 +1418,41 @@
       const tbody = document.getElementById('extremeLiveHistoryTableBody');
       if (!tbody) return;
 
-      const allTrades = [...(data.active_trades || []), ...(data.history || [])];
-      if (allTrades.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="py-8 text-center text-slate-500">No daemon trades recorded yet in this session. Active positions and closed trades will appear here automatically.</td></tr>`;
+      const trades = data.trades || [];
+      if (trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="py-6 text-center text-slate-500 font-mono text-xs">No trades tracked in live session yet. Trades auto-populate as daemon detects FVG fills.</td></tr>';
         return;
       }
 
-      tbody.innerHTML = allTrades.map(t => {
-        const isBullish = t.direction === 'Bullish';
-        const isClosed = ['COMPLETED_TP', 'STOPPED_OUT'].includes(t.state);
-        const isWin = t.state === 'COMPLETED_TP';
+      tbody.innerHTML = trades.slice().reverse().map((t, idx) => {
+        const isBull = t.direction === 'Bullish';
+        const dirBadge = isBull ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold text-[10px]">LONG</span>' : '<span class="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-[10px]">SHORT</span>';
+        
+        let stateBadge = '';
         const isActive = t.state === 'TRADE_ACTIVE';
-
-        let statusBadge = '';
-        if (isWin) {
-          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">🏆 TP HIT (+${t.realized_r.toFixed(1)}R)</span>`;
+        if (isActive) {
+          stateBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">ACTIVE (${t.floating_r > 0 ? '+' : ''}${t.floating_r.toFixed(2)}R)</span>`;
+        } else if (t.state === 'COMPLETED_TP') {
+          stateBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">WIN (TP HIT)</span>';
         } else if (t.state === 'STOPPED_OUT') {
-          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/40">🛑 STOP LOSS (-1.0R)</span>`;
-        } else if (isActive) {
-          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-indigo-500/20 text-indigo-400 border border-indigo-500/40 animate-pulse">🚀 ACTIVE (${t.floating_r > 0 ? '+' : ''}${t.floating_r.toFixed(2)}R)</span>`;
+          stateBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">STOPPED OUT</span>';
         } else {
-          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-amber-500/20 text-amber-400 border border-amber-500/40">⏳ PENDING RETRACE</span>`;
+          stateBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 border border-dark-600">${t.state}</span>`;
         }
 
-        const dirBg = isBullish ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
-        const targetTp = t.completion_target === '2R' ? t.tp_2r : (t.completion_target === '1R' ? t.tp_1r : t.tp_3r);
+        const targetTp = t.completion_target === '1R' ? t.tp_1r : (t.completion_target === '3R' ? t.tp_3r : t.tp_2r);
 
         return `
           <tr class="hover:bg-dark-750/50 transition-colors">
-            <td class="py-3 px-4">${statusBadge}</td>
-            <td class="py-3 px-4">
-              <span class="font-bold text-white">${t.symbol}</span>
-              <span class="px-1.5 py-0.5 rounded text-[9px] uppercase border ml-1 ${dirBg}">${t.direction}</span>
-              <span class="text-[9px] text-slate-500 block font-normal">${t.ltf_timeframe}</span>
+            <td class="py-3 px-4 font-bold text-white font-mono flex items-center space-x-1.5">
+              <span>${t.symbol}</span>
+              <span class="text-[10px] text-slate-500">${t.ltf_timeframe}</span>
             </td>
+            <td class="py-3 px-4">${dirBadge}</td>
+            <td class="py-3 px-4">${stateBadge}</td>
             <td class="py-3 px-4">
-              <span class="text-slate-200 block">$${formatNumber(t.htf_anchor.bottom)} - $${formatNumber(t.htf_anchor.top)}</span>
-              <span class="text-[9px] text-slate-500 block">Touch: ${t.htf_anchor.first_touch_time_ist || '--'}</span>
-            </td>
-            <td class="py-3 px-4">
-              <span class="text-slate-200 block">$${formatNumber(t.ltf_fvg.bottom)} - $${formatNumber(t.ltf_fvg.top)}</span>
-              <span class="text-[9px] text-amber-400/80 block">Gap: ${t.ltf_fvg.gap_pct || 0}%</span>
-            </td>
-            <td class="py-3 px-4">
-              <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
-              <span class="text-[9px] ${t.entry_filled_at_ist ? 'text-emerald-400 font-semibold' : 'text-slate-500'} block">
-                ${t.entry_filled_at_ist ? `Filled: ${t.entry_filled_at_ist}` : `Created: ${t.created_at_ist}`}
-              </span>
+              <span class="text-slate-200 font-bold block">$${formatNumber(t.entry_price)}</span>
+              <span class="text-[9px] text-slate-500 block">${t.entry_time_ist || '--'}</span>
             </td>
             <td class="py-3 px-4">
               <span class="text-rose-400 font-bold block">$${formatNumber(t.stop_loss)}</span>
@@ -1480,7 +1488,7 @@
     async function clearExtremeLiveHistory() {
       if (!confirm('Are you sure you want to clear the closed live trade history?')) return;
       try {
-        await fetch('/api/extreme/clear-live-history', { method: 'POST' });
+        await fetchWithRetry('/api/extreme/clear-live-history', { method: 'POST' });
         showToast('Live trade history cleared', 'success');
         fetchExtremeLiveHistory();
       } catch (err) {
@@ -1504,7 +1512,7 @@
 
       try {
         const url = `/api/extreme/scan?symbols=${encodeURIComponent(symbols)}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=${minGap}&target=${target}`;
-        const resp = await fetch(url);
+        const resp = await fetchWithRetry(url, {}, 35000, 2);
         const data = await resp.json();
 
         timeEl.innerText = `Scanned at ${new Date().toLocaleTimeString('en-US', { hour12: true })} IST`;
@@ -1535,7 +1543,7 @@
 
       try {
         const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05`;
-        const resp = await fetch(url);
+        const resp = await fetchWithRetry(url, {}, 60000, 2);
         const data = await resp.json();
 
         summary.innerHTML = `
@@ -1725,7 +1733,7 @@
 
     async function fetchStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await fetchWithRetry('/api/status', {}, 10000, 1);
         if (!res.ok) return;
         const data = await res.json();
 
@@ -1776,7 +1784,7 @@
       showToast('Updating strategy settings & re-scanning...', 'info');
 
       try {
-        await fetch(`/api/config?use_close_invalidation=${useClose}&max_htf_retrace_candles=${retraceWin}&session_filter_enabled=${sessFilter}&single_position=${singlePos}`, { method: 'POST' });
+        await fetchWithRetry(`/api/config?use_close_invalidation=${useClose}&max_htf_retrace_candles=${retraceWin}&session_filter_enabled=${sessFilter}&single_position=${singlePos}`, { method: 'POST' });
         triggerManualScan();
       } catch (err) {
         showToast(`Failed to update config: ${err.message}`, 'error');
@@ -1985,7 +1993,7 @@
       showToast(`Scan initiated across targets (LTF: ${currentLiveLtf}, 4H: ${currentHtfMode}, Inval: ${useClose === 'true' ? 'Close' : 'Wick'})...`, 'info');
 
       try {
-        const res = await fetch(`/api/scan?ltf=${currentLiveLtf}&htf_mode=${currentHtfMode}&use_close_invalidation=${useClose}&max_htf_retrace_candles=${retraceWin}&session_filter_enabled=${sessFilter}`, { method: 'POST' });
+        const res = await fetchWithRetry(`/api/scan?ltf=${currentLiveLtf}&htf_mode=${currentHtfMode}&use_close_invalidation=${useClose}&max_htf_retrace_candles=${retraceWin}&session_filter_enabled=${sessFilter}`, { method: 'POST' }, 45000, 2);
         if (res.ok) {
           const data = await res.json();
           rawSetups = data.setups || [];
@@ -2016,7 +2024,7 @@
       showToast('Sending test alert to Telegram (IST)...', 'info');
 
       try {
-        const res = await fetch('/api/test-telegram', { method: 'POST' });
+        const res = await fetchWithRetry('/api/test-telegram', { method: 'POST' }, 20000, 2);
         const data = await res.json();
         if (data.status === 'success') {
           showToast('Telegram test alert successfully delivered! 🚀', 'success');
@@ -2099,7 +2107,7 @@
           url += `&days=${preset !== 'custom' ? preset : 14}`;
         }
 
-        const res = await fetch(url, { method: 'POST' });
+        const res = await fetchWithRetry(url, { method: 'POST' }, 60000, 2);
         if (res.ok) {
           const json = await res.json();
           const data = json.data;

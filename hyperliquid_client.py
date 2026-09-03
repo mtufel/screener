@@ -303,14 +303,28 @@ class HyperliquidClient:
         curr_start = start_time_ms
 
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
+            timeout_cfg = httpx.Timeout(15.0, connect=5.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 while curr_start < end_time_ms:
                     curr_end = min(curr_start + (1000 * step_ms), end_time_ms)
                     url = f"https://api.binance.com/api/v3/klines?symbol={binance_symbol}&interval={interval}&startTime={curr_start}&endTime={curr_end}&limit=1000"
-                    res = await client.get(url)
-                    if res.status_code != 200:
-                        break
-                    raw = res.json()
+                    
+                    raw = None
+                    for attempt in range(1, 4):
+                        try:
+                            res = await client.get(url)
+                            if res.status_code == 200:
+                                raw = res.json()
+                                break
+                            elif res.status_code == 429:
+                                await asyncio.sleep(2.0 * attempt)
+                            else:
+                                await asyncio.sleep(0.5 * attempt)
+                        except (httpx.RequestError, httpx.TimeoutException):
+                            if attempt == 3:
+                                break
+                            await asyncio.sleep(0.5 * attempt)
+
                     if not raw or not isinstance(raw, list):
                         break
                     for row in raw:
