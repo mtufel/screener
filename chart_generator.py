@@ -631,6 +631,63 @@ def generate_extreme_setup_chart(
     ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
     ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
 
+    # 5. Mark the Entry Candle
+    entry_idx = None
+    if entry_time_ts:
+        for idx, c in enumerate(view_candles):
+            if abs(c.timestamp - entry_time_ts) < 60000 or (c.timestamp <= entry_time_ts < c.timestamp + 15 * 60 * 1000):
+                entry_idx = idx
+                break
+
+    if entry_idx is None and state in ("TRADE_ACTIVE", "COMPLETED_TP", "STOPPED_OUT", "TP1_HIT", "TP2_HIT", "TP3_HIT"):
+        for idx, c in enumerate(view_candles):
+            if ltf_fvg_formed_ts and c.timestamp <= ltf_fvg_formed_ts:
+                continue
+            if direction == "Bullish" and c.low <= entry_price:
+                entry_idx = idx
+                break
+            elif direction == "Bearish" and c.high >= entry_price:
+                entry_idx = idx
+                break
+
+    if entry_idx is not None and 0 <= entry_idx < n_candles:
+        entry_c = view_candles[entry_idx]
+        entry_color = "#38bdf8" if direction == "Bullish" else "#fb923c"
+        ax.axvline(entry_idx, color=entry_color, linestyle=":", linewidth=1.2, alpha=0.6, zorder=2)
+
+        if direction == "Bullish":
+            text_y = min(entry_c.low, entry_price) - (local_range * 0.08)
+            ax.annotate(
+                f"▲ ENTRY FILLED\n${entry_price:,.2f}",
+                xy=(entry_idx, entry_price),
+                xytext=(entry_idx, text_y),
+                ha="center",
+                va="top",
+                color="#38bdf8",
+                fontsize=8,
+                fontweight="bold",
+                fontfamily="monospace",
+                arrowprops=dict(arrowstyle="->", color="#38bdf8", lw=1.2),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="#0c4a6e", edgecolor="#0284c7", alpha=0.85, linewidth=1.0),
+                zorder=7,
+            )
+        else:
+            text_y = min(y_max - 0.03 * local_range, max(entry_c.high, entry_price) + (local_range * 0.05))
+            ax.annotate(
+                f"▼ ENTRY FILLED\n${entry_price:,.2f}",
+                xy=(entry_idx, entry_price),
+                xytext=(entry_idx, text_y),
+                ha="center",
+                va="bottom",
+                color="#fb923c",
+                fontsize=8,
+                fontweight="bold",
+                fontfamily="monospace",
+                arrowprops=dict(arrowstyle="->", color="#fb923c", lw=1.2),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="#7c2d12", edgecolor="#ea580c", alpha=0.85, linewidth=1.0),
+                zorder=7,
+            )
+
     # Styling and Grid
     ax.grid(True, color=GRID_COLOR, linestyle="--", linewidth=0.5, alpha=0.7)
     ax.set_xlim(-1, n_candles + 5)

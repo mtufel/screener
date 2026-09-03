@@ -1625,7 +1625,7 @@
       }
     }
 
-    function openExtremeLiveChart(symbol, direction, ltf, entry, sl, r1, r2, r3, htfBot, htfTop, ltfBot, ltfTop, ltfTs, touchIst, state, floatingR) {
+    function openExtremeLiveChart(symbol, direction, ltf, entry, sl, r1, r2, r3, htfBot, htfTop, ltfBot, ltfTop, ltfTs, touchIst, state, floatingR, entryTs) {
       const modal = document.getElementById('extremeChartModal');
       const title = document.getElementById('extremeChartModalTitle');
       const spinner = document.getElementById('extremeChartSpinner');
@@ -1653,7 +1653,8 @@
         ltf_formed_ts: ltfTs || 0,
         htf_first_touch_ist: touchIst || '',
         state: state,
-        floating_r: floatingR || 0.0
+        floating_r: floatingR || 0.0,
+        entry_ts: entryTs || 0,
       });
 
       const url = `/api/extreme/chart?${params.toString()}`;

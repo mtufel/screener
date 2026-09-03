@@ -1181,6 +1181,7 @@ async def api_extreme_chart(
     htf_first_touch_ist: Optional[str] = Query(default=None),
     state: str = Query(default="PENDING_RETRACE"),
     floating_r: float = Query(default=0.0),
+    entry_ts: Optional[int] = Query(default=None),
 ):
     from chart_generator import generate_extreme_setup_chart
     from hyperliquid_client import SYMBOL_ALIASES
@@ -1222,6 +1223,7 @@ async def api_extreme_chart(
         state=state,
         floating_r=floating_r,
         ltf_timeframe=ltf,
+        entry_time_ts=entry_ts,
     )
     if not img_bytes:
         raise HTTPException(status_code=500, detail="Failed to generate chart image")
