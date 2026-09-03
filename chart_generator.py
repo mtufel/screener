@@ -489,15 +489,21 @@ def generate_extreme_setup_chart(
     if not candles_ltf:
         return b""
 
-    # Smart Window Slicing
-    anchor_ms = ltf_fvg_formed_ts or entry_time_ts or (candles_ltf[-1].timestamp if candles_ltf else 0)
-    if anchor_ms and len(candles_ltf) > 30:
-        anchor_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - anchor_ms))
-        start_win = max(0, anchor_idx - 16)
-        end_win = min(len(candles_ltf), anchor_idx + 36)
-        view_candles = candles_ltf[start_win:end_win]
-    else:
+    # Smart Window Slicing:
+    # For live setups, always include candles leading up to the current live moment.
+    # For historical backtest trades, center around the trade formation/entry.
+    is_historical = str(state).startswith("HISTORICAL_")
+    if not is_historical:
         view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
+    else:
+        anchor_ms = entry_time_ts or ltf_fvg_formed_ts or (candles_ltf[-1].timestamp if candles_ltf else 0)
+        if anchor_ms and len(candles_ltf) > 30:
+            anchor_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - anchor_ms))
+            start_win = max(0, anchor_idx - 16)
+            end_win = min(len(candles_ltf), anchor_idx + 36)
+            view_candles = candles_ltf[start_win:end_win]
+        else:
+            view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
 
     n_candles = len(view_candles)
     if n_candles == 0:

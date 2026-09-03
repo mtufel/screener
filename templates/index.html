@@ -1284,7 +1284,7 @@
                 Risk: <span class="text-slate-200 font-semibold">$${s.risk_r}</span> (${s.risk_pct}%)
               </div>
               <button
-                onclick="openExtremeLiveChart('${s.symbol}', '${s.direction}', '${s.ltf_timeframe}', ${s.entry_price}, ${s.stop_loss}, ${s.tp_1r}, ${s.tp_2r}, ${s.tp_3r}, ${s.anchor.bottom}, ${s.anchor.top}, ${s.target_fvg.bottom}, ${s.target_fvg.top}, ${s.target_fvg.formed_at || 0}, '${s.anchor.first_touch_time_ist || ''}', '${s.state}', ${s.floating_r})"
+                onclick="openExtremeLiveChart('${s.symbol}', '${s.direction}', '${s.ltf_timeframe}', ${s.entry_price}, ${s.stop_loss}, ${s.tp_1r}, ${s.tp_2r}, ${s.tp_3r}, ${s.anchor.bottom}, ${s.anchor.top}, ${s.target_fvg.bottom}, ${s.target_fvg.top}, ${s.target_fvg.formed_at || 0}, '${s.anchor.first_touch_time_ist || ''}', '${s.state}', ${s.floating_r}, ${s.entry_timestamp || 0})"
                 class="px-3 py-1.5 rounded-xl bg-dark-900 hover:bg-dark-750 text-amber-400 hover:text-amber-300 border border-dark-700 hover:border-amber-500/40 text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-sm"
               >
                 <i class="fa-solid fa-chart-candlestick"></i>
@@ -1465,7 +1465,7 @@
             </td>
             <td class="py-3 px-4 text-center">
               <button
-                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${t.htf_anchor.bottom || 0}, ${t.htf_anchor.top || 0}, ${t.ltf_fvg.bottom || 0}, ${t.ltf_fvg.top || 0}, ${t.ltf_fvg.formed_at || 0}, '${t.htf_anchor.first_touch_time_ist || ''}', '${t.state}', ${t.floating_r || 0})"
+                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${t.htf_anchor.bottom || 0}, ${t.htf_anchor.top || 0}, ${t.ltf_fvg.bottom || 0}, ${t.ltf_fvg.top || 0}, ${t.ltf_fvg.formed_at || 0}, '${t.htf_anchor.first_touch_time_ist || ''}', '${t.state}', ${t.floating_r || 0}, ${t.entry_timestamp || 0})"
                 class="p-1.5 rounded-lg bg-dark-900 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 border border-dark-700 hover:border-amber-500/40 transition-colors"
                 title="View TradingView Chart"
               >
@@ -1600,7 +1600,7 @@
                 <td class="p-3 text-slate-400 text-[10px]">${t.exit_reason}</td>
                 <td class="p-3 text-center">
                   <button
-                    onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${ltf}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltfFvg.bottom || 0}, ${ltfFvg.top || 0}, ${t.fvg_formation_timestamp || 0}, '${htf.first_touch_time || ''}', 'HISTORICAL_${t.exit_reason}', ${t.mfe_r})"
+                    onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${ltf}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltfFvg.bottom || 0}, ${ltfFvg.top || 0}, ${t.fvg_formation_timestamp || 0}, '${htf.first_touch_time || ''}', 'HISTORICAL_${t.exit_reason}', ${t.mfe_r}, ${t.entry_timestamp || 0})"
                     class="h-7 w-7 rounded-lg bg-dark-900 hover:bg-dark-700 text-amber-400 hover:text-amber-300 border border-dark-700 inline-flex items-center justify-center transition-colors"
                     title="View TradingView Chart"
                   >
