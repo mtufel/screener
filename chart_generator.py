@@ -529,19 +529,70 @@ def generate_extreme_setup_chart(
         )
         ax.add_patch(rect)
 
-    # 2. Draw 4H Anchor Zone (Purple)
-    ax.axhspan(
-        htf_fvg_bottom,
-        htf_fvg_top,
-        xmin=0,
-        xmax=1,
-        color=HTF_FVG_COLOR,
-        alpha=0.18,
-        label="4H Anchor Zone",
-        zorder=2,
+    # 2. Determine local price range for crisp candlestick resolution
+    local_prices = (
+        [c.high for c in view_candles]
+        + [c.low for c in view_candles]
+        + [entry_price, stop_loss, tp_1r, tp_2r, tp_3r, ltf_fvg_top, ltf_fvg_bottom]
     )
-    ax.axhline(htf_fvg_top, color=HTF_FVG_COLOR, linestyle=":", linewidth=1.0, alpha=0.6)
-    ax.axhline(htf_fvg_bottom, color=HTF_FVG_COLOR, linestyle=":", linewidth=1.0, alpha=0.6)
+    local_min = min(local_prices)
+    local_max = max(local_prices)
+    local_range = max(1e-6, local_max - local_min)
+
+    # Check if 4H Anchor Zone is reasonably near the local trade action (within 15% margin)
+    is_htf_near = (
+        htf_fvg_bottom >= (local_min - 0.15 * local_range)
+        and htf_fvg_top <= (local_max + 0.15 * local_range)
+    )
+
+    if is_htf_near:
+        # Fit 4H anchor into chart Y-axis and draw shaded horizontal span
+        all_prices = local_prices + [htf_fvg_top, htf_fvg_bottom]
+        y_min, y_max = min(all_prices), max(all_prices)
+        y_pad = (y_max - y_min) * 0.08
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+        ax.axhspan(
+            htf_fvg_bottom,
+            htf_fvg_top,
+            xmin=0,
+            xmax=1,
+            color=HTF_FVG_COLOR,
+            alpha=0.18,
+            label="4H Anchor Zone",
+            zorder=2,
+        )
+        ax.axhline(htf_fvg_top, color=HTF_FVG_COLOR, linestyle=":", linewidth=1.0, alpha=0.6)
+        ax.axhline(htf_fvg_bottom, color=HTF_FVG_COLOR, linestyle=":", linewidth=1.0, alpha=0.6)
+
+        mid_htf = (htf_fvg_bottom + htf_fvg_top) / 2
+        touch_info = f" (1st Touch: {htf_first_touch_ist})" if htf_first_touch_ist else ""
+        ax.text(2, mid_htf, f"4H ANCHOR ZONE [${htf_fvg_bottom:,.2f} - ${htf_fvg_top:,.2f}]{touch_info}", color="#c084fc", fontsize=8, fontfamily="monospace", va="center")
+    else:
+        # 4H Anchor is far away: Do NOT expand Y-axis. Keep candlesticks crisp and clear!
+        y_min = local_min
+        y_max = local_max
+        y_pad = local_range * 0.12
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+        # Draw a prominent, sleek 4H Anchor Info Badge at the top-left
+        arrow = "▲ Above" if htf_fvg_bottom > local_max else "▼ Below"
+        touch_info = f" | 1st Touch: {htf_first_touch_ist}" if htf_first_touch_ist else ""
+        htf_badge_text = f"4H ANCHOR ({arrow} Chart): [${htf_fvg_bottom:,.2f} - ${htf_fvg_top:,.2f}]{touch_info}"
+
+        ax.text(
+            0.02,
+            0.94,
+            htf_badge_text,
+            transform=ax.transAxes,
+            color="#e9d5ff",
+            fontsize=8.5,
+            fontweight="bold",
+            fontfamily="monospace",
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.45", facecolor="#2e1065", edgecolor="#7c3aed", alpha=0.9, linewidth=1.1),
+            zorder=10,
+        )
 
     # 3. Draw Extreme LTF FVG (Amber)
     ltf_start_idx = 0
@@ -571,27 +622,18 @@ def generate_extreme_setup_chart(
     ax.axhline(tp_2r, color=TARGET_GREEN_BOX, linestyle="-", linewidth=2.0, label=f"TP 2R (Primary): ${tp_2r:,.2f}", zorder=5)
     ax.axhline(tp_3r, color="#34d399", linestyle=":", linewidth=1.2, label=f"TP 3R: ${tp_3r:,.2f}", zorder=5)
 
-    # Annotations on the right price axis
-    right_x = n_candles - 0.5
-    ax.text(right_x, entry_price, f" ENTRY ${entry_price:,.2f}", color=entry_line_color, fontsize=8.5, fontweight="bold", fontfamily="monospace", va="center")
-    ax.text(right_x, stop_loss, f" SL ${stop_loss:,.2f}", color=STOP_RED_BOX, fontsize=8.5, fontweight="bold", fontfamily="monospace", va="center")
-    ax.text(right_x, tp_1r, f" 1R ${tp_1r:,.2f}", color="#22d3ee", fontsize=8, fontfamily="monospace", va="center")
-    ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8.5, fontweight="bold", fontfamily="monospace", va="center")
-    ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=8, fontfamily="monospace", va="center")
-
-    # 4H Zone label
-    mid_htf = (htf_fvg_bottom + htf_fvg_top) / 2
-    touch_info = f" (1st Touch: {htf_first_touch_ist})" if htf_first_touch_ist else ""
-    ax.text(2, mid_htf, f"4H ANCHOR ZONE [${htf_fvg_bottom:,.2f} - ${htf_fvg_top:,.2f}]{touch_info}", color="#c084fc", fontsize=8, fontfamily="monospace", va="center")
+    # Annotations on the right price axis with clean styling
+    right_x = n_candles + 0.2
+    pill_kw = dict(boxstyle="square,pad=0.15", facecolor=BG_COLOR, edgecolor="none", alpha=0.75)
+    ax.text(right_x, entry_price, f" ENTRY ${entry_price:,.2f}", color=entry_line_color, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, stop_loss, f" SL ${stop_loss:,.2f}", color=STOP_RED_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, tp_1r, f" 1R ${tp_1r:,.2f}", color="#22d3ee", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
 
     # Styling and Grid
     ax.grid(True, color=GRID_COLOR, linestyle="--", linewidth=0.5, alpha=0.7)
-    ax.set_xlim(-1, n_candles + 4)
-
-    all_prices = [c.high for c in view_candles] + [c.low for c in view_candles] + [stop_loss, tp_3r, htf_fvg_top, htf_fvg_bottom]
-    y_min, y_max = min(all_prices), max(all_prices)
-    y_pad = (y_max - y_min) * 0.08
-    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+    ax.set_xlim(-1, n_candles + 5)
 
     # X-axis Timestamps in IST
     step = max(1, n_candles // 7)
