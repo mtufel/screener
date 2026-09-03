@@ -135,7 +135,7 @@
         </button>
 
         <button
-          onclick="triggerManualScan()"
+          onclick="onHeaderScanClick()"
           id="btnScanNow"
           class="inline-flex items-center space-x-2 px-4 py-2 text-sm font-semibold rounded-lg bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white shadow-lg shadow-indigo-600/30 active:scale-95 transition-all"
         >
@@ -423,7 +423,7 @@
     <!-- ===================================================================== -->
     <!-- VIEW 2: HISTORICAL BACKTEST VIEW -->
     <!-- ===================================================================== -->
-    <div id="backtestView" class="hidden space-y-8">
+    <div id="s1BacktestView" class="hidden space-y-8">
       <!-- Backtest Configuration Bar -->
       <div class="p-6 rounded-3xl bg-dark-800/90 border border-dark-700/80 shadow-lg">
         <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
@@ -1009,6 +1009,14 @@
     let currentStrategy = 'strat1'; // 'strat1' | 'strat2'
     let currentStrat1Tab = 'live';   // 'live' | 'backtest'
     let currentStrat2Tab = 'live';   // 'live' | 'backtest'
+
+    function onHeaderScanClick() {
+      if (currentStrategy === 'strat1') {
+        triggerManualScan();
+      } else {
+        loadExtremeSetups();
+      }
+    }
 
     function switchStrategy(strat) {
       currentStrategy = strat;
