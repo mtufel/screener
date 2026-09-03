@@ -1122,12 +1122,16 @@
         const isBullish = s.direction === 'Bullish';
         const isActive = s.state === 'TRADE_ACTIVE';
         const badgeColor = isActive ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border-amber-500/30';
-        const badgeText = isActive ? `🚀 ACTIVE (${s.floating_r > 0 ? '+' : ''}${s.floating_r}R)` : `⏳ PENDING RETRACE (${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%)`;
-        const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
-        const dirBg = isBullish ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20';
+        const entrySubText = isActive
+          ? `<span class="text-[9px] text-emerald-400 font-semibold block">Filled: ${s.entry_time_ist || 'Active'}</span>`
+          : `<span class="text-[9px] text-slate-400 block">${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}% away</span>`;
+
+        const badgeText = isActive
+          ? `🚀 ACTIVE (${s.floating_r > 0 ? '+' : ''}${s.floating_r}R) · Filled: ${s.entry_time_ist || '--'}`
+          : `⏳ PENDING RETRACE (${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%)`;
 
         html += `
-          <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700 shadow-xl space-y-4 hover:border-dark-600 transition-all">
+          <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700 shadow-xl space-y-4 hover:border-dark-600 transition-all ${isActive ? 'ring-1 ring-emerald-500/30' : ''}">
             <div class="flex items-center justify-between">
               <div class="flex items-center space-x-2.5">
                 <span class="text-base font-extrabold text-white font-mono">${s.symbol}</span>
@@ -1161,21 +1165,25 @@
 
             <!-- Trade Execution Parameters -->
             <div class="grid grid-cols-4 gap-2 text-xs font-mono text-center">
-              <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
-                <span class="text-[10px] text-slate-400 block">ENTRY</span>
-                <span class="text-white font-bold">$${formatNumber(s.entry_price)}</span>
+              <div class="p-2 rounded-lg bg-dark-900/50 border ${isActive ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-dark-700/50'}">
+                <span class="text-[10px] ${isActive ? 'text-emerald-400 font-bold' : 'text-slate-400'} block">${isActive ? 'FILLED ENTRY' : 'LIMIT ENTRY'}</span>
+                <span class="text-white font-bold block">$${formatNumber(s.entry_price)}</span>
+                ${entrySubText}
               </div>
               <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
                 <span class="text-[10px] text-rose-400 block">STOP LOSS</span>
-                <span class="text-rose-300 font-bold">$${formatNumber(s.stop_loss)}</span>
+                <span class="text-rose-300 font-bold block">$${formatNumber(s.stop_loss)}</span>
+                <span class="text-[9px] text-slate-500 block">3-Cdl Wick</span>
               </div>
               <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50">
                 <span class="text-[10px] text-indigo-400 block">TARGET 1R</span>
-                <span class="text-indigo-300 font-bold">$${formatNumber(s.tp_1r)}</span>
+                <span class="text-indigo-300 font-bold block">$${formatNumber(s.tp_1r)}</span>
+                <span class="text-[9px] text-slate-500 block">+1.0R</span>
               </div>
-              <div class="p-2 rounded-lg bg-dark-900/50 border border-dark-700/50 border-amber-500/30 bg-amber-500/5">
+              <div class="p-2 rounded-lg bg-dark-900/50 border border-amber-500/30 bg-amber-500/5">
                 <span class="text-[10px] text-amber-400 block">PRIMARY (2R)</span>
-                <span class="text-amber-300 font-bold">$${formatNumber(s.tp_2r)}</span>
+                <span class="text-amber-300 font-bold block">$${formatNumber(s.tp_2r)}</span>
+                <span class="text-[9px] text-amber-400 block">+2.0R ★</span>
               </div>
             </div>
 
@@ -1641,8 +1649,9 @@
                   <div class="text-lg font-extrabold text-white font-mono">$${formatNumber(s.price)}</div>
                 </div>
                 <div class="text-right">
-                  <span class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider">Entry Ref</span>
+                  <span class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider">${isActivated ? 'Filled Entry' : 'Entry Ref'}</span>
                   <div class="text-lg font-extrabold text-indigo-400 font-mono">$${formatNumber(s.entry_price)}</div>
+                  ${isActivated && s.entry_time_ist ? `<span class="text-[9px] text-emerald-400 font-semibold block">Filled: ${s.entry_time_ist}</span>` : ''}
                 </div>
               </div>
 
