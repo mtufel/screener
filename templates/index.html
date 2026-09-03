@@ -1465,7 +1465,7 @@
             </td>
             <td class="py-3 px-4 text-center">
               <button
-                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${t.htf_anchor.bottom || 0}, ${t.htf_anchor.top || 0}, ${t.ltf_fvg.bottom || 0}, ${t.ltf_fvg.top || 0}, ${t.ltf_fvg.formed_at || 0}, '${t.htf_anchor.first_touch_time_ist || ''}', '${t.state}', ${t.floating_r || 0}, ${t.entry_timestamp || 0})"
+                onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${t.ltf_timeframe}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${t.htf_anchor.bottom || 0}, ${t.htf_anchor.top || 0}, ${t.ltf_fvg.bottom || 0}, ${t.ltf_fvg.top || 0}, ${t.ltf_fvg.formed_at || 0}, '${t.htf_anchor.first_touch_time_ist || ''}', '${t.state}', ${t.realized_r || t.floating_r || 0}, ${t.entry_timestamp || 0}, ${t.closed_timestamp || 0})"
                 class="p-1.5 rounded-lg bg-dark-900 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 border border-dark-700 hover:border-amber-500/40 transition-colors"
                 title="View TradingView Chart"
               >
@@ -1600,7 +1600,7 @@
                 <td class="p-3 text-slate-400 text-[10px]">${t.exit_reason}</td>
                 <td class="p-3 text-center">
                   <button
-                    onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${ltf}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltfFvg.bottom || 0}, ${ltfFvg.top || 0}, ${t.fvg_formation_timestamp || 0}, '${htf.first_touch_time || ''}', 'HISTORICAL_${t.exit_reason}', ${t.mfe_r}, ${t.entry_timestamp || 0})"
+                    onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${ltf}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltfFvg.bottom || 0}, ${ltfFvg.top || 0}, ${t.fvg_formation_timestamp || 0}, '${htf.first_touch_time || ''}', 'HISTORICAL_${t.exit_reason}', ${t.mfe_r}, ${t.entry_timestamp || 0}, ${t.exit_timestamp || 0})"
                     class="h-7 w-7 rounded-lg bg-dark-900 hover:bg-dark-700 text-amber-400 hover:text-amber-300 border border-dark-700 inline-flex items-center justify-center transition-colors"
                     title="View TradingView Chart"
                   >
@@ -1625,7 +1625,7 @@
       }
     }
 
-    function openExtremeLiveChart(symbol, direction, ltf, entry, sl, r1, r2, r3, htfBot, htfTop, ltfBot, ltfTop, ltfTs, touchIst, state, floatingR, entryTs) {
+    function openExtremeLiveChart(symbol, direction, ltf, entry, sl, r1, r2, r3, htfBot, htfTop, ltfBot, ltfTop, ltfTs, touchIst, state, floatingR, entryTs, exitTs) {
       const modal = document.getElementById('extremeChartModal');
       const title = document.getElementById('extremeChartModalTitle');
       const spinner = document.getElementById('extremeChartSpinner');
@@ -1655,6 +1655,7 @@
         state: state,
         floating_r: floatingR || 0.0,
         entry_ts: entryTs || 0,
+        exit_ts: exitTs || 0,
       });
 
       const url = `/api/extreme/chart?${params.toString()}`;

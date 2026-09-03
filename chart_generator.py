@@ -480,6 +480,7 @@ def generate_extreme_setup_chart(
     floating_r: float = 0.0,
     ltf_timeframe: str = "15m",
     entry_time_ts: Optional[int] = None,
+    exit_time_ts: Optional[int] = None,
     output_path: Optional[str] = None,
 ) -> bytes:
     """
@@ -491,19 +492,31 @@ def generate_extreme_setup_chart(
 
     # Smart Window Slicing:
     # For live setups, always include candles leading up to the current live moment.
-    # For historical backtest trades, center around the trade formation/entry.
-    is_historical = str(state).startswith("HISTORICAL_")
+    # For historical backtest trades, show from entry to exit time + delta on both sides (and LTF FVG formation if within range).
+    is_historical = str(state).startswith("HISTORICAL_") or (exit_time_ts is not None and exit_time_ts > 0)
     if not is_historical:
         view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
     else:
-        anchor_ms = entry_time_ts or ltf_fvg_formed_ts or (candles_ltf[-1].timestamp if candles_ltf else 0)
-        if anchor_ms and len(candles_ltf) > 30:
-            anchor_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - anchor_ms))
-            start_win = max(0, anchor_idx - 16)
-            end_win = min(len(candles_ltf), anchor_idx + 36)
-            view_candles = candles_ltf[start_win:end_win]
+        if len(candles_ltf) <= 60 and (entry_time_ts is None or abs(candles_ltf[0].timestamp - (entry_time_ts or 0)) < 24 * 3600 * 1000):
+            view_candles = candles_ltf
         else:
-            view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
+            anchor_entry = entry_time_ts or (candles_ltf[0].timestamp if candles_ltf else 0)
+            entry_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - anchor_entry))
+            
+            if exit_time_ts and exit_time_ts > 0:
+                exit_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - exit_time_ts))
+            else:
+                exit_idx = min(len(candles_ltf) - 1, entry_idx + 15)
+
+            # Check if LTF FVG formation fits within delta (<= 25 bars before entry)
+            timeframe_ms = 15 * 60 * 1000 if ltf_timeframe == "15m" else 5 * 60 * 1000
+            start_win = max(0, entry_idx - 8)
+            if ltf_fvg_formed_ts and 0 < (anchor_entry - ltf_fvg_formed_ts) <= 25 * timeframe_ms:
+                fvg_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - ltf_fvg_formed_ts))
+                start_win = max(0, min(start_win, fvg_idx - 4))
+
+            end_win = min(len(candles_ltf), max(exit_idx + 8, entry_idx + 12))
+            view_candles = candles_ltf[start_win:end_win]
 
     n_candles = len(view_candles)
     if n_candles == 0:
@@ -694,6 +707,48 @@ def generate_extreme_setup_chart(
                 zorder=7,
             )
 
+    # 6. Mark the Exit Candle (if historical trade or exit timestamp is provided)
+    if exit_time_ts and exit_time_ts > 0:
+        exit_idx = None
+        for idx, c in enumerate(view_candles):
+            if abs(c.timestamp - exit_time_ts) < 60000 or (c.timestamp <= exit_time_ts < c.timestamp + 15 * 60 * 1000):
+                exit_idx = idx
+                break
+
+        if exit_idx is not None and 0 <= exit_idx < n_candles:
+            exit_c = view_candles[exit_idx]
+            is_win = "TP" in str(state).upper() or floating_r > 0
+            exit_color = TARGET_GREEN_BOX if is_win else STOP_RED_BOX
+            ax.axvline(exit_idx, color=exit_color, linestyle=":", linewidth=1.2, alpha=0.6, zorder=2)
+
+            exit_label = "★ TP EXIT" if is_win else "✖ SL EXIT"
+            exit_bg = "#064e3b" if is_win else "#7f1d1d"
+            exit_border = "#10b981" if is_win else "#ef4444"
+
+            if direction == "Bullish":
+                y_pos = exit_c.high if is_win else exit_c.low
+                text_y = min(y_max - 0.03 * local_range, y_pos + (local_range * 0.05)) if is_win else max(y_min + 0.03 * local_range, y_pos - (local_range * 0.08))
+                va = "bottom" if is_win else "top"
+            else:
+                y_pos = exit_c.low if is_win else exit_c.high
+                text_y = max(y_min + 0.03 * local_range, y_pos - (local_range * 0.08)) if is_win else min(y_max - 0.03 * local_range, y_pos + (local_range * 0.05))
+                va = "top" if is_win else "bottom"
+
+            ax.annotate(
+                f"{exit_label}",
+                xy=(exit_idx, y_pos),
+                xytext=(exit_idx, text_y),
+                ha="center",
+                va=va,
+                color=exit_color,
+                fontsize=8,
+                fontweight="bold",
+                fontfamily="monospace",
+                arrowprops=dict(arrowstyle="->", color=exit_color, lw=1.2),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor=exit_bg, edgecolor=exit_border, alpha=0.85, linewidth=1.0),
+                zorder=7,
+            )
+
     # Styling and Grid
     ax.grid(True, color=GRID_COLOR, linestyle="--", linewidth=0.5, alpha=0.7)
     ax.set_xlim(-1, n_candles + 5)
@@ -710,7 +765,12 @@ def generate_extreme_setup_chart(
         spine.set_color(BORDER_COLOR)
 
     # Header and Status
-    status_str = f"ACTIVE (+{floating_r:.2f}R)" if state == "TRADE_ACTIVE" else "PENDING RETRACE"
+    if state == "TRADE_ACTIVE":
+        status_str = f"ACTIVE ({floating_r:+.2f}R)"
+    elif str(state).startswith("HISTORICAL_"):
+        status_str = f"{state.replace('HISTORICAL_', '')} ({floating_r:+.2f}R)"
+    else:
+        status_str = "PENDING RETRACE"
     now_ist_str = datetime.now(IST).strftime("%d-%b-%Y %I:%M:%S %p IST")
     plt.title(
         f"{symbol}-PERP · {ltf_timeframe}  |  EXTREME LTF STRATEGY  [{status_str}]",

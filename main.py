@@ -1182,17 +1182,45 @@ async def api_extreme_chart(
     state: str = Query(default="PENDING_RETRACE"),
     floating_r: float = Query(default=0.0),
     entry_ts: Optional[int] = Query(default=None),
+    exit_ts: Optional[int] = Query(default=None),
 ):
     from chart_generator import generate_extreme_setup_chart
-    from hyperliquid_client import SYMBOL_ALIASES
+    from hyperliquid_client import SYMBOL_ALIASES, hl_client
+    from strategy import Candle
+    import time
 
     raw_sym = SYMBOL_ALIASES.get(symbol.strip().upper(), symbol.strip().upper())
-    candles = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)
+    c_dur = 15 * 60 * 1000 if ltf == "15m" else (5 * 60 * 1000 if ltf == "5m" else (60 * 60 * 1000 if ltf == "1h" else 60 * 1000))
+    is_historical = str(state).startswith("HISTORICAL_") or (exit_ts is not None and exit_ts > 0)
+
+    candles = []
+    if is_historical and entry_ts and entry_ts > 0:
+        # For historical trades: only fetch from entry to exit time + delta on both sides (and LTF FVG formation if within 25 bars)
+        t_exit = exit_ts if (exit_ts and exit_ts > entry_ts) else (entry_ts + 6 * c_dur)
+        t_end = t_exit + 8 * c_dur
+
+        if ltf_formed_ts and 0 < (entry_ts - ltf_formed_ts) <= 25 * c_dur:
+            t_start = ltf_formed_ts - 5 * c_dur
+        else:
+            t_start = entry_ts - 8 * c_dur
+
+        try:
+            raw_candles = await hl_client.get_candle_snapshot(
+                coin=raw_sym,
+                interval=ltf,
+                start_time_ms=t_start,
+                end_time_ms=t_end,
+            )
+            if raw_candles:
+                candles = [Candle.from_dict(c) for c in raw_candles]
+        except Exception as exc:
+            logger.debug("Historical snapshot fetch error for %s: %s", raw_sym, exc)
+
     if not candles:
-        import time
-        from strategy import Candle
+        candles = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)
+
+    if not candles:
         now_ts = int(time.time() * 1000)
-        c_dur = 15 * 60 * 1000 if ltf == "15m" else (5 * 60 * 1000 if ltf == "5m" else 60 * 1000)
         mid_val = (entry_price + stop_loss) / 2
         candles = [
             Candle(
@@ -1224,6 +1252,7 @@ async def api_extreme_chart(
         floating_r=floating_r,
         ltf_timeframe=ltf,
         entry_time_ts=entry_ts,
+        exit_time_ts=exit_ts,
     )
     if not img_bytes:
         raise HTTPException(status_code=500, detail="Failed to generate chart image")

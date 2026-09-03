@@ -144,6 +144,7 @@ class ExtremeHistoricalTrade:
             },
             "fvg_formation_timestamp": self.fvg_formation_timestamp,
             "entry_timestamp": self.entry_timestamp,
+            "exit_timestamp": self.exit_timestamp,
         }
 
 

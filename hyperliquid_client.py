@@ -487,3 +487,4 @@ class HyperliquidClient:
 
 # Singleton instance
 hyperliquid_client = HyperliquidClient()
+hl_client = hyperliquid_client
