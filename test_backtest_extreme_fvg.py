@@ -126,3 +126,34 @@ def test_simulate_trade_hitting_sl_directly_bearish():
     assert trade.realized_r_2r == -1.0
     assert trade.realized_r_3r == -1.0
     assert trade.exit_reason == "STOPPED_OUT"
+
+
+def test_trade_timestamps_distinct_and_chronological():
+    # Verify that FVG Formed time < Entry time < Exit time
+    c1 = make_candle(0, 85, 95, 80, 92)
+    c2 = make_candle(900000, 92, 115, 91, 114)
+    c3 = make_candle(1800000, 114, 120, 100, 118)  # FVG closes at 1800000 + 900000 = 2700000 ms
+    ltf_fvg = FVG("Bullish", 100, 95, c1, c2, c3, formed_at=1800000, timeframe="15m")
+    anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=900000, most_recent_touch_timestamp=900000)
+
+    # Subsequent bar 1: 2700000 - 3600000 (price stays above 100)
+    # Subsequent bar 2: 3600000 - 4500000 (price retraces to 98 and fills entry at 100)
+    # Subsequent bar 3: 4500000 - 5400000 (price rallies to 125, hitting 2R TP)
+    sub1 = make_candle(4500000, 100, 125, 99, 124)
+
+    trade = simulate_trade_execution(
+        symbol="BTC",
+        direction="Bullish",
+        entry_price=100.0,
+        stop_loss=90.0,
+        entry_timestamp=3600000,
+        subsequent_candles=[sub1],
+        anchor=anchor,
+        ltf_fvg=ltf_fvg,
+    )
+
+    assert trade.fvg_formation_timestamp == 2700000  # C3 close timestamp (09:45 AM)
+    assert trade.entry_timestamp == 3600000          # Retrace fill timestamp (10:00 AM)
+    assert trade.exit_timestamp == 5400000           # Exit bar close timestamp (10:30 AM)
+    assert trade.fvg_formation_timestamp < trade.entry_timestamp < trade.exit_timestamp
+

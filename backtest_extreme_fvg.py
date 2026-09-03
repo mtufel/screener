@@ -289,8 +289,8 @@ def simulate_trade_execution(
         ltf_fvg_top=ltf_fvg.top,
         htf_fvg_bottom=anchor.fvg.bottom,
         htf_fvg_top=anchor.fvg.top,
-        fvg_formation_timestamp=ltf_fvg.formed_at,
-        htf_formed_timestamp=anchor.fvg.formed_at,
+        fvg_formation_timestamp=ltf_fvg.close_timestamp,
+        htf_formed_timestamp=anchor.fvg.close_timestamp,
         htf_first_touch_timestamp=anchor.first_touch_timestamp,
         htf_most_recent_touch_timestamp=anchor.most_recent_touch_timestamp,
         ltf_gap_pct=ltf_fvg.gap_pct,
@@ -410,28 +410,41 @@ async def run_extreme_backtest(
             i += 1
             continue
 
-        # Check if current candle triggers entry (touches outer boundary)
+        # Check forward candles strictly starting from i + 1 to find when price retraces to entry
         is_bullish = best_ltf.direction == "Bullish"
         entry_price = best_ltf.top if is_bullish else best_ltf.bottom
         stop_loss = min(best_ltf.c1.low, best_ltf.c2.low, best_ltf.c3.low) if is_bullish else max(best_ltf.c1.high, best_ltf.c2.high, best_ltf.c3.high)
 
         entry_triggered = False
-        if is_bullish:
-            if curr_ltf.low <= entry_price and curr_ltf.low > stop_loss:
-                entry_triggered = True
-        else:
-            if curr_ltf.high >= entry_price and curr_ltf.high < stop_loss:
-                entry_triggered = True
+        k = i + 1
+        while k < len(candles_ltf):
+            c_k = candles_ltf[k]
+            if is_bullish:
+                # If breached SL before touching entry -> invalidated
+                if c_k.low <= stop_loss and c_k.high < entry_price:
+                    entered_fvg_timestamps.add(best_ltf.formed_at)
+                    break
+                if c_k.low <= entry_price:
+                    entry_triggered = True
+                    break
+            else:
+                # If breached SL before touching entry -> invalidated
+                if c_k.high >= stop_loss and c_k.low > entry_price:
+                    entered_fvg_timestamps.add(best_ltf.formed_at)
+                    break
+                if c_k.high >= entry_price:
+                    entry_triggered = True
+                    break
+            k += 1
 
         if entry_triggered:
-            # Simulate forward
-            subsequent = candles_ltf[i + 1:]
+            subsequent = candles_ltf[k + 1:]
             trade = simulate_trade_execution(
                 symbol=symbol,
                 direction=best_ltf.direction,
                 entry_price=entry_price,
                 stop_loss=stop_loss,
-                entry_timestamp=curr_ltf.timestamp,
+                entry_timestamp=candles_ltf[k].timestamp,
                 subsequent_candles=subsequent,
                 anchor=anchor,
                 ltf_fvg=best_ltf,
@@ -441,7 +454,7 @@ async def run_extreme_backtest(
 
             # Advance index forward past trade hold duration
             bars_held = max(1, trade.duration_minutes // (ltf_duration_ms // 60000))
-            i += bars_held
+            i = max(i + 1, k + bars_held)
         else:
             i += 1
 
