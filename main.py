@@ -1010,6 +1010,17 @@ async def api_extreme_scan(
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
     use_close = (invalidation == "close")
 
+    if ltf:
+        state["extreme_ltf"] = ltf
+    if target:
+        state["extreme_target"] = target
+    if min_gap_pct is not None:
+        state["extreme_min_gap"] = min_gap_pct
+    if invalidation:
+        state["extreme_use_close"] = use_close
+    if symbols and symbols.strip():
+        state["coins_whitelist"] = symbols.strip().upper()
+
     setups_out = []
     mids = await hyperliquid_client.get_all_mids()
 
