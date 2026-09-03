@@ -35,3 +35,16 @@ def test_api_extreme_toggle_daemon():
     data = resp.json()
     assert data["is_running"] is True
     assert state["extreme_is_running"] is True
+
+
+def test_api_extreme_config_endpoint():
+    client = TestClient(app)
+    resp = client.post("/api/extreme/config?interval_seconds=45&ltf=5m&target=3R&min_gap_pct=0.10")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["config"]["interval_seconds"] == 45
+    assert data["config"]["ltf_timeframe"] == "5m"
+    assert data["config"]["completion_target"] == "3R"
+    assert data["config"]["min_gap_pct"] == 0.10
+    assert state["extreme_interval_seconds"] == 45

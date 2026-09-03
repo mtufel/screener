@@ -740,6 +740,22 @@
               <span class="absolute right-2.5 top-1.5 text-xs text-slate-500 font-mono">%</span>
             </div>
           </div>
+
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-400 mb-1">Daemon Interval</label>
+            <select
+              id="extremeDaemonInterval"
+              onchange="changeExtremeInterval(this.value)"
+              class="px-2.5 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500"
+            >
+              <option value="10">10s (Fast)</option>
+              <option value="15">15s</option>
+              <option value="30" selected>30s (Default)</option>
+              <option value="60">60s (1m)</option>
+              <option value="120">120s (2m)</option>
+              <option value="300">300s (5m)</option>
+            </select>
+          </div>
         </div>
 
         <div class="flex items-center space-x-3">
@@ -1006,19 +1022,35 @@
       }
     }
 
-    function updateExtremeDaemonUI(isRunning) {
+    function updateExtremeDaemonUI(isRunning, intervalSeconds) {
       const ind = document.getElementById('extremeDaemonIndicator');
       const txt = document.getElementById('extremeDaemonText');
       const btn = document.getElementById('btnToggleDaemon');
+      const sel = document.getElementById('extremeDaemonInterval');
       if (!ind || !txt || !btn) return;
+
+      const sec = intervalSeconds || (sel ? sel.value : 30);
+      if (sel && intervalSeconds) sel.value = String(intervalSeconds);
+
       if (isRunning) {
         ind.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
-        txt.innerText = 'Daemon Active (30s)';
+        txt.innerText = `Daemon Active (${sec}s)`;
         btn.innerText = 'Pause';
       } else {
         ind.className = 'h-2 w-2 rounded-full bg-rose-400';
         txt.innerText = 'Daemon Paused';
         btn.innerText = 'Resume';
+      }
+    }
+
+    async function changeExtremeInterval(newSeconds) {
+      try {
+        const resp = await fetch(`/api/extreme/config?interval_seconds=${newSeconds}`, { method: 'POST' });
+        const data = await resp.json();
+        showToast(`Daemon interval updated to ${newSeconds}s`, 'success');
+        updateExtremeDaemonUI(data.config.is_running !== false, newSeconds);
+      } catch (err) {
+        showToast('Failed to update interval', 'error');
       }
     }
 
@@ -1029,7 +1061,7 @@
       try {
         const resp = await fetch('/api/extreme/status');
         const data = await resp.json();
-        updateExtremeDaemonUI(data.is_running);
+        updateExtremeDaemonUI(data.is_running, data.interval_seconds);
 
         if (data.last_scan_time_ist) {
           const timeEl = document.getElementById('extremeScanTime');

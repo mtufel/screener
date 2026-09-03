@@ -1038,7 +1038,14 @@ async def api_extreme_status():
 
 
 @app.post("/api/extreme/toggle-daemon", summary="Start or Pause Extreme Background Daemon")
-async def api_extreme_toggle_daemon(enable: Optional[bool] = Query(default=None)):
+async def api_extreme_toggle_daemon(
+    enable: Optional[bool] = Query(default=None),
+    interval_seconds: Optional[int] = Query(default=None, ge=5, le=3600, description="Optional new interval in seconds"),
+):
+    if interval_seconds is not None:
+        state["extreme_interval_seconds"] = interval_seconds
+        logger.info("Updated Extreme Daemon interval to %d seconds", interval_seconds)
+
     if enable is None:
         state["extreme_is_running"] = not state.get("extreme_is_running", True)
     else:
@@ -1048,7 +1055,49 @@ async def api_extreme_toggle_daemon(enable: Optional[bool] = Query(default=None)
         state["extreme_background_task"] = asyncio.create_task(extreme_screener_background_worker())
 
     status_str = "RUNNING" if state["extreme_is_running"] else "STOPPED"
-    return JSONResponse(content={"status": "success", "is_running": state["extreme_is_running"], "message": f"Extreme Daemon is now {status_str}"})
+    return JSONResponse(content={
+        "status": "success",
+        "is_running": state["extreme_is_running"],
+        "interval_seconds": state["extreme_interval_seconds"],
+        "message": f"Extreme Daemon is now {status_str} (Interval: {state['extreme_interval_seconds']}s)",
+    })
+
+
+@app.post("/api/extreme/config", summary="Update Extreme Daemon Runtime Configuration")
+async def api_extreme_config(
+    interval_seconds: Optional[int] = Query(default=None, ge=5, le=3600, description="Daemon interval in seconds"),
+    ltf: Optional[str] = Query(default=None, pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
+    target: Optional[str] = Query(default=None, pattern="^(1R|2R|3R)$", description="Completion target"),
+    min_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Min gap size %"),
+    invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
+    symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
+):
+    if interval_seconds is not None:
+        state["extreme_interval_seconds"] = interval_seconds
+        logger.info("Updated Extreme Daemon interval to %d seconds", interval_seconds)
+    if ltf is not None:
+        state["extreme_ltf"] = ltf
+    if target is not None:
+        state["extreme_target"] = target
+    if min_gap_pct is not None:
+        state["extreme_min_gap"] = min_gap_pct
+    if invalidation is not None:
+        state["extreme_use_close"] = (invalidation == "close")
+    if symbols is not None and symbols.strip():
+        state["coins_whitelist"] = symbols.strip().upper()
+
+    return JSONResponse(content={
+        "status": "success",
+        "message": "Extreme Daemon configuration updated successfully",
+        "config": {
+            "interval_seconds": state["extreme_interval_seconds"],
+            "ltf_timeframe": state["extreme_ltf"],
+            "completion_target": state["extreme_target"],
+            "min_gap_pct": state["extreme_min_gap"],
+            "use_close_invalidation": state["extreme_use_close"],
+            "coins_whitelist": state["coins_whitelist"],
+        },
+    })
 
 
 if __name__ == "__main__":
