@@ -663,13 +663,9 @@ def generate_extreme_setup_chart(
 
     # Priority 2: Chronological scan for first candle post-formation that touched entry price
     if entry_idx is None:
-        formation_cutoff = 0
-        if ltf_fvg_formed_ts and ltf_fvg_formed_ts > 0:
-            is_candle_open = any(c.timestamp == ltf_fvg_formed_ts for c in view_candles)
-            formation_cutoff = (ltf_fvg_formed_ts + c_dur) if is_candle_open else ltf_fvg_formed_ts
-
+        min_post_formation_ts = (ltf_fvg_formed_ts + c_dur) if ltf_fvg_formed_ts else 0
         for idx, c in enumerate(view_candles):
-            if formation_cutoff and c.timestamp < formation_cutoff:
+            if min_post_formation_ts and c.timestamp < min_post_formation_ts:
                 continue
             if direction == "Bullish" and c.low <= entry_price:
                 entry_idx = idx

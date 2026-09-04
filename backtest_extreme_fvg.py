@@ -73,6 +73,7 @@ class ExtremeHistoricalTrade:
     htf_fvg_bottom: float
     htf_fvg_top: float
     fvg_formation_timestamp: int
+    fvg_formed_at: int = 0
     htf_formed_timestamp: int = 0
     htf_first_touch_timestamp: int = 0
     htf_most_recent_touch_timestamp: int = 0
@@ -141,8 +142,10 @@ class ExtremeHistoricalTrade:
                 "top": self.ltf_fvg_top,
                 "gap_pct": round(self.ltf_gap_pct, 3),
                 "formed_time": self.ltf_formed_time_ist,
+                "formed_at": self.fvg_formed_at or self.fvg_formation_timestamp,
             },
             "fvg_formation_timestamp": self.fvg_formation_timestamp,
+            "fvg_formed_at": self.fvg_formed_at or self.fvg_formation_timestamp,
             "entry_timestamp": self.entry_timestamp,
             "exit_timestamp": self.exit_timestamp,
         }
@@ -291,6 +294,7 @@ def simulate_trade_execution(
         htf_fvg_bottom=anchor.fvg.bottom,
         htf_fvg_top=anchor.fvg.top,
         fvg_formation_timestamp=ltf_fvg.close_timestamp,
+        fvg_formed_at=ltf_fvg.formed_at,
         htf_formed_timestamp=anchor.fvg.close_timestamp,
         htf_first_touch_timestamp=anchor.first_touch_timestamp,
         htf_most_recent_touch_timestamp=anchor.most_recent_touch_timestamp,
