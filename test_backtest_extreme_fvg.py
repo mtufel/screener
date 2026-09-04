@@ -8,6 +8,7 @@ from backtest_extreme_fvg import (
     ExtremeHistoricalTrade,
     ExtremeBacktestReport,
     simulate_trade_execution,
+    run_extreme_backtest,
 )
 from strategy_extreme_fvg import (
     Candle,
@@ -62,6 +63,14 @@ def test_simulate_trade_hitting_all_tps():
     assert trade.realized_r_3r == 3.0
     assert trade.exit_reason == "TP_3R"
     assert trade.mfe_r == (132.0 - 100.0) / 10.0  # +3.2R
+
+
+def _bullish_fvg():
+    """Standard Bullish FVG fixture: Entry=100, SL=90 (risk 10) -> TP1=110, TP2=120, TP3=130."""
+    c1 = make_candle(0, 85, 95, 80, 92)
+    c2 = make_candle(1000, 92, 115, 91, 114)
+    c3 = make_candle(2000, 114, 120, 100, 118)
+    return FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
 
 
 def test_simulate_trade_hitting_1r_then_stopped_out():
@@ -156,4 +165,116 @@ def test_trade_timestamps_distinct_and_chronological():
     assert trade.entry_timestamp == 3600000          # Retrace fill timestamp (10:00 AM)
     assert trade.exit_timestamp == 5400000           # Exit bar close timestamp (10:30 AM)
     assert trade.fvg_formation_timestamp < trade.entry_timestamp < trade.exit_timestamp
+
+
+def test_fill_candle_itself_resolves_tp2():
+    """Regression: the fill candle's own extreme must be evaluated for TP resolution
+    (parity with the live ledger, which includes candles where ts >= entry_timestamp)."""
+    trade = simulate_trade_execution(
+        symbol="BTC",
+        direction="Bullish",
+        entry_price=100.0,
+        stop_loss=90.0,
+        entry_timestamp=3000,
+        # Fill candle itself spans entry (low 99) and TP3 (high 135)
+        subsequent_candles=[make_candle(3000, 100, 135, 99, 122)],
+        anchor=TouchedAnchor(_bullish_fvg(), first_touch_timestamp=1000, most_recent_touch_timestamp=1000),
+        ltf_fvg=_bullish_fvg(),
+    )
+
+    assert trade.hit_1r is True
+    assert trade.hit_2r is True
+    assert trade.hit_3r is True
+    assert trade.exit_reason == "TP_3R"
+    assert trade.realized_r_2r == 2.0
+    assert trade.exit_timestamp == 3000 + 15 * 60 * 1000  # fill candle close
+
+
+def test_fill_candle_itself_resolves_sl():
+    """Regression: the fill candle's own low must be evaluated for SL resolution."""
+    trade = simulate_trade_execution(
+        symbol="BTC",
+        direction="Bullish",
+        entry_price=100.0,
+        stop_loss=90.0,
+        entry_timestamp=3000,
+        # Fill candle itself spans entry (low 99) and SL breach (low 88)
+        subsequent_candles=[make_candle(3000, 100, 101, 88, 89)],
+        anchor=TouchedAnchor(_bullish_fvg(), first_touch_timestamp=1000, most_recent_touch_timestamp=1000),
+        ltf_fvg=_bullish_fvg(),
+    )
+
+    assert trade.hit_1r is False
+    assert trade.exit_reason == "STOPPED_OUT"
+    assert trade.realized_r_1r == -1.0
+
+
+@pytest.mark.asyncio
+async def test_backtest_resolves_exits_on_fill_candle(monkeypatch):
+    """End-to-end regression for run_extreme_backtest: the forward simulation must
+    include the fill candle itself (candles_ltf[k:]) instead of starting at k+1.
+
+    Timeline (15m LTF, 4h HTF; DUR = 15m, H = 4h = 16*DUR):
+      - 4H candles at t=0, H, 2H form a Bullish FVG (c3.low 95 > c1.high 90 ->
+        top 95 / bottom 90); c3 closes at 6H = 96*DUR.
+      - LTF candles 0..95 chop above the zone (no touch possible: ts < fvg close).
+      - LTF candle 96 dips into the 4H zone (low 92); candles 97..99 also span it,
+        so the anchor's most-recent touch lands on candle 99.
+      - LTF candles 97..99 form a small Bullish FVG: c3.low 94.0 > c1.high 93.8
+        -> entry 94.0, SL 93.5 (risk 0.5), TP1 94.5, TP2 95.0, TP3 95.5.
+      - LTF candle 100: FILL candle - low 93.9 touches entry AND high 95.3
+        reaches TP2 95.0. With the fix the 2R resolves HERE. Without the fix the
+        simulation starts at candle 101 and no candle ever reaches 95.0, so
+        realized_r_2r would be -1.0 (TIME_EXPIRED).
+    """
+    DUR = 15 * 60 * 1000  # 15m candle duration
+    H = 16 * DUR          # 4h candle duration
+
+    def bar(ts, o, h, l, cl):
+        return {"t": ts, "o": o, "h": h, "l": l, "c": cl, "v": 1.0}
+
+    # 4H: Bullish FVG c1/c2/c3 (top 95 / bottom 90). Later 4H candles stay above the zone.
+    raw_4h = [
+        bar(0, 85, 92, 80, 88),
+        bar(H, 88, 105, 87, 104),
+        bar(2 * H, 104, 110, 95, 108),
+        bar(3 * H, 108, 118, 106, 115),
+        bar(4 * H, 115, 125, 112, 122),
+    ]
+
+    raw_ltf = []
+    # Candles 0..95: flat chop above the 4H zone (low 95.5 > zone top 95)
+    raw_ltf.extend(bar(n * DUR, 96, 96.5, 95.5, 96) for n in range(96))
+    # Candle 96: first touch of the 4H zone (low 92 inside 90..95)
+    raw_ltf.append(bar(96 * DUR, 96, 97, 92, 95))
+    # Candles 97..99: Bullish LTF FVG -> top 94.0 (entry) / bottom 93.8, SL 93.5
+    raw_ltf.append(bar(97 * DUR, 93.7, 93.8, 93.5, 93.6))  # c1: high 93.8, low 93.5 (SL)
+    raw_ltf.append(bar(98 * DUR, 93.6, 98.0, 93.5, 97.5))  # c2: impulse
+    raw_ltf.append(bar(99 * DUR, 97.5, 98.5, 94.0, 98.0))  # c3: low 94.0 > c1.high 93.8
+    # Candle 100: FILL candle -> low 93.9 touches entry 94.0, high 95.3 reaches TP2 95.0
+    raw_ltf.append(bar(100 * DUR, 95.0, 95.3, 93.9, 94.8))
+    # Candles 101..105: hover between SL and TP2/TP3 (no resolution without the fix)
+    raw_ltf.append(bar(101 * DUR, 94.9, 94.95, 94.4, 94.6))
+    raw_ltf.extend(bar(n * DUR, 94.7, 94.9, 94.3, 94.6) for n in range(102, 106))
+
+    class FakeClient:
+        async def get_candle_snapshot(self, symbol, timeframe, start_ms, end_ms):
+            return raw_4h if timeframe == "4h" else raw_ltf
+
+    report = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m", client=FakeClient()
+    )
+
+    assert report.total_trades == 1, f"expected exactly 1 trade, got {report.total_trades}"
+    t = report.trades[0]
+    # Entry filled on candle 100; its high (95.3) reached the 2R target (95.0).
+    assert t.entry_price == 94.0
+    assert t.entry_timestamp == 100 * DUR
+    assert t.hit_2r is True, f"2R must resolve on the fill candle itself, got exit_reason={t.exit_reason}"
+    assert t.realized_r_2r == 2.0
+    assert t.exit_reason == "TIME_EXPIRED"  # no candle after the fill reaches TP3 or SL
+    assert t.exit_timestamp == 106 * DUR    # last candle's close
+
+
+
 

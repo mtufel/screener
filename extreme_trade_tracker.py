@@ -220,6 +220,34 @@ class ExtremeTradeTracker:
                 htf_bottom = trade.htf_anchor.get("bottom", 0.0)
                 htf_top = trade.htf_anchor.get("top", float("inf"))
 
+                # A1. Same-bar fill + TP completion: a single closed candle that touched
+                # entry and reached the completion target resolves the pending trade
+                # (the scanner classifies the FVG as COMPLETED and stops emitting the setup,
+                # so without this check the pending record would never resolve).
+                target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
+                target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
+
+                touched_entry = False
+                reached_target = False
+                if trade.direction == "Bullish":
+                    touched_entry = min(curr_px, recent_low) <= trade.entry_price
+                    reached_target = max(curr_px, recent_high) >= target_tp
+                else:  # Bearish
+                    touched_entry = max(curr_px, recent_high) >= trade.entry_price
+                    reached_target = min(curr_px, recent_low) <= target_tp
+
+                if touched_entry and reached_target:
+                    trade.state = "COMPLETED_TP"
+                    trade.realized_r = target_mult
+                    trade.entry_filled_at_ist = now_ist_str
+                    trade.entry_timestamp = now_ts
+                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                    trade.closed_at_ist = now_ist_str
+                    trade.closed_timestamp = now_ts
+                    trade.duration_min = 1
+                    to_close.append((trade_id, "TP_HIT", trade))
+                    continue
+
                 is_invalidated = False
                 if trade.direction == "Bullish":
                     if min(curr_px, recent_low) <= trade.stop_loss or min(curr_px, recent_low) < htf_bottom:

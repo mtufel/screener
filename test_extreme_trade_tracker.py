@@ -119,6 +119,51 @@ def test_pending_setup_invalidation_when_sl_breached(tmp_path):
     assert tracker.history[0].state == "INVALIDATED"
 
 
+def test_pending_setup_fills_and_completes_same_candle(tmp_path):
+    """Regression: a PENDING_RETRACE trade whose FVG fills entry and reaches the
+    completion target within one closed candle must resolve to COMPLETED_TP even
+    though the scanner classifies the FVG as COMPLETED and no longer emits the setup."""
+    storage_file = tmp_path / "test_trades_pending_tp.json"
+    tracker = ExtremeTradeTracker(storage_path=str(storage_file))
+
+    mock_setup = {
+        "symbol": "BTC",
+        "direction": "Bullish",
+        "state": "PENDING_RETRACE",
+        "entry_price": 100.25,
+        "stop_loss": 100.05,
+        "risk_r": 0.20,
+        "risk_pct": 0.199,
+        "tp_1r": 100.45,
+        "tp_2r": 100.65,
+        "tp_3r": 100.85,
+        "floating_r": 0.0,
+        "completion_target": "2R",
+        "ltf_timeframe": "15m",
+        "anchor": {"bottom": 100.05, "top": 100.60, "formed_time_ist": "04-Sep 09:00 AM IST"},
+        "target_fvg": {"bottom": 100.05, "top": 100.25, "formed_at": 1788000000, "gap_pct": 0.20},
+    }
+
+    # Cycle 1: setup registered as PENDING_RETRACE (price above entry, no touch yet)
+    events = tracker.process_live_setups([mock_setup], {"BTC": 100.30})
+    assert len(tracker.active_trades) == 1
+    assert any(e[0] == "NEW_SETUP" for e in events)
+
+    # Cycle 2: FVG classified COMPLETED by the scanner -> NO setup emitted for BTC.
+    # One closed candle touched entry (low 100.20 <= 100.25) and reached 2R (high 100.80 >= 100.65).
+    fill_candle = {"t": 1788001800, "o": 100.40, "h": 100.80, "l": 100.20, "c": 100.70, "v": 1.0}
+    events = tracker.process_live_setups([], {"BTC": 100.70}, recent_candles_map={"BTC": [fill_candle]})
+
+    assert any(e[0] == "TP_HIT" for e in events)
+    assert len(tracker.active_trades) == 0
+    assert len(tracker.history) == 1
+    resolved = tracker.history[0]
+    assert resolved.state == "COMPLETED_TP"
+    assert resolved.realized_r == 2.0
+    assert resolved.entry_filled_at_ist is not None
+    assert resolved.closed_at_ist is not None
+
+
 def test_symbol_alias_resolution_for_live_mids(tmp_path):
     storage_file = tmp_path / "test_trades_alias.json"
     tracker = ExtremeTradeTracker(storage_path=str(storage_file))

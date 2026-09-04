@@ -443,7 +443,9 @@ async def run_extreme_backtest(
             k += 1
 
         if entry_triggered:
-            subsequent = candles_ltf[k + 1:]
+            # Include the fill candle itself: its high/low must be evaluated for TP/SL
+            # resolution exactly like the live ledger (candles where ts >= entry_timestamp).
+            subsequent = candles_ltf[k:]
             trade = simulate_trade_execution(
                 symbol=symbol,
                 direction=best_ltf.direction,
