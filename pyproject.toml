@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["."]
+# Fresh event loop per async test -> no cross-talk between pytest-asyncio
+# loops and Starlette/TestClient portal loops (fixes "Event loop is closed").
+asyncio_default_fixture_loop_scope = "function"
+# Silence third-party deprecation noise (pyparsing / matplotlib internals) so
+# real test failures are not buried in hundreds of warnings.
+# NOTE: warning-filter message regexes must not contain ':' (pytest splits on ':').
+filterwarnings = [
+    "ignore:.*deprecated.*:DeprecationWarning",
+]

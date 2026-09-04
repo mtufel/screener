@@ -41,6 +41,8 @@ from strategy import (
 from telegram_client import format_single_setup, format_alert_message, _format_price
 from trade_tracker import TradeTracker, TrackedTrade
 
+import main as main_module  # noqa: E402  (for monkeypatching background daemons in endpoint test)
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -478,11 +480,81 @@ def test_commodity_and_crypto_symbol_mapping():
     assert client.get_hl_symbol("ETH-PERP") == "ETH"
 
 
+def _synthetic_candle_dicts(n=60, base=96000.0, step=50.0, interval_ms=300000):
+    """Synthetic Hyperliquid-style OHLCV candle dicts for offline chart tests."""
+    now_ms = int(time.time() * 1000)
+    return [
+        {
+            "t": now_ms - (i * interval_ms),
+            "o": base + i * step,
+            "h": base + i * step + 100.0,
+            "l": base + i * step - 100.0,
+            "c": base + i * step + 50.0,
+            "v": 100.0,
+        }
+        for i in range(n, 0, -1)
+    ]
+
+
 # ==============================================================================
 # 9. FASTAPI ENDPOINTS TEST
 # ==============================================================================
-def test_fastapi_endpoints():
+def test_fastapi_endpoints(monkeypatch):
+    """
+    End-to-end FastAPI endpoint tests.
+
+    Determinstic & offline: disables the 3 real background daemons spawned by
+    the app lifespan and stubs all Hyperliquid network calls, so the test is
+    fast, repeatable, and cannot collide with pytest-asyncio event loops
+    (previously flaky with 'Event loop is closed' when run with the full suite).
+    """
     from main import app
+
+    # -- Disable real background daemons spawned by the lifespan -----------
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(main_module, "screener_background_worker", _noop)
+    monkeypatch.setattr(main_module, "trade_monitor_worker", _noop)
+    monkeypatch.setattr(main_module, "extreme_screener_background_worker", _noop)
+
+    # -- Stub all Hyperliquid network calls for deterministic offline use --
+    from hyperliquid_client import hyperliquid_client as _hl_client
+
+    synthetic = _synthetic_candle_dicts()
+
+    async def _fake_universe(*args, **kwargs):
+        return ["BTC", "ETH"]
+
+    async def _fake_all_mids(*args, **kwargs):
+        return {"BTC": 96000.0, "ETH": 3200.0}
+
+    async def _fake_candle_snapshot(coin, interval, start_time_ms, end_time_ms, *args, **kwargs):
+        return synthetic
+
+    async def _fake_fallback_historical_klines(*args, **kwargs):
+        return []
+
+    async def _fake_strategy_get_candles(symbol=None, timeframe=None, n=50, *args, **kwargs):
+        return [Candle.from_dict(c) for c in synthetic]
+
+    monkeypatch.setattr(_hl_client, "get_universe", _fake_universe)
+    monkeypatch.setattr(_hl_client, "get_all_mids", _fake_all_mids)
+    monkeypatch.setattr(_hl_client, "get_candle_snapshot", _fake_candle_snapshot)
+    monkeypatch.setattr(_hl_client, "fetch_fallback_historical_klines", _fake_fallback_historical_klines)
+
+    # The app lifespan's shutdown calls hyperliquid_client.close(). If an earlier
+    # test in the full run lazily created the real httpx.AsyncClient on its own
+    # (now-closed) event loop, closing it here would crash with
+    # 'Event loop is closed'. Reset it to None so shutdown has nothing stale to
+    # close (all network paths are stubbed, so it stays None). monkeypatch
+    # restores the original value after the test.
+    monkeypatch.setattr(_hl_client, "_client", None)
+
+    # strategy.get_last_n_candles is a module-level async wrapper used by /api/chart
+    import strategy as _strategy_module
+    monkeypatch.setattr(_strategy_module, "get_last_n_candles", _fake_strategy_get_candles)
+
     with TestClient(app) as client:
         # JSON Root Request
         json_res = client.get("/", headers={"Accept": "application/json"})
