@@ -49,11 +49,11 @@ DEFAULT_LTF_TIMEFRAME = os.getenv("LTF_TIMEFRAME", "5m")
 DEFAULT_HTF_MODE = os.getenv("HTF_SELECTION_MODE", "ANY_VALID")
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
 TOP_N_ALERTS = int(os.getenv("TOP_N_ALERTS", "5"))
-COINS_WHITELIST = os.getenv("COINS_WHITELIST", "BTC,ETH,WTIOIL,SILVER,PAXG").strip()
+COINS_WHITELIST = os.getenv("COINS_WHITELIST", "BTC,ETH,SOL").strip()
 
 # Global state
 EXTREME_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTREME_SCAN_INTERVAL_SECONDS", "30"))
-EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "15m")
+EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 EXTREME_COMPLETION_TARGET = os.getenv("EXTREME_COMPLETION_TARGET", "2R")
 EXTREME_MIN_GAP_PCT = float(os.getenv("EXTREME_MIN_GAP_PCT", "0.05"))
 EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").lower() == "true"
@@ -1012,7 +1012,7 @@ async def api_extreme_scan(
     inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
     use_close = (inval_to_use == "close")
 
-    whitelist_raw = symbols or state.get("coins_whitelist") or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL,PAXG")
+    whitelist_raw = symbols or state.get("coins_whitelist") or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL")
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
 
     setups_out = []

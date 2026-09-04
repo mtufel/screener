@@ -746,7 +746,7 @@
               <input
                 type="text"
                 id="extremeSymbols"
-                value="BTC,ETH,SOL,PAXG"
+                value="BTC,ETH,SOL"
                 onblur="saveExtremeConfig('symbols', this.value)"
                 class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white focus:outline-none focus:border-amber-500 w-48"
               />
@@ -755,8 +755,8 @@
             <div>
               <label class="block text-[11px] font-semibold text-slate-400 mb-1">LTF Timeframe</label>
               <select id="extremeLtf" onchange="saveExtremeConfig('ltf', this.value)" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200 focus:outline-none focus:border-amber-500">
-                <option value="15m" selected>15m (Default)</option>
-                <option value="5m">5m</option>
+                <option value="5m" selected>5m (Default)</option>
+                <option value="15m">15m</option>
                 <option value="1m">1m</option>
                 <option value="1h">1h</option>
               </select>
@@ -974,8 +974,8 @@
               <div>
                 <label class="block text-[11px] font-semibold text-slate-400 mb-1">Timeframe</label>
                 <select id="extremeBtLtf" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
-                  <option value="15m" selected>15m</option>
-                  <option value="5m">5m</option>
+                  <option value="5m" selected>5m (Default)</option>
+                  <option value="15m">15m</option>
                   <option value="1m">1m</option>
                 </select>
               </div>
