@@ -203,20 +203,47 @@ class ExtremeTradeTracker:
                     trade.status_detail = "Active (Just Filled)"
                     events.append(("ENTRY_FILLED", trade))
 
-        # 2. Monitor all open TRADE_ACTIVE trades against current live prices & candle extremes
+        # 2. Monitor all open trades: check both TRADE_ACTIVE (for TP/SL) and PENDING_RETRACE (for invalidation / breach)
+        from hyperliquid_client import SYMBOL_ALIASES
         to_close = []
         for trade_id, trade in list(self.active_trades.items()):
+            raw_sym = SYMBOL_ALIASES.get(trade.symbol.strip().upper(), trade.symbol.strip().upper())
+            curr_px = float(current_mids.get(raw_sym, current_mids.get(trade.symbol, trade.entry_price)))
+            risk_r = trade.risk_r if trade.risk_r > 0 else (trade.entry_price * 0.001)
+
+            candles = (recent_candles_map.get(raw_sym) or recent_candles_map.get(trade.symbol) or []) if recent_candles_map else []
+
+            # A. Monitor PENDING_RETRACE setups for invalidation before entry
+            if trade.state == "PENDING_RETRACE":
+                recent_high = max([getattr(c, "high", c.get("h", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
+                recent_low = min([getattr(c, "low", c.get("l", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
+                htf_bottom = trade.htf_anchor.get("bottom", 0.0)
+                htf_top = trade.htf_anchor.get("top", float("inf"))
+
+                is_invalidated = False
+                if trade.direction == "Bullish":
+                    if min(curr_px, recent_low) <= trade.stop_loss or min(curr_px, recent_low) < htf_bottom:
+                        is_invalidated = True
+                else:  # Bearish
+                    if max(curr_px, recent_high) >= trade.stop_loss or max(curr_px, recent_high) > htf_top:
+                        is_invalidated = True
+
+                if is_invalidated:
+                    trade.state = "INVALIDATED"
+                    trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
+                    trade.closed_at_ist = now_ist_str
+                    trade.closed_timestamp = now_ts
+                    to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                continue
+
             if trade.state != "TRADE_ACTIVE":
                 continue
 
-            curr_px = float(current_mids.get(trade.symbol, trade.entry_price))
-            risk_r = trade.risk_r if trade.risk_r > 0 else (trade.entry_price * 0.001)
-
+            # B. Monitor TRADE_ACTIVE trades against live prices & post-entry candle extremes
             # Target definition based on completion target
             target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
             target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
 
-            candles = (recent_candles_map.get(trade.symbol, []) or []) if recent_candles_map else []
             entry_t = trade.entry_timestamp or 0
             subsequent_candles = []
             for c in candles:

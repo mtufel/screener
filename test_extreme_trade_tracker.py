@@ -83,3 +83,71 @@ def test_api_live_history_endpoints(client):
     res_clear = client.post("/api/extreme/clear-live-history")
     assert res_clear.status_code == 200
     assert res_clear.json()["status"] == "success"
+
+
+def test_pending_setup_invalidation_when_sl_breached(tmp_path):
+    storage_file = tmp_path / "test_trades_inval.json"
+    tracker = ExtremeTradeTracker(storage_path=str(storage_file))
+
+    mock_setup = {
+        "symbol": "BTC",
+        "direction": "Bullish",
+        "state": "PENDING_RETRACE",
+        "entry_price": 60000.0,
+        "stop_loss": 59000.0,
+        "risk_r": 1000.0,
+        "risk_pct": 1.67,
+        "tp_1r": 61000.0,
+        "tp_2r": 62000.0,
+        "tp_3r": 63000.0,
+        "floating_r": 0.0,
+        "completion_target": "2R",
+        "ltf_timeframe": "15m",
+        "anchor": {"bottom": 59000, "top": 60500, "formed_time_ist": "03-Sep 09:00 AM IST"},
+        "target_fvg": {"bottom": 59800, "top": 60000, "formed_at": 1788000000, "gap_pct": 0.33},
+    }
+
+    # Setup created as PENDING_RETRACE
+    events = tracker.process_live_setups([mock_setup], {"BTC": 60500.0})
+    assert len(tracker.active_trades) == 1
+
+    # Price crashes below stop loss (58500 < 59000) without filling entry
+    events = tracker.process_live_setups([], {"BTC": 58500.0})
+    assert any(e[0] == "SETUP_INVALIDATED" for e in events)
+    assert len(tracker.active_trades) == 0
+    assert len(tracker.history) == 1
+    assert tracker.history[0].state == "INVALIDATED"
+
+
+def test_symbol_alias_resolution_for_live_mids(tmp_path):
+    storage_file = tmp_path / "test_trades_alias.json"
+    tracker = ExtremeTradeTracker(storage_path=str(storage_file))
+
+    mock_gold_setup = {
+        "symbol": "GOLD",
+        "direction": "Bullish",
+        "state": "TRADE_ACTIVE",
+        "entry_price": 2500.0,
+        "stop_loss": 2480.0,
+        "risk_r": 20.0,
+        "risk_pct": 0.8,
+        "tp_1r": 2520.0,
+        "tp_2r": 2540.0,
+        "tp_3r": 2560.0,
+        "floating_r": 0.0,
+        "completion_target": "2R",
+        "ltf_timeframe": "15m",
+        "anchor": {"bottom": 2470, "top": 2510, "formed_time_ist": "03-Sep 09:00 AM IST"},
+        "target_fvg": {"bottom": 2490, "top": 2500, "formed_at": 1788000000, "gap_pct": 0.4},
+        "entry_timestamp": 1788001000,
+    }
+
+    # Hyperliquid mids keyed by PAXG for GOLD
+    mids = {"PAXG": 2530.0}
+    events = tracker.process_live_setups([mock_gold_setup], mids)
+    trade = list(tracker.active_trades.values())[0]
+
+    # floating_r should resolve PAXG mid-price (+1.5R) instead of staying frozen at 0.00R
+    assert trade.floating_r == 1.5
+    assert trade.max_favorable_price == 2530.0
+    assert trade.mfe_r == 1.5

@@ -997,29 +997,23 @@ async def backtest_endpoint(
 @app.get("/api/extreme/scan", summary="Scan for Extreme LTF FVG Setups")
 async def api_extreme_scan(
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols or leave empty for whitelist"),
-    ltf: str = Query(default="15m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
-    invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
-    min_gap_pct: float = Query(default=0.05, ge=0.0, description="Minimum LTF FVG gap size %"),
-    target: str = Query(default="2R", pattern="^(1R|2R|3R)$", description="Completion target"),
+    ltf: Optional[str] = Query(default=None, pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
+    invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
+    min_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Minimum LTF FVG gap size %"),
+    target: Optional[str] = Query(default=None, pattern="^(1R|2R|3R)$", description="Completion target"),
 ):
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
     from hyperliquid_client import SYMBOL_ALIASES
     from extreme_trade_tracker import extreme_trade_tracker
 
-    whitelist_raw = symbols or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL,PAXG")
-    coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
-    use_close = (invalidation == "close")
+    ltf_to_use = ltf or state.get("extreme_ltf", "15m")
+    target_to_use = target or state.get("extreme_target", "2R")
+    min_gap_to_use = min_gap_pct if min_gap_pct is not None else state.get("extreme_min_gap", 0.05)
+    inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
+    use_close = (inval_to_use == "close")
 
-    if ltf:
-        state["extreme_ltf"] = ltf
-    if target:
-        state["extreme_target"] = target
-    if min_gap_pct is not None:
-        state["extreme_min_gap"] = min_gap_pct
-    if invalidation:
-        state["extreme_use_close"] = use_close
-    if symbols and symbols.strip():
-        state["coins_whitelist"] = symbols.strip().upper()
+    whitelist_raw = symbols or state.get("coins_whitelist") or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL,PAXG")
+    coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
 
     setups_out = []
     mids = await hyperliquid_client.get_all_mids()
@@ -1068,10 +1062,10 @@ async def api_extreme_scan(
         try:
             setup = await get_extreme_setup_for_symbol(
                 symbol=raw_sym,
-                ltf_timeframe=ltf,
+                ltf_timeframe=ltf_to_use,
                 use_close_invalidation=use_close,
-                min_gap_pct=min_gap_pct,
-                completion_target=target,
+                min_gap_pct=min_gap_to_use,
+                completion_target=target_to_use,
             )
             if setup:
                 if curr_px == 0.0:
