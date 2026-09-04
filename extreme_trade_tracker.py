@@ -22,6 +22,27 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 PERSISTENCE_FILE = os.getenv("EXTREME_LIVE_TRADES_FILE", "data/extreme_live_trades.json")
 
+# A PENDING_RETRACE record whose scanner setup is absent for this many consecutive
+# scan-valid cycles transitions to INVALIDATED (default 40 cycles ~ 20 min at 30s).
+PENDING_ABSENT_EXPIRY_CYCLES = int(os.getenv("EXTREME_PENDING_EXPIRY_CYCLES", "40"))
+
+
+def _ts_to_ist(ts_ms: int) -> str:
+    """Formats an epoch-milliseconds timestamp as the ledger's IST display string."""
+    return datetime.fromtimestamp(int(ts_ms) / 1000, IST).strftime("%d-%b %I:%M %p IST")
+
+
+def _candle_ts(c: Any) -> int:
+    return getattr(c, "timestamp", c.get("t", 0) if isinstance(c, dict) else 0)
+
+
+def _candle_high(c: Any) -> float:
+    return getattr(c, "high", c.get("h", 0.0) if isinstance(c, dict) else 0.0)
+
+
+def _candle_low(c: Any) -> float:
+    return getattr(c, "low", c.get("l", 0.0) if isinstance(c, dict) else 0.0)
+
 
 @dataclass
 class TrackedExtremeTrade:
@@ -51,6 +72,7 @@ class TrackedExtremeTrade:
     duration_min: int = 0
     entry_timestamp: Optional[int] = None
     closed_timestamp: Optional[int] = None
+    absent_cycles: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -158,6 +180,42 @@ class ExtremeTradeTracker:
             trade_id = f"{sym}:{fvg_formed_at}:{entry_px:.2f}"
             seen_symbols.add(sym)
 
+            existing_pending = self.get_pending_trade_for_symbol(sym)
+            if existing_pending is not None and existing_pending.trade_id != trade_id:
+                # Scanner offers a different setup for a symbol with an unfilled pending
+                # record. The pending record must follow the FRESHEST emission (newer
+                # formed_at) in place: stale anchor/FVG pairings are replaced and no
+                # duplicate rows are created. Older/deeper re-selections are ignored.
+                existing_formed = existing_pending.ltf_fvg.get("formed_at", 0) or 0
+                if fvg_formed_at > existing_formed:
+                    refreshed = TrackedExtremeTrade(
+                        trade_id=trade_id,
+                        symbol=sym,
+                        direction=s["direction"],
+                        ltf_timeframe=s.get("ltf_timeframe", "15m"),
+                        entry_price=entry_px,
+                        stop_loss=s["stop_loss"],
+                        risk_r=s["risk_r"],
+                        risk_pct=s["risk_pct"],
+                        tp_1r=s["tp_1r"],
+                        tp_2r=s["tp_2r"],
+                        tp_3r=s["tp_3r"],
+                        completion_target=s.get("completion_target", "2R"),
+                        htf_anchor=s.get("anchor", {}),
+                        ltf_fvg=s.get("target_fvg", {}),
+                        state="PENDING_RETRACE",
+                        status_detail="Waiting for Retrace (refreshed to latest emission)",
+                        created_at_ist=now_ist_str,
+                        max_favorable_price=curr_px,
+                    )
+                    self.active_trades.pop(existing_pending.trade_id, None)
+                    self.active_trades[trade_id] = refreshed
+                    logger.info(
+                        "Refreshed pending setup %s -> %s (newer FVG emission; anchor/FVG metadata updated)",
+                        existing_pending.trade_id, trade_id,
+                    )
+                continue
+
             if trade_id not in self.active_trades:
                 # Register new setup
                 is_active = (s.get("state") == "TRADE_ACTIVE")
@@ -213,47 +271,123 @@ class ExtremeTradeTracker:
 
             candles = (recent_candles_map.get(raw_sym) or recent_candles_map.get(trade.symbol) or []) if recent_candles_map else []
 
-            # A. Monitor PENDING_RETRACE setups for invalidation before entry
+            # A. Monitor PENDING_RETRACE setups for invalidation before entry / same-bar completion
             if trade.state == "PENDING_RETRACE":
-                recent_high = max([getattr(c, "high", c.get("h", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
-                recent_low = min([getattr(c, "low", c.get("l", curr_px) if isinstance(c, dict) else curr_px) for c in candles], default=curr_px) if candles else curr_px
                 htf_bottom = trade.htf_anchor.get("bottom", 0.0)
                 htf_top = trade.htf_anchor.get("top", float("inf"))
+                formed_at = trade.ltf_fvg.get("formed_at", 0) or 0
+                post_formation = [c for c in candles if _candle_ts(c) > formed_at] if candles else []
+                post_formation.sort(key=_candle_ts)
 
-                # A1. Same-bar fill + TP completion: a single closed candle that touched
-                # entry and reached the completion target resolves the pending trade
-                # (the scanner classifies the FVG as COMPLETED and stops emitting the setup,
-                # so without this check the pending record would never resolve).
                 target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
                 target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
 
-                touched_entry = False
-                reached_target = False
-                if trade.direction == "Bullish":
-                    touched_entry = min(curr_px, recent_low) <= trade.entry_price
-                    reached_target = max(curr_px, recent_high) >= target_tp
-                else:  # Bearish
-                    touched_entry = max(curr_px, recent_high) >= trade.entry_price
-                    reached_target = min(curr_px, recent_low) <= target_tp
+                filled = False
+                fill_ts = None
+                resolved = False
+                for c in post_formation:
+                    c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
+                    if not filled:
+                        if trade.direction == "Bullish":
+                            # Check SL/Anchor breach before fill
+                            if c_low <= trade.stop_loss or c_low < htf_bottom:
+                                if c_low <= trade.stop_loss and c_high < trade.entry_price:
+                                    trade.state = "INVALIDATED"
+                                    trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
+                                    trade.closed_at_ist = _ts_to_ist(c_ts)
+                                    trade.closed_timestamp = c_ts
+                                    to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                                    resolved = True
+                                    break
+                            # Check Fill
+                            if c_low <= trade.entry_price:
+                                filled = True
+                                fill_ts = c_ts
+                                trade.entry_timestamp = fill_ts
+                                trade.entry_filled_at_ist = _ts_to_ist(fill_ts)
+                        else:  # Bearish
+                            if c_high >= trade.stop_loss or c_high > htf_top:
+                                if c_high >= trade.stop_loss and c_low > trade.entry_price:
+                                    trade.state = "INVALIDATED"
+                                    trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
+                                    trade.closed_at_ist = _ts_to_ist(c_ts)
+                                    trade.closed_timestamp = c_ts
+                                    to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                                    resolved = True
+                                    break
+                            # Check Fill
+                            if c_high >= trade.entry_price:
+                                filled = True
+                                fill_ts = c_ts
+                                trade.entry_timestamp = fill_ts
+                                trade.entry_filled_at_ist = _ts_to_ist(fill_ts)
 
-                if touched_entry and reached_target:
-                    trade.state = "COMPLETED_TP"
-                    trade.realized_r = target_mult
-                    trade.entry_filled_at_ist = now_ist_str
-                    trade.entry_timestamp = now_ts
-                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    trade.duration_min = 1
-                    to_close.append((trade_id, "TP_HIT", trade))
+                    if filled:
+                        # Check exits chronologically on fill candle or subsequent candles
+                        if trade.direction == "Bullish":
+                            trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, c_high)
+                            trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
+                            if c_low <= trade.stop_loss:
+                                trade.state = "STOPPED_OUT"
+                                trade.realized_r = -1.0
+                                trade.status_detail = "STOP LOSS HIT (-1.0R)"
+                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_timestamp = c_ts
+                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
+                                to_close.append((trade_id, "SL_HIT", trade))
+                                resolved = True
+                                break
+                            elif c_high >= target_tp:
+                                trade.state = "COMPLETED_TP"
+                                trade.realized_r = target_mult
+                                trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_timestamp = c_ts
+                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
+                                to_close.append((trade_id, "TP_HIT", trade))
+                                resolved = True
+                                break
+                        else:  # Bearish
+                            trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, c_low)
+                            trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
+                            if c_high >= trade.stop_loss:
+                                trade.state = "STOPPED_OUT"
+                                trade.realized_r = -1.0
+                                trade.status_detail = "STOP LOSS HIT (-1.0R)"
+                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_timestamp = c_ts
+                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
+                                to_close.append((trade_id, "SL_HIT", trade))
+                                resolved = True
+                                break
+                            elif c_low <= target_tp:
+                                trade.state = "COMPLETED_TP"
+                                trade.realized_r = target_mult
+                                trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_timestamp = c_ts
+                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
+                                to_close.append((trade_id, "TP_HIT", trade))
+                                resolved = True
+                                break
+
+                if resolved:
                     continue
 
+                if filled:
+                    trade.state = "TRADE_ACTIVE"
+                    trade.status_detail = "Active (Filled)"
+                    events.append(("ENTRY_FILLED", trade))
+                    continue
+
+
+                # Live price invalidation check
                 is_invalidated = False
                 if trade.direction == "Bullish":
-                    if min(curr_px, recent_low) <= trade.stop_loss or min(curr_px, recent_low) < htf_bottom:
+                    if curr_px <= trade.stop_loss or curr_px < htf_bottom:
                         is_invalidated = True
-                else:  # Bearish
-                    if max(curr_px, recent_high) >= trade.stop_loss or max(curr_px, recent_high) > htf_top:
+                else:
+                    if curr_px >= trade.stop_loss or curr_px > htf_top:
                         is_invalidated = True
 
                 if is_invalidated:
@@ -262,88 +396,143 @@ class ExtremeTradeTracker:
                     trade.closed_at_ist = now_ist_str
                     trade.closed_timestamp = now_ts
                     to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                    continue
+
+                # A2. Absent-setup expiry
+                if trade.symbol.strip().upper() not in seen_symbols:
+                    trade.absent_cycles += 1
+                    if trade.absent_cycles >= PENDING_ABSENT_EXPIRY_CYCLES:
+                        trade.state = "INVALIDATED"
+                        trade.status_detail = f"Expired (setup absent from scanner for {trade.absent_cycles} cycles)"
+                        trade.closed_at_ist = now_ist_str
+                        trade.closed_timestamp = now_ts
+                        to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                else:
+                    trade.absent_cycles = 0
                 continue
 
             if trade.state != "TRADE_ACTIVE":
                 continue
 
-            # B. Monitor TRADE_ACTIVE trades against live prices & post-entry candle extremes
-            # Target definition based on completion target
+            # B. Monitor TRADE_ACTIVE trades strictly chronologically candle-by-candle (SL FIRST, then TP)
             target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
             target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
 
             entry_t = trade.entry_timestamp or 0
-            subsequent_candles = []
-            for c in candles:
-                c_ts = getattr(c, "timestamp", c.get("t", 0) if isinstance(c, dict) else 0)
-                if c_ts >= entry_t:
-                    subsequent_candles.append(c)
+            subsequent_candles = [c for c in candles if _candle_ts(c) >= entry_t] if candles else []
+            subsequent_candles.sort(key=_candle_ts)
 
-            recent_high = max([getattr(c, "high", c.get("h", curr_px) if isinstance(c, dict) else curr_px) for c in subsequent_candles], default=curr_px) if subsequent_candles else curr_px
-            recent_low = min([getattr(c, "low", c.get("l", curr_px) if isinstance(c, dict) else curr_px) for c in subsequent_candles], default=curr_px) if subsequent_candles else curr_px
+            trade_closed = False
+            for c in subsequent_candles:
+                c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
+                if trade.direction == "Bullish":
+                    trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, c_high)
+                    trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
 
-            # Update MFE & Floating R
+                    # 1. Stop Loss Check FIRST
+                    if c_low <= trade.stop_loss:
+                        trade.state = "STOPPED_OUT"
+                        trade.realized_r = -1.0
+                        trade.status_detail = "STOP LOSS HIT (-1.0R)"
+                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_timestamp = c_ts
+                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
+                        to_close.append((trade_id, "SL_HIT", trade))
+                        trade_closed = True
+                        break
+
+                    # 2. Take Profit Check SECOND
+                    elif c_high >= target_tp:
+                        trade.state = "COMPLETED_TP"
+                        trade.realized_r = target_mult
+                        trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_timestamp = c_ts
+                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
+                        to_close.append((trade_id, "TP_HIT", trade))
+                        trade_closed = True
+                        break
+
+                else:  # Bearish
+                    trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, c_low)
+                    trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
+
+                    # 1. Stop Loss Check FIRST
+                    if c_high >= trade.stop_loss:
+                        trade.state = "STOPPED_OUT"
+                        trade.realized_r = -1.0
+                        trade.status_detail = "STOP LOSS HIT (-1.0R)"
+                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_timestamp = c_ts
+                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
+                        to_close.append((trade_id, "SL_HIT", trade))
+                        trade_closed = True
+                        break
+
+                    # 2. Take Profit Check SECOND
+                    elif c_low <= target_tp:
+                        trade.state = "COMPLETED_TP"
+                        trade.realized_r = target_mult
+                        trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_timestamp = c_ts
+                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
+                        to_close.append((trade_id, "TP_HIT", trade))
+                        trade_closed = True
+                        break
+
+            if trade_closed:
+                continue
+
+            # If not closed on past candles, check live mid price
             if trade.direction == "Bullish":
-                effective_high = max(curr_px, recent_high)
-                effective_low = min(curr_px, recent_low)
                 trade.floating_r = round((curr_px - trade.entry_price) / risk_r, 2)
-                trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, effective_high)
+                trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, curr_px)
                 trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
 
-                # Check TP Hit
-                if effective_high >= target_tp:
-                    trade.state = "COMPLETED_TP"
-                    trade.realized_r = target_mult
-                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    if trade.entry_timestamp:
-                        trade.duration_min = max(1, int((now_ts - trade.entry_timestamp) / 60000))
-                    to_close.append((trade_id, "TP_HIT", trade))
-
-                # Check SL Hit
-                elif effective_low <= trade.stop_loss:
+                if curr_px <= trade.stop_loss:
                     trade.state = "STOPPED_OUT"
                     trade.realized_r = -1.0
                     trade.status_detail = "STOP LOSS HIT (-1.0R)"
                     trade.closed_at_ist = now_ist_str
                     trade.closed_timestamp = now_ts
-                    if trade.entry_timestamp:
-                        trade.duration_min = max(1, int((now_ts - trade.entry_timestamp) / 60000))
+                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
                     to_close.append((trade_id, "SL_HIT", trade))
+                elif curr_px >= target_tp:
+                    trade.state = "COMPLETED_TP"
+                    trade.realized_r = target_mult
+                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                    trade.closed_at_ist = now_ist_str
+                    trade.closed_timestamp = now_ts
+                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
+                    to_close.append((trade_id, "TP_HIT", trade))
                 else:
                     trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
 
             else:  # Bearish
-                effective_high = max(curr_px, recent_high)
-                effective_low = min(curr_px, recent_low)
                 trade.floating_r = round((trade.entry_price - curr_px) / risk_r, 2)
-                trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, effective_low)
+                trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, curr_px)
                 trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
 
-                # Check TP Hit
-                if effective_low <= target_tp:
-                    trade.state = "COMPLETED_TP"
-                    trade.realized_r = target_mult
-                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    if trade.entry_timestamp:
-                        trade.duration_min = max(1, int((now_ts - trade.entry_timestamp) / 60000))
-                    to_close.append((trade_id, "TP_HIT", trade))
-
-                # Check SL Hit
-                elif effective_high >= trade.stop_loss:
+                if curr_px >= trade.stop_loss:
                     trade.state = "STOPPED_OUT"
                     trade.realized_r = -1.0
                     trade.status_detail = "STOP LOSS HIT (-1.0R)"
                     trade.closed_at_ist = now_ist_str
                     trade.closed_timestamp = now_ts
-                    if trade.entry_timestamp:
-                        trade.duration_min = max(1, int((now_ts - trade.entry_timestamp) / 60000))
+                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
                     to_close.append((trade_id, "SL_HIT", trade))
+                elif curr_px <= target_tp:
+                    trade.state = "COMPLETED_TP"
+                    trade.realized_r = target_mult
+                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
+                    trade.closed_at_ist = now_ist_str
+                    trade.closed_timestamp = now_ts
+                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
+                    to_close.append((trade_id, "TP_HIT", trade))
                 else:
                     trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
+
 
         # 3. Archive resolved trades to history
         for trade_id, evt_type, trade in to_close:

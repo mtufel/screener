@@ -363,13 +363,26 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
 
     recent_candles_map = {}
-    for sym in coin_list:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    dur_ms = 5 * 60 * 1000 if ltf == "5m" else (15 * 60 * 1000 if ltf == "15m" else (60 * 60 * 1000 if ltf == "1h" else 60 * 1000))
+    symbols_to_fetch = set(coin_list)
+    for tr in extreme_trade_tracker.active_trades.values():
+        symbols_to_fetch.add(tr.symbol.strip().upper())
+
+    for sym in symbols_to_fetch:
         raw_sym = SYMBOL_ALIASES.get(sym, sym)
         try:
-            c_list = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=20)
+            active_tr = extreme_trade_tracker.get_active_trade_for_symbol(sym) or extreme_trade_tracker.get_pending_trade_for_symbol(sym)
+            n_candles = 50
+            if active_tr:
+                earliest_ts = active_tr.entry_timestamp or active_tr.ltf_fvg.get("formed_at") or 0
+                if earliest_ts > 0 and dur_ms > 0:
+                    needed = int((now_ms - earliest_ts) / dur_ms) + 10
+                    n_candles = max(50, min(500, needed))
+            c_list = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=n_candles)
             recent_candles_map[sym] = c_list
-        except Exception:
-            pass
+        except Exception as c_err:
+            logger.debug("Failed to fetch recent candles for %s: %s", sym, c_err)
 
     # Process all setups through ExtremeTradeTracker
     events = extreme_trade_tracker.process_live_setups(setups_out, mids, recent_candles_map=recent_candles_map)
@@ -1006,7 +1019,7 @@ async def api_extreme_scan(
     from hyperliquid_client import SYMBOL_ALIASES
     from extreme_trade_tracker import extreme_trade_tracker
 
-    ltf_to_use = ltf or state.get("extreme_ltf", "15m")
+    ltf_to_use = ltf or state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME)
     target_to_use = target or state.get("extreme_target", "2R")
     min_gap_to_use = min_gap_pct if min_gap_pct is not None else state.get("extreme_min_gap", 0.05)
     inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
@@ -1118,7 +1131,7 @@ async def api_extreme_scan(
 async def api_extreme_backtest(
     symbol: str = Query(default="BTC", description="Coin symbol"),
     days: int = Query(default=14, ge=1, le=90, description="Lookback days"),
-    ltf: str = Query(default="15m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
+    ltf: str = Query(default="5m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
     invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
     min_gap_pct: float = Query(default=0.05, ge=0.0, description="Min gap size %"),
 ):
@@ -1166,7 +1179,7 @@ async def api_extreme_status():
         "status": "success",
         "is_running": state.get("extreme_is_running", False),
         "interval_seconds": state.get("extreme_interval_seconds", 30),
-        "ltf_timeframe": state.get("extreme_ltf", "15m"),
+        "ltf_timeframe": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
         "completion_target": state.get("extreme_target", "2R"),
         "min_gap_pct": state.get("extreme_min_gap", 0.05),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
@@ -1244,7 +1257,7 @@ async def api_extreme_config(
 async def api_extreme_chart(
     symbol: str = Query(..., description="Symbol e.g. BTC"),
     direction: str = Query(default="Bullish", description="Direction"),
-    ltf: str = Query(default="15m", description="LTF Timeframe"),
+    ltf: str = Query(default="5m", description="LTF Timeframe"),
     entry_price: float = Query(...),
     stop_loss: float = Query(...),
     tp_1r: float = Query(...),

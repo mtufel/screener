@@ -1,82 +1,13 @@
-# Strategy 2: ⚡ Extreme LTF FVG Strategy Specification
+# strategy-2-extreme spec delta: extreme-pending-touch-scoping-and-expiry
 
-## Purpose
-Specifies the requirements and architecture for Strategy 2, an extreme precision day-trading system executing on Lower Timeframe (15m/5m) Fair Value Gaps formed strictly post-4H-touch, with an Immutable Active Trade Ledger.
-
----
-
-## Requirements
-
-### Requirement: Incremental 4H FVG Cache
-The system SHALL maintain an in-memory, incremental 4H FVG cache per `{symbol}:{mode}` with $O(1)$ delta updates, automatically invalidating breached zones and detecting newly formed closed 4H FVGs without full historical rescanning.
-
-#### Scenario: Delta update on new closed 4H bar
-- **WHEN** a new 4H candle closes
-- **THEN** the cache SHALL evaluate rolling 3-candle imbalance and add any newly formed FVG
-- **AND** invalidates any existing 4H FVG breached by the new bar.
-
----
-
-### Requirement: 4H Anchor Selection & First Touch Pinpointing
-The system MUST prioritize 4H FVG zones currently containing live price or the most recently touched 4H zone, and MUST pinpoint the exact timestamp (`first_touch_timestamp`) when price first touched the 4H zone post-close.
-
-#### Scenario: Priority given to currently containing price
-- **GIVEN** multiple active 4H FVG zones exist
-- **WHEN** live market price is inside an active 4H FVG zone
-- **THEN** the system SHALL select that zone as the primary 4H anchor
-- **AND** record its exact first touch timestamp.
-
----
-
-### Requirement: Post-Touch LTF FVG Discovery & Minimum Gap Filter
-The system SHALL scan closed LTF candles whose Candle 3 closed at or after `first_touch_timestamp`, enforcing a minimum gap size threshold ($\text{Gap \%} \ge 0.05\%$).
-
-#### Scenario: Filter out pre-touch and sub-tick gaps
-- **WHEN** scanning candidate LTF FVGs
-- **THEN** any FVG formed prior to `first_touch_timestamp` SHALL be discarded
-- **AND** any FVG with gap width $< 0.05\%$ SHALL be excluded.
-
----
-
-### Requirement: #1 Extreme FVG Ranking & Selection
-The system MUST select the single deepest unmitigated LTF FVG closest to the 4H anchor: the lowest price bottom for Bullish setups, and highest price top for Bearish setups.
-
-#### Scenario: Long extreme selection
-- **GIVEN** multiple valid Bullish LTF FVGs formed post-touch
-- **WHEN** evaluating the extreme ranking
-- **THEN** the system SHALL select the FVG with the minimum bottom price ($\arg\min \text{bottom}$).
-
----
-
-### Requirement: Execution Parameters & Target Matrix
-The system SHALL place the entry price at the outer FVG boundary, stop loss at the extreme 3-candle wick $\min(c_1.l, c_2.l, c_3.l)$ for Bullish and $\max(c_1.h, c_2.h, c_3.h)$ for Bearish, and calculate 1R, 2R (Primary $\star$), and 3R targets.
-
-* **Backtest Fill-Candle Evaluation**: The backtest forward-simulation MUST include the entry/fill candle itself in exit resolution, evaluating the fill candle's high/low against TP and stop levels exactly as the live ledger does (candles where `timestamp >= entry_timestamp`).
-
-#### Scenario: Bullish parameter calculation
-- **WHEN** a Bullish LTF FVG is selected with top at $60,000 and 3-candle lowest wick at $59,000
-- **THEN** the entry price SHALL be $60,000, stop loss SHALL be $59,000 (Risk: $1,000)
-- **AND** targets SHALL be set at $61,000 (1R), $62,000 (2R), and $63,000 (3R).
-
-#### Scenario: Backtest same-bar fill and TP resolution
-* **GIVEN** a Bullish LTF FVG with entry at $100 and 2R target at $120
-* **WHEN** the candle that first touches $100 (fill candle) also reaches a high of $125
-* **THEN** the backtest SHALL resolve the trade as a 2R win (`hit_2r = True`), not skip the fill candle and defer resolution to subsequent candles.
-
-#### Scenario: Backtest same-bar fill and SL resolution
-* **GIVEN** a Bullish LTF FVG with entry at $100 and stop at $90
-* **WHEN** the fill candle's low breaches $90
-* **THEN** the backtest SHALL resolve the trade as a loss (`STOPPED_OUT`) using the fill candle's extreme.
-
----
+## MODIFIED Requirements
 
 ### Requirement: Immutable Active Trade Ledger & Stale Pending Invalidation
 * **Single Active Position per Symbol**: While a trade is in `TRADE_ACTIVE`, entry price, stop loss, targets, and FVG anchor are strictly locked and immutable.
 * **Alias Resolution**: Symbol aliases (e.g. `GOLD` $\rightarrow$ `PAXG`) MUST resolve to valid live mid-prices for floating $R$ and MFE tracking.
 * **Stale Pending Invalidation**: `PENDING_RETRACE` setups that breach stop loss or break 4H anchor boundaries before entry fill MUST transition to `INVALIDATED` and archive to history — evaluated exclusively against candles formed at or after the setup's FVG (`timestamp >= formed_at`).
-* **Candle Extreme TP/SL Resolution**: Closed candles formed strictly post-entry (`timestamp >= entry_timestamp`) evaluate `candle.high` and `candle.low` to trigger `COMPLETED_TP` (+2.0R) or `STOPPED_OUT` (-1.0R). All candidate candles MUST be evaluated in strict chronological ascending timestamp order.
-* **Stop Loss Precedence**: On any candle or batch where both Stop Loss and Take Profit levels are crossed, Stop Loss MUST take precedence and resolve the trade as `STOPPED_OUT` (-1.0R). An earlier stop-out MUST NEVER be superseded by a subsequent price touch at the target.
-* **Pending Same-Bar Fill Completion**: A `PENDING_RETRACE` setup that fills entry and reaches its completion target within the same closed candle MUST transition to `COMPLETED_TP`, emit `TP_HIT`, and archive to history — provided Stop Loss was not touched first. The fill/TP evidence MUST come from candles formed at or after the FVG's formation timestamp.
+* **Candle Extreme TP/SL Resolution**: Closed candles formed strictly post-entry (`timestamp >= entry_timestamp`) evaluate `candle.high` and `candle.low` to trigger `COMPLETED_TP` (+2.0R) or `STOPPED_OUT` (-1.0R).
+* **Pending Same-Bar Fill Completion**: A `PENDING_RETRACE` setup that fills entry and reaches its completion target within the same closed candle MUST transition to `COMPLETED_TP`, emit `TP_HIT`, and archive to history — even though the scanner classifies the FVG as completed and no longer emits the setup. The fill/TP evidence MUST come from candles formed at or after the FVG's formation timestamp.
 * **Honest Backfill Resolution**: Catch-up resolutions performed from historical candle evidence (e.g. the first monitor cycle after daemon start) MUST derive entry time, exit time, duration, and maximum favorable excursion from the actual candle extremes rather than stamping cycle time or zeroed stats.
 
 #### Scenario: Pending setup breached before fill
@@ -105,12 +36,6 @@ The system SHALL place the entry price at the outer FVG boundary, stop loss at t
 * **WHEN** the monitor window contains pre-formation candles whose extremes breach the stop or anchor, but every candle formed at or after the FVG respects both boundaries
 * **THEN** the pending setup SHALL NOT transition to `INVALIDATED` while the scanner still offers the setup.
 
-#### Scenario: Earlier SL hit is never overridden by later TP touch
-* **GIVEN** a Bearish active trade entered at $4,466.30 with SL at $4,476.70 and 2R TP at $4,445.50
-* **WHEN** Candle 1 spikes up to $4,476.90 (crossing SL) and Candle 50 drops to $4,380.00 (crossing TP)
-* **THEN** the trade MUST resolve as `STOPPED_OUT` with `realized_r = -1.0` on Candle 1
-* **AND** the trade SHALL NOT be recorded as `COMPLETED_TP` or awarded positive $R$.
-
 #### Scenario: Backfill completion reports evidence-derived stats
 * **GIVEN** a daemon that starts at 19:38 while a pending setup's target was reached at 19:10 by historical candles
 * **WHEN** the first monitor cycle resolves the trade as `COMPLETED_TP` from those candles
@@ -118,6 +43,8 @@ The system SHALL place the entry price at the outer FVG boundary, stop loss at t
 * **AND** `duration_min` SHALL reflect the candle distance between fill and close, and `mfe_r` SHALL reflect the true post-fill extreme (not `0.0` with `duration_min: 1`).
 
 ---
+
+## ADDED Requirements
 
 ### Requirement: Pending Monitor Candle Scoping
 All `PENDING_RETRACE` monitor evaluations — same-bar fill/TP detection and stop-loss/anchor breach detection — MUST consume only closed candles whose open timestamp is at or after the tracked setup's LTF FVG `formed_at` timestamp, mirroring the `timestamp >= entry_timestamp` scoping applied to `TRADE_ACTIVE` exit resolution. The rolling market snapshot window (`recent_candles_map`) MAY span pre-formation candles, but they MUST NOT contribute to any pending-monitor predicate.

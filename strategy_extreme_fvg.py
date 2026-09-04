@@ -33,6 +33,7 @@ TIMEFRAME_MS: Dict[str, int] = {
     "1h": 60 * 60 * 1000,
     "4h": 4 * 3600 * 1000,
 }
+DEFAULT_LTF_TIMEFRAME = "5m"
 
 
 @dataclass
@@ -546,7 +547,7 @@ def get_4h_fvg_first_touch_ts(
     fvg: FVG,
     current_price: float = 0.0,
     candles_ltf: Optional[List[Candle]] = None,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
 ) -> Optional[Tuple[int, str]]:
     """
     Returns (first_touch_timestamp, timeframe) of the true FIRST touch into the 4H FVG zone
@@ -596,7 +597,7 @@ def get_4h_fvg_most_recent_touch_ts(
     fvg: FVG,
     current_price: float = 0.0,
     candles_ltf: Optional[List[Candle]] = None,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
 ) -> Optional[Tuple[int, bool, str]]:
     """
     Returns (most_recent_touch_timestamp, is_currently_inside, timeframe)
@@ -633,7 +634,7 @@ def get_most_recent_touched_4h_fvg(
     active_fvgs: List[FVG],
     current_price: float = 0.0,
     candles_ltf: Optional[List[Candle]] = None,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
 ) -> Optional[TouchedAnchor]:
     """
     Evaluates all active, non-invalidated 4H FVGs and identifies the SINGLE
@@ -691,7 +692,7 @@ def get_most_recent_touched_4h_fvg(
 
 async def get_most_recent_touched_anchor_for_symbol(
     symbol: str,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
     client: Optional[HyperliquidClient] = None,
     use_close_invalidation: bool = False,
 ) -> Optional[TouchedAnchor]:
@@ -749,7 +750,7 @@ class ExtremeTradeSetup:
     entry_timestamp: Optional[int] = None
     floating_r: float = 0.0
     completion_target: Literal["1R", "2R", "3R"] = "2R"
-    ltf_timeframe: str = "15m"
+    ltf_timeframe: str = "5m"
     all_unmitigated_fvgs: List[FVG] = field(default_factory=list)
 
     @property
@@ -878,7 +879,7 @@ def find_unmitigated_ltf_fvgs(
     direction: Literal["Bullish", "Bearish"],
     current_price: float = 0.0,
     current_time_ms: Optional[int] = None,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
     min_gap_pct: float = 0.05,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
 ) -> List[FVG]:
@@ -983,7 +984,7 @@ def build_extreme_trade_setup(
     symbol: str,
     anchor: TouchedAnchor,
     ltf_fvg: FVG,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
     completion_target: Literal["1R", "2R", "3R"] = "2R",
     all_unmitigated_fvgs: Optional[List[FVG]] = None,
 ) -> ExtremeTradeSetup:
@@ -1034,7 +1035,7 @@ def build_extreme_trade_setup(
 
 async def get_extreme_setup_for_symbol(
     symbol: str,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = "5m",
     client: Optional[HyperliquidClient] = None,
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
