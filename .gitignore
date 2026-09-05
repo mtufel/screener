@@ -35,3 +35,9 @@ static/charts/*.png
 !static/charts/.gitkeep
 data/
 logs/
+
+# Local Tooling & Scratch
+.cline/
+.clinerules/
+.opencode/
+scratch/
