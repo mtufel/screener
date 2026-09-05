@@ -222,7 +222,12 @@ def simulate_trade_execution(
             max_fav_price = max(max_fav_price, c.high)
             max_adv_price = min(max_adv_price, c.low)
 
-            # Check TP milestones before SL
+            # 1. Stop Loss Check FIRST (Conservative execution & parity with live ledger)
+            if c.low <= stop_loss:
+                exit_reason = "STOPPED_OUT"
+                break
+
+            # 2. Take Profit Check SECOND (Only on candles that did not breach SL)
             if not hit_1r and c.high >= tp_1r:
                 hit_1r = True
             if not hit_2r and c.high >= tp_2r:
@@ -231,15 +236,16 @@ def simulate_trade_execution(
                 hit_3r = True
                 exit_reason = "TP_3R"
                 break
-
-            # Check SL
-            if c.low <= stop_loss:
-                exit_reason = "STOPPED_OUT"
-                break
         else:
             max_fav_price = min(max_fav_price, c.low)
             max_adv_price = max(max_adv_price, c.high)
 
+            # 1. Stop Loss Check FIRST (Conservative execution & parity with live ledger)
+            if c.high >= stop_loss:
+                exit_reason = "STOPPED_OUT"
+                break
+
+            # 2. Take Profit Check SECOND (Only on candles that did not breach SL)
             if not hit_1r and c.low <= tp_1r:
                 hit_1r = True
             if not hit_2r and c.low <= tp_2r:
@@ -247,10 +253,6 @@ def simulate_trade_execution(
             if c.low <= tp_3r:
                 hit_3r = True
                 exit_reason = "TP_3R"
-                break
-
-            if c.high >= stop_loss:
-                exit_reason = "STOPPED_OUT"
                 break
 
     # Calculate MFE & MAE

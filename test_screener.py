@@ -225,6 +225,44 @@ async def test_all_candidate_fvgs_stopped_out_returns_none():
     assert setup is None
 
 
+@pytest.mark.asyncio
+async def test_candidate_fvg_invalid_sl_falls_back_to_prior_fvg():
+    """
+    Validates that if the most recent LTF FVG candidate has an invalid SL reference
+    (e.g. sl_ref >= current_price for Bullish), phase2_check continues scanning
+    candidate indices to find an earlier valid active LTF FVG instead of aborting.
+    """
+    # 1. Earlier Valid FVG formed at 1000-3000 (c1.low=95, sl_ref=95 < current_price 104)
+    c1 = Candle(1000, 95, 100, 95, 99, 10)
+    c2 = Candle(2000, 99, 115, 98, 112, 50)
+    c3 = Candle(3000, 112, 120, 105, 118, 30)  # FVG 1: [100, 105], SL=95
+    c4 = Candle(4000, 118, 119, 104, 108, 20)  # Retraced at 4000 -> Active open
+
+    # 2. Later FVG formed at 5000-7000 (c5.low=106, c6.low=108, c7.low=123 -> sl_ref=106)
+    # But current price is 104 (so sl_ref 106 >= current_price 104 -> INVALID SL for Bullish!)
+    c5 = Candle(5000, 108, 112, 106, 110, 20)
+    c6 = Candle(6000, 110, 122, 108, 120, 50)
+    c7 = Candle(7000, 120, 124, 123, 124, 30)  # FVG 2: [112, 123], SL=106 >= 104 (High stays < TP2 125)
+
+    # 3. Current candle at 8000 at price 104
+    c8 = Candle(8000, 122, 123, 104, 104, 80)
+
+    candles = [c1, c2, c3, c4, c5, c6, c7, c8]
+    htf = FVG("Bullish", 140, 90, c1, c2, c3, 3000)
+    p1 = Phase1Result("BTC", "Bullish", htf, 104.0, [htf])
+
+    class DummyClient:
+        async def get_last_n_candles(self, *args, **kwargs):
+            return [{"t": c.timestamp, "o": c.open, "h": c.high, "l": c.low, "c": c.close, "v": c.volume} for c in candles]
+
+    setup = await phase2_check(p1, client=DummyClient(), ltf_timeframe="5m")
+    assert setup is not None
+    assert setup.stage == "ACTIVATED"
+    # Should skip the invalid FVG 2 (SL 106 >= 104) and discover valid FVG 1 (SL 95 < 104)
+    assert setup.sl_ref == 95.0
+    assert setup.entry_price == 105.0
+
+
 # ==============================================================================
 # 4. TRADE TRACKER: LIFECYCLE, NO BREAKEVEN, & TARGET TP CLOSURE
 # ==============================================================================
