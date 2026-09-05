@@ -81,11 +81,13 @@ class ExtremeHistoricalTrade:
 
     @property
     def entry_time_ist(self) -> str:
-        return datetime.fromtimestamp(self.entry_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+        dur = TIMEFRAME_MS.get(self.ltf_timeframe, 5 * 60 * 1000)
+        return datetime.fromtimestamp((self.entry_timestamp + dur) / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
     @property
     def exit_time_ist(self) -> str:
-        return datetime.fromtimestamp(self.exit_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+        dur = TIMEFRAME_MS.get(self.ltf_timeframe, 5 * 60 * 1000)
+        return datetime.fromtimestamp((self.exit_timestamp + dur) / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
     @property
     def htf_formed_time_ist(self) -> str:

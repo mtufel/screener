@@ -744,7 +744,8 @@ async def phase2_check(
                     entry_price = retrace_candle.open if retrace_candle.open <= ltf_fvg.top else ltf_fvg.top
                 else:
                     entry_price = retrace_candle.open if retrace_candle.open >= ltf_fvg.bottom else ltf_fvg.bottom
-                entry_time_ist = datetime.fromtimestamp(retrace_candle.timestamp / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
+                dur_ms = TIMEFRAME_MS.get(ltf, 5 * 60 * 1000)
+                entry_time_ist = datetime.fromtimestamp((retrace_candle.timestamp + dur_ms) / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
             elif price_in_fvg(current_price, ltf_fvg):
                 stage = "ACTIVATED"
                 entry_price = current_price

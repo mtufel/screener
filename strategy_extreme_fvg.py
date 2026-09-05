@@ -765,7 +765,8 @@ class ExtremeTradeSetup:
     def entry_time_ist(self) -> Optional[str]:
         if not self.entry_timestamp:
             return None
-        return datetime.fromtimestamp(self.entry_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+        dur = TIMEFRAME_MS.get(self.ltf_timeframe, 5 * 60 * 1000)
+        return datetime.fromtimestamp((self.entry_timestamp + dur) / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
 
 def evaluate_ltf_setup_lifecycle(

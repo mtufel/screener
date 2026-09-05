@@ -27,9 +27,27 @@ PERSISTENCE_FILE = os.getenv("EXTREME_LIVE_TRADES_FILE", "data/extreme_live_trad
 PENDING_ABSENT_EXPIRY_CYCLES = int(os.getenv("EXTREME_PENDING_EXPIRY_CYCLES", "40"))
 
 
+TIMEFRAME_MS: Dict[str, int] = {
+    "1m": 60 * 1000,
+    "3m": 180 * 1000,
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "30m": 30 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 3600 * 1000,
+    "1d": 24 * 3600 * 1000,
+}
+
+
 def _ts_to_ist(ts_ms: int) -> str:
     """Formats an epoch-milliseconds timestamp as the ledger's IST display string."""
     return datetime.fromtimestamp(int(ts_ms) / 1000, IST).strftime("%d-%b %I:%M %p IST")
+
+
+def _candle_close_ist(ts_ms: int, timeframe: str = "5m") -> str:
+    """Formats a candle's ending/close time in IST (candle open ts + duration)."""
+    dur = TIMEFRAME_MS.get(timeframe, 5 * 60 * 1000)
+    return datetime.fromtimestamp((int(ts_ms) + dur) / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
 
 def _candle_ts(c: Any) -> int:
@@ -294,7 +312,7 @@ class ExtremeTradeTracker:
                                 if c_low <= trade.stop_loss and c_high < trade.entry_price:
                                     trade.state = "INVALIDATED"
                                     trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                                    trade.closed_at_ist = _ts_to_ist(c_ts)
+                                    trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                     trade.closed_timestamp = c_ts
                                     to_close.append((trade_id, "SETUP_INVALIDATED", trade))
                                     resolved = True
@@ -304,13 +322,13 @@ class ExtremeTradeTracker:
                                 filled = True
                                 fill_ts = c_ts
                                 trade.entry_timestamp = fill_ts
-                                trade.entry_filled_at_ist = _ts_to_ist(fill_ts)
+                                trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
                         else:  # Bearish
                             if c_high >= trade.stop_loss or c_high > htf_top:
                                 if c_high >= trade.stop_loss and c_low > trade.entry_price:
                                     trade.state = "INVALIDATED"
                                     trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                                    trade.closed_at_ist = _ts_to_ist(c_ts)
+                                    trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                     trade.closed_timestamp = c_ts
                                     to_close.append((trade_id, "SETUP_INVALIDATED", trade))
                                     resolved = True
@@ -320,7 +338,7 @@ class ExtremeTradeTracker:
                                 filled = True
                                 fill_ts = c_ts
                                 trade.entry_timestamp = fill_ts
-                                trade.entry_filled_at_ist = _ts_to_ist(fill_ts)
+                                trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
 
                     if filled:
                         # Check exits chronologically on fill candle or subsequent candles
@@ -331,7 +349,7 @@ class ExtremeTradeTracker:
                                 trade.state = "STOPPED_OUT"
                                 trade.realized_r = -1.0
                                 trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                 trade.closed_timestamp = c_ts
                                 trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
                                 to_close.append((trade_id, "SL_HIT", trade))
@@ -341,7 +359,7 @@ class ExtremeTradeTracker:
                                 trade.state = "COMPLETED_TP"
                                 trade.realized_r = target_mult
                                 trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                 trade.closed_timestamp = c_ts
                                 trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
                                 to_close.append((trade_id, "TP_HIT", trade))
@@ -354,7 +372,7 @@ class ExtremeTradeTracker:
                                 trade.state = "STOPPED_OUT"
                                 trade.realized_r = -1.0
                                 trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                 trade.closed_timestamp = c_ts
                                 trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
                                 to_close.append((trade_id, "SL_HIT", trade))
@@ -364,7 +382,7 @@ class ExtremeTradeTracker:
                                 trade.state = "COMPLETED_TP"
                                 trade.realized_r = target_mult
                                 trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                                trade.closed_at_ist = _ts_to_ist(c_ts)
+                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                 trade.closed_timestamp = c_ts
                                 trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
                                 to_close.append((trade_id, "TP_HIT", trade))
@@ -434,7 +452,7 @@ class ExtremeTradeTracker:
                         trade.state = "STOPPED_OUT"
                         trade.realized_r = -1.0
                         trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                         trade.closed_timestamp = c_ts
                         trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
                         to_close.append((trade_id, "SL_HIT", trade))
@@ -446,7 +464,7 @@ class ExtremeTradeTracker:
                         trade.state = "COMPLETED_TP"
                         trade.realized_r = target_mult
                         trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                         trade.closed_timestamp = c_ts
                         trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
                         to_close.append((trade_id, "TP_HIT", trade))
@@ -462,7 +480,7 @@ class ExtremeTradeTracker:
                         trade.state = "STOPPED_OUT"
                         trade.realized_r = -1.0
                         trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                         trade.closed_timestamp = c_ts
                         trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
                         to_close.append((trade_id, "SL_HIT", trade))
@@ -474,7 +492,7 @@ class ExtremeTradeTracker:
                         trade.state = "COMPLETED_TP"
                         trade.realized_r = target_mult
                         trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                        trade.closed_at_ist = _ts_to_ist(c_ts)
+                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                         trade.closed_timestamp = c_ts
                         trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
                         to_close.append((trade_id, "TP_HIT", trade))
