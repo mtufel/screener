@@ -51,7 +51,9 @@ SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
 TOP_N_ALERTS = int(os.getenv("TOP_N_ALERTS", "5"))
 COINS_WHITELIST = os.getenv("COINS_WHITELIST", "BTC,ETH,SOL").strip()
 
-# Global state
+# Global state & Strategy Enablement
+ENABLE_STRATEGY_1 = os.getenv("ENABLE_STRATEGY_1", os.getenv("STRATEGY_1_ENABLED", "false")).strip().lower() in ("true", "1", "yes")
+ENABLE_STRATEGY_2 = os.getenv("ENABLE_STRATEGY_2", os.getenv("STRATEGY_2_ENABLED", "true")).strip().lower() in ("true", "1", "yes")
 EXTREME_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTREME_SCAN_INTERVAL_SECONDS", "30"))
 EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 EXTREME_COMPLETION_TARGET = os.getenv("EXTREME_COMPLETION_TARGET", "2R")
@@ -59,7 +61,9 @@ EXTREME_MIN_GAP_PCT = float(os.getenv("EXTREME_MIN_GAP_PCT", "0.05"))
 EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").lower() == "true"
 
 state: Dict[str, Any] = {
-    "is_running": False,
+    "strategy_1_enabled": ENABLE_STRATEGY_1,
+    "strategy_2_enabled": ENABLE_STRATEGY_2,
+    "is_running": ENABLE_STRATEGY_1,
     "scan_interval_minutes": SCAN_INTERVAL_MINUTES,
     "top_n_alerts": TOP_N_ALERTS,
     "coins_whitelist": COINS_WHITELIST,
@@ -80,7 +84,7 @@ state: Dict[str, Any] = {
     "background_task": None,
     "monitor_task": None,
     # Extreme Strategy Daemon State
-    "extreme_is_running": True,
+    "extreme_is_running": ENABLE_STRATEGY_2,
     "extreme_interval_seconds": EXTREME_SCAN_INTERVAL_SECONDS,
     "extreme_ltf": EXTREME_LTF_TIMEFRAME,
     "extreme_target": EXTREME_COMPLETION_TARGET,
@@ -504,24 +508,45 @@ async def extreme_screener_background_worker():
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown events for FastAPI."""
     logger.info("Starting Crypto FVG Screener application (IST & Extreme Strategy Daemon)...")
-    state["is_running"] = True
-    state["extreme_is_running"] = True
-    worker_task = asyncio.create_task(screener_background_worker())
-    monitor_task = asyncio.create_task(trade_monitor_worker())
-    extreme_task = asyncio.create_task(extreme_screener_background_worker())
-    state["background_task"] = worker_task
-    state["monitor_task"] = monitor_task
-    state["extreme_background_task"] = extreme_task
+
+    # Strategy 1 (Standard 4H+LTF) Lifecycle
+    if ENABLE_STRATEGY_1:
+        state["is_running"] = True
+        state["strategy_1_enabled"] = True
+        worker_task = asyncio.create_task(screener_background_worker())
+        monitor_task = asyncio.create_task(trade_monitor_worker())
+        state["background_task"] = worker_task
+        state["monitor_task"] = monitor_task
+        logger.info("Strategy 1 (2-Stage Standard) background daemon started.")
+    else:
+        state["is_running"] = False
+        state["strategy_1_enabled"] = False
+        state["background_task"] = None
+        state["monitor_task"] = None
+        logger.info("Strategy 1 (2-Stage Standard) is DISABLED via config (ENABLE_STRATEGY_1=false).")
+
+    # Strategy 2 (Extreme LTF) Lifecycle
+    if ENABLE_STRATEGY_2:
+        state["extreme_is_running"] = True
+        state["strategy_2_enabled"] = True
+        extreme_task = asyncio.create_task(extreme_screener_background_worker())
+        state["extreme_background_task"] = extreme_task
+        logger.info("Strategy 2 (Extreme LTF) background daemon started.")
+    else:
+        state["extreme_is_running"] = False
+        state["strategy_2_enabled"] = False
+        state["extreme_background_task"] = None
+        logger.info("Strategy 2 (Extreme LTF) is DISABLED via config (ENABLE_STRATEGY_2=false).")
 
     yield
 
     state["is_running"] = False
     state["extreme_is_running"] = False
-    if state["background_task"]:
+    if state.get("background_task"):
         state["background_task"].cancel()
-    if state["monitor_task"]:
+    if state.get("monitor_task"):
         state["monitor_task"].cancel()
-    if state["extreme_background_task"]:
+    if state.get("extreme_background_task"):
         state["extreme_background_task"].cancel()
 
     await hyperliquid_client.close()
@@ -579,7 +604,9 @@ async def dashboard():
 @app.get("/api/health", summary="API Health Check")
 async def health():
     return {
-        "status": "healthy" if state["is_running"] else "stopped",
+        "status": "healthy" if (state.get("is_running") or state.get("extreme_is_running")) else "stopped",
+        "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
+        "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "timezone": "IST (UTC+5:30)",
         "scan_interval_minutes": SCAN_INTERVAL_MINUTES,
         "top_n_alerts": TOP_N_ALERTS,
@@ -603,6 +630,8 @@ async def health():
 @app.get("/api/status", summary="Screener Status and Live Setups")
 async def get_status():
     return {
+        "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
+        "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "is_running": state["is_running"],
         "timezone": "IST",
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
@@ -626,6 +655,8 @@ async def get_status():
 @app.get("/api/config", summary="Get Current Strategy Runtime Config")
 @app.post("/api/config", summary="Update Strategy Runtime Config")
 async def config_endpoint(
+    enable_strategy_1: Optional[bool] = Query(default=None),
+    enable_strategy_2: Optional[bool] = Query(default=None),
     ltf_timeframe: Optional[str] = Query(default=None),
     htf_mode: Optional[str] = Query(default=None),
     use_close_invalidation: Optional[bool] = Query(default=None),
@@ -635,6 +666,25 @@ async def config_endpoint(
     coins_whitelist: Optional[str] = Query(default=None),
 ):
     """Dynamically get or update runtime screener strategy parameters."""
+    if enable_strategy_1 is not None:
+        state["strategy_1_enabled"] = bool(enable_strategy_1)
+        state["is_running"] = bool(enable_strategy_1)
+        if state["is_running"] and (state.get("background_task") is None or state["background_task"].done()):
+            state["background_task"] = asyncio.create_task(screener_background_worker())
+            state["monitor_task"] = asyncio.create_task(trade_monitor_worker())
+        elif not state["is_running"]:
+            if state.get("background_task"):
+                state["background_task"].cancel()
+            if state.get("monitor_task"):
+                state["monitor_task"].cancel()
+    if enable_strategy_2 is not None:
+        state["strategy_2_enabled"] = bool(enable_strategy_2)
+        state["extreme_is_running"] = bool(enable_strategy_2)
+        if state["extreme_is_running"] and (state.get("extreme_background_task") is None or state["extreme_background_task"].done()):
+            state["extreme_background_task"] = asyncio.create_task(extreme_screener_background_worker())
+        elif not state["extreme_is_running"]:
+            if state.get("extreme_background_task"):
+                state["extreme_background_task"].cancel()
     if ltf_timeframe is not None and ltf_timeframe in ["1m", "5m", "15m", "1h"]:
         state["ltf_timeframe"] = ltf_timeframe
     if htf_mode is not None and htf_mode in ["ANY_VALID", "MOST_RECENT"]:
@@ -655,6 +705,8 @@ async def config_endpoint(
         content={
             "status": "success",
             "config": {
+                "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
+                "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
                 "ltf_timeframe": state.get("ltf_timeframe", DEFAULT_LTF_TIMEFRAME),
                 "htf_mode": state.get("htf_mode", DEFAULT_HTF_MODE),
                 "use_close_invalidation": state.get("use_close_invalidation", False),
@@ -1177,6 +1229,8 @@ async def api_extreme_backtest(
 async def api_extreme_status():
     return JSONResponse(content={
         "status": "success",
+        "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
+        "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "is_running": state.get("extreme_is_running", False),
         "interval_seconds": state.get("extreme_interval_seconds", 30),
         "ltf_timeframe": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
@@ -1282,10 +1336,11 @@ async def api_extreme_chart(
     raw_sym = SYMBOL_ALIASES.get(symbol.strip().upper(), symbol.strip().upper())
     c_dur = 15 * 60 * 1000 if ltf == "15m" else (5 * 60 * 1000 if ltf == "5m" else (60 * 60 * 1000 if ltf == "1h" else 60 * 1000))
     is_historical = str(state).startswith("HISTORICAL_") or (exit_ts is not None and exit_ts > 0)
+    now_ts = int(time.time() * 1000)
 
     candles = []
     if is_historical and entry_ts and entry_ts > 0:
-        # For historical trades: only fetch from entry to exit time + delta on both sides (and LTF FVG formation if within 25 bars)
+        # For historical closed trades: only fetch from entry to exit time + delta on both sides
         t_exit = exit_ts if (exit_ts and exit_ts > entry_ts) else (entry_ts + 6 * c_dur)
         t_end = t_exit + 8 * c_dur
 
@@ -1305,6 +1360,24 @@ async def api_extreme_chart(
                 candles = [Candle.from_dict(c) for c in raw_candles]
         except Exception as exc:
             logger.debug("Historical snapshot fetch error for %s: %s", raw_sym, exc)
+
+    elif entry_ts and entry_ts > 0:
+        # For active open trades: fetch from entry/formation time (up to 200 candles) to now
+        earliest_anchor = min(entry_ts, ltf_formed_ts or entry_ts) - (8 * c_dur)
+        t_start = max(earliest_anchor, now_ts - (200 * c_dur))
+        t_end = now_ts + (2 * c_dur)
+
+        try:
+            raw_candles = await hl_client.get_candle_snapshot(
+                coin=raw_sym,
+                interval=ltf,
+                start_time_ms=t_start,
+                end_time_ms=t_end,
+            )
+            if raw_candles:
+                candles = [Candle.from_dict(c) for c in raw_candles]
+        except Exception as exc:
+            logger.debug("Active snapshot fetch error for %s: %s", raw_sym, exc)
 
     if not candles:
         candles = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)

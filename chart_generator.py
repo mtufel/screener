@@ -514,7 +514,15 @@ def generate_extreme_setup_chart(
     # For historical backtest trades, show from entry to exit time + delta on both sides (and LTF FVG formation if within range).
     is_historical = str(state).startswith("HISTORICAL_") or (exit_time_ts is not None and exit_time_ts > 0)
     if not is_historical:
-        view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
+        if entry_time_ts and entry_time_ts > 0 and len(candles_ltf) > 50:
+            anchor_ms = min(entry_time_ts, ltf_fvg_formed_ts or entry_time_ts)
+            entry_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - anchor_ms))
+            start_win = max(0, entry_idx - 6)
+            view_candles = candles_ltf[start_win:]
+            if len(view_candles) > 200:
+                view_candles = view_candles[-200:]
+        else:
+            view_candles = candles_ltf[-50:] if len(candles_ltf) >= 50 else candles_ltf
     else:
         if len(candles_ltf) <= 60 and (entry_time_ts is None or abs(candles_ltf[0].timestamp - (entry_time_ts or 0)) < 24 * 3600 * 1000):
             view_candles = candles_ltf

@@ -614,6 +614,8 @@ def test_fastapi_endpoints(monkeypatch):
         status_res = client.get("/api/status")
         assert status_res.status_code == 200
         status_data = status_res.json()
+        assert "strategy_1_enabled" in status_data
+        assert "strategy_2_enabled" in status_data
         assert "htf_mode" in status_data
         assert "use_close_invalidation" in status_data
         assert "max_htf_retrace_candles" in status_data
@@ -624,17 +626,21 @@ def test_fastapi_endpoints(monkeypatch):
         cfg_get = client.get("/api/config")
         assert cfg_get.status_code == 200
         assert "config" in cfg_get.json()
+        assert "strategy_1_enabled" in cfg_get.json()["config"]
+        assert "strategy_2_enabled" in cfg_get.json()["config"]
 
-        cfg_post = client.post("/api/config?use_close_invalidation=true&max_htf_retrace_candles=24&session_filter_enabled=true&single_position=false")
+        cfg_post = client.post("/api/config?enable_strategy_1=true&enable_strategy_2=false&use_close_invalidation=true&max_htf_retrace_candles=24&session_filter_enabled=true&single_position=false")
         assert cfg_post.status_code == 200
         posted_cfg = cfg_post.json()["config"]
+        assert posted_cfg["strategy_1_enabled"] is True
+        assert posted_cfg["strategy_2_enabled"] is False
         assert posted_cfg["use_close_invalidation"] is True
         assert posted_cfg["max_htf_retrace_candles"] == 24
         assert posted_cfg["session_filter_enabled"] is True
         assert posted_cfg["single_position"] is False
 
         # Reset back for subsequent tests
-        client.post("/api/config?use_close_invalidation=false&max_htf_retrace_candles=18&session_filter_enabled=false&single_position=true")
+        client.post("/api/config?enable_strategy_1=false&enable_strategy_2=true&use_close_invalidation=false&max_htf_retrace_candles=18&session_filter_enabled=false&single_position=true")
 
         # Dynamic Setup Chart API
         chart_res = client.get("/api/chart?symbol=BTC&direction=Bullish&ltf=5m&stage=ACTIVATED&entry=96000&sl=95000")
