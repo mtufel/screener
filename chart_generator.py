@@ -180,10 +180,11 @@ def generate_setup_chart(
             zorder=2,
         )
         ax.add_patch(ltf_rect)
+        fvg_formed_str = datetime.fromtimestamp(formation_anchor / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST") if formation_anchor > 0 else "--"
         ax.text(
             fvg_c1_idx,
             ltf_top,
-            f" {ltf_timeframe} {direction} FVG [${ltf_bottom:,.2f} – ${ltf_top:,.2f}]",
+            f" {ltf_timeframe} {direction} FVG (Formed: {fvg_formed_str}) [${ltf_bottom:,.2f} – ${ltf_top:,.2f}]",
             color="#fbbf24",
             fontsize=8.5,
             fontweight="bold",
@@ -443,6 +444,7 @@ def generate_setup_chart(
             stage_text = "TRADE ACTIVATED"
 
     now_ist_str = datetime.now(IST).strftime("%d-%b-%Y %I:%M %p IST")
+    fvg_formed_sub = fvg_formed_str if 'fvg_formed_str' in locals() else "--"
 
     plt.title(
         f"{symbol}-PERP · {ltf_timeframe}  |  4H FVG STRATEGY  [{stage_text}]",
@@ -454,11 +456,11 @@ def generate_setup_chart(
         pad=14,
     )
     plt.suptitle(
-        f"Generated at {now_ist_str}",
+        f"LTF FVG Formed: {fvg_formed_sub} | Generated: {now_ist_str}",
         color=TEXT_MUTED,
         fontsize=8.5,
         fontfamily="monospace",
-        x=0.86,
+        x=0.80,
         y=0.96,
     )
 
@@ -687,6 +689,17 @@ def generate_extreme_setup_chart(
         zorder=2,
     )
     ax.add_patch(ltf_fvg_rect)
+    ltf_formed_str = datetime.fromtimestamp(ltf_fvg_formed_ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST") if ltf_fvg_formed_ts else "--"
+    ax.text(
+        ltf_start_idx,
+        max(ltf_fvg_bottom, ltf_fvg_top),
+        f" Extreme {ltf_timeframe} {direction} FVG (Formed: {ltf_formed_str}) [${min(ltf_fvg_bottom, ltf_fvg_top):,.2f} – ${max(ltf_fvg_bottom, ltf_fvg_top):,.2f}]",
+        color="#fbbf24",
+        fontsize=8.5,
+        fontweight="bold",
+        va="bottom",
+        zorder=3,
+    )
 
     # 5. Draw Trade Position Lines (Entry, SL, TP 1R, 2R, 3R)
     entry_line_color = "#38bdf8" if direction == "Bullish" else "#fb923c"
@@ -823,6 +836,12 @@ def generate_extreme_setup_chart(
         status_str = f"{state_str} ({floating_r:+.2f}R)" if floating_r != 0 else state_str
 
     now_ist_str = datetime.now(IST).strftime("%d-%b-%Y %I:%M:%S %p IST")
+    ltf_formed_sub = ltf_formed_str if 'ltf_formed_str' in locals() else "--"
+    subtitle_str = f"LTF FVG Formed: {ltf_formed_sub}"
+    if htf_first_touch_ist:
+        subtitle_str += f" | 4H 1st Touch: {htf_first_touch_ist}"
+    subtitle_str += f" | Generated: {now_ist_str}"
+
     plt.title(
         f"{symbol}-PERP · {ltf_timeframe}  |  EXTREME LTF STRATEGY  [{status_str}]",
         color=TEXT_COLOR,
@@ -833,11 +852,11 @@ def generate_extreme_setup_chart(
         pad=14,
     )
     plt.suptitle(
-        f"IST: {now_ist_str}",
+        subtitle_str,
         color=TEXT_MUTED,
         fontsize=8.5,
         fontfamily="monospace",
-        x=0.86,
+        x=0.76,
         y=0.96,
     )
 

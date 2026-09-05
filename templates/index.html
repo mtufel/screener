@@ -1487,11 +1487,13 @@
             </td>
             <td class="py-3 px-4 font-mono">
               <span class="text-slate-200 block">$${formatNumber(htf.bottom)} - $${formatNumber(htf.top)}</span>
+              <span class="text-[9px] text-indigo-400 block">Formed: ${htf.formed_time_ist || htf.formed_time || '--'}</span>
               <span class="text-[9px] text-slate-500 block">Touch: ${htf.first_touch_time_ist || '--'}</span>
             </td>
             <td class="py-3 px-4 font-mono">
               <span class="text-slate-200 block">$${formatNumber(ltf.bottom)} - $${formatNumber(ltf.top)}</span>
-              <span class="text-[9px] text-amber-400/80 block">Gap: ${ltf.gap_pct || 0}%</span>
+              <span class="text-[9px] text-amber-400 block">Formed: ${ltf.formed_time_ist || ltf.formed_time || '--'}</span>
+              <span class="text-[9px] text-slate-500 block">Gap: ${ltf.gap_pct || 0}%</span>
             </td>
             <td class="py-3 px-4 font-mono">
               <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
@@ -1684,7 +1686,8 @@
       
       modal.classList.remove('hidden');
       modal.classList.add('flex');
-      title.innerText = `${symbol}-PERP · ${ltf} | Extreme Strategy (${direction}) | ${state}`;
+      const formedIst = (ltfTs && ltfTs > 0) ? new Date(Number(ltfTs)).toLocaleString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) + ' IST' : '';
+      title.innerText = `${symbol}-PERP · ${ltf} | Extreme Strategy (${direction}) ${formedIst ? `| FVG Formed: ${formedIst}` : ''} | ${state}`;
       spinner.classList.remove('hidden');
       img.classList.add('hidden');
 

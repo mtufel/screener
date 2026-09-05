@@ -444,8 +444,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             primary_tp = tr.tp_2r if tr.completion_target == "2R" else tr.tp_1r
             msg = (
                 f"🚀 <b>[ENTRY FILLED] {tr.symbol} {side} IS NOW LIVE!</b>\n\n"
+                f"• <b>Extreme {tr.ltf_timeframe} FVG:</b> [${tr.ltf_fvg.get('bottom', 0):,.2f} - ${tr.ltf_fvg.get('top', 0):,.2f}]\n"
+                f"  └ <i>Formed:</i> {tr.ltf_fvg.get('formed_time_ist', '--')}\n"
+                f"• <b>4H Anchor:</b> {tr.htf_anchor.get('direction', '')} [${tr.htf_anchor.get('bottom', 0):,.2f} - ${tr.htf_anchor.get('top', 0):,.2f}]\n"
+                f"  └ <i>Formed:</i> {tr.htf_anchor.get('formed_time_ist', '--')} | <i>1st Touch:</i> {tr.htf_anchor.get('first_touch_time_ist', '--')}\n"
                 f"• <b>Filled At:</b> <code>${tr.entry_price:,.2f}</code>\n"
-                f"• <b>Time:</b> {tr.entry_filled_at_ist or 'Live'}\n"
+                f"• <b>Fill Time:</b> {tr.entry_filled_at_ist or 'Live'}\n"
                 f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
                 f"• <b>Primary Target ({tr.completion_target}):</b> <code>${primary_tp:,.2f}</code>\n"
                 f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
@@ -456,6 +460,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         elif evt_type == "TP_HIT":
             msg = (
                 f"🎉 <b>[TARGET ACHIEVED] {tr.symbol} {side} HIT {tr.completion_target}!</b>\n\n"
+                f"• <b>Extreme {tr.ltf_timeframe} FVG Formed:</b> {tr.ltf_fvg.get('formed_time_ist', '--')}\n"
                 f"• <b>Realized Gain:</b> <code>+{tr.realized_r:.1f}R</code>\n"
                 f"• <b>Entry Price:</b> <code>${tr.entry_price:,.2f}</code>\n"
                 f"• <b>Exit Time:</b> {tr.closed_at_ist}\n"
@@ -469,6 +474,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         elif evt_type == "SL_HIT":
             msg = (
                 f"🛑 <b>[STOP LOSS HIT] {tr.symbol} {side} CLOSED</b>\n\n"
+                f"• <b>Extreme {tr.ltf_timeframe} FVG Formed:</b> {tr.ltf_fvg.get('formed_time_ist', '--')}\n"
                 f"• <b>Realized Loss:</b> <code>-1.0R</code>\n"
                 f"• <b>Entry Price:</b> <code>${tr.entry_price:,.2f}</code> | <b>SL:</b> <code>${tr.stop_loss:,.2f}</code>\n"
                 f"• <b>Exit Time:</b> {tr.closed_at_ist}\n"
