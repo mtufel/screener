@@ -363,6 +363,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
                 }
                 setups_out.append(setup_dict)
+            await asyncio.sleep(0.1)
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
 
@@ -385,6 +386,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                     n_candles = max(50, min(500, needed))
             c_list = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=n_candles)
             recent_candles_map[sym] = c_list
+            await asyncio.sleep(0.1)
         except Exception as c_err:
             logger.debug("Failed to fetch recent candles for %s: %s", sym, c_err)
 
@@ -396,7 +398,9 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         side = "LONG" if tr.direction == "Bullish" else "SHORT"
         chart_img = None
         try:
-            candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=tr.ltf_timeframe, n=60)
+            candles_ltf = recent_candles_map.get(tr.symbol)
+            if not candles_ltf:
+                candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=tr.ltf_timeframe, n=60)
             chart_img = generate_extreme_setup_chart(
                 symbol=tr.symbol,
                 direction=tr.direction,

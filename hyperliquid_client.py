@@ -18,9 +18,9 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 HYPERLIQUID_API_URL = os.getenv("HYPERLIQUID_API_URL", "https://api.hyperliquid.xyz/info")
-MAX_CONCURRENT_REQUESTS = int(os.getenv("MAX_CONCURRENT_REQUESTS", "5"))
+MAX_CONCURRENT_REQUESTS = int(os.getenv("MAX_CONCURRENT_REQUESTS", "3"))
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20.0"))
-RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "5.0"))  # Sustained requests per second
+RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "3.0"))  # Sustained requests per second (conservative default)
 
 # Symbol aliases for commodities and alternative naming
 SYMBOL_ALIASES: Dict[str, str] = {
@@ -43,20 +43,22 @@ def resolve_symbol(symbol: str) -> str:
 
 class AsyncRateLimiter:
     """
-    Token-bucket async rate limiter with global 429 cooldown coordination.
+    Token-bucket async rate limiter with minimum interval pacing and global 429 cooldown coordination.
     Smoothly paces outgoing requests and coordinates full client pause upon 429 events.
     """
 
-    def __init__(self, rate_per_sec: float = 5.0, max_burst: Optional[float] = None):
-        self.rate_per_sec = max(1.0, float(rate_per_sec))
-        self.max_tokens = float(max_burst or self.rate_per_sec)
+    def __init__(self, rate_per_sec: float = 3.0, max_burst: Optional[float] = None, min_interval_seconds: float = 0.25):
+        self.rate_per_sec = max(0.5, float(rate_per_sec))
+        self.max_tokens = float(max_burst or min(self.rate_per_sec, 3.0))
+        self.min_interval = max(0.05, float(min_interval_seconds))
         self.tokens = self.max_tokens
         self.last_update = time.monotonic()
+        self.last_request_time = 0.0
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
 
     async def acquire(self) -> None:
-        """Wait until token is available and cooldown has expired."""
+        """Wait until token is available, minimum interval has elapsed, and cooldown has expired."""
         while True:
             # Check global 429 cooldown
             now = time.monotonic()
@@ -70,19 +72,24 @@ class AsyncRateLimiter:
                 if now < self._cooldown_until:
                     continue
 
+                # Ensure gentle pacing: minimum interval between consecutive request dispatches
+                time_since_last_req = now - self.last_request_time
+                sleep_interval = max(0.0, self.min_interval - time_since_last_req)
+
                 elapsed = now - self.last_update
                 self.last_update = now
 
                 # Refill tokens
                 self.tokens = min(self.max_tokens, self.tokens + (elapsed * self.rate_per_sec))
 
-                if self.tokens >= 1.0:
+                if self.tokens >= 1.0 and sleep_interval <= 0:
                     self.tokens -= 1.0
+                    self.last_request_time = time.monotonic()
                     return
 
-                # Calculate sleep time for next token
-                needed = 1.0 - self.tokens
-                sleep_time = needed / self.rate_per_sec
+                # Calculate sleep time for next token or interval
+                token_sleep = (1.0 - self.tokens) / self.rate_per_sec if self.tokens < 1.0 else 0.0
+                sleep_time = max(sleep_interval, token_sleep, 0.05)
 
             await asyncio.sleep(sleep_time)
 
