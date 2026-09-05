@@ -1,0 +1,4 @@
+schema: spec-driven
+id: fix-backtest-sl-precedence-and-strategy1-fallback
+created: 2026-09-05
+status: in_progress

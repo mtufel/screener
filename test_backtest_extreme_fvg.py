@@ -209,6 +209,84 @@ def test_fill_candle_itself_resolves_sl():
     assert trade.realized_r_1r == -1.0
 
 
+def test_simulate_trade_sl_precedence_on_shared_candle_bullish():
+    """Conservative execution invariant: a candle touching BOTH TP and SL resolves as STOPPED_OUT (-1.0R)."""
+    trade = simulate_trade_execution(
+        symbol="BTC",
+        direction="Bullish",
+        entry_price=100.0,
+        stop_loss=90.0,
+        entry_timestamp=3000,
+        # Candle reaches 135 (>= TP3 130) AND dips to 85 (<= SL 90) on the same bar
+        subsequent_candles=[make_candle(3000, 100, 135, 85, 110)],
+        anchor=TouchedAnchor(_bullish_fvg(), first_touch_timestamp=1000, most_recent_touch_timestamp=1000),
+        ltf_fvg=_bullish_fvg(),
+    )
+
+    assert trade.hit_1r is False
+    assert trade.hit_2r is False
+    assert trade.hit_3r is False
+    assert trade.exit_reason == "STOPPED_OUT"
+    assert trade.realized_r_1r == -1.0
+    assert trade.realized_r_2r == -1.0
+    assert trade.realized_r_3r == -1.0
+
+
+def test_simulate_trade_sl_precedence_on_shared_candle_bearish():
+    """Bearish conservative execution invariant: a candle touching BOTH TP and SL resolves as STOPPED_OUT (-1.0R)."""
+    c1 = make_candle(0, 115, 120, 105, 108)
+    c2 = make_candle(1000, 108, 109, 85, 87)
+    c3 = make_candle(2000, 87, 95, 84, 86)
+    ltf_fvg = FVG("Bearish", 105, 100, c1, c2, c3, formed_at=2000, timeframe="15m")
+    anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
+
+    # Entry 100, SL 110, TP1 90, TP2 80, TP3 70
+    # Candle reaches high 115 (>= SL 110) AND low 65 (<= TP3 70)
+    trade = simulate_trade_execution(
+        symbol="SOL",
+        direction="Bearish",
+        entry_price=100.0,
+        stop_loss=110.0,
+        entry_timestamp=3000,
+        subsequent_candles=[make_candle(3000, 100, 115, 65, 95)],
+        anchor=anchor,
+        ltf_fvg=ltf_fvg,
+    )
+
+    assert trade.hit_1r is False
+    assert trade.hit_2r is False
+    assert trade.hit_3r is False
+    assert trade.exit_reason == "STOPPED_OUT"
+    assert trade.realized_r_1r == -1.0
+    assert trade.realized_r_2r == -1.0
+    assert trade.realized_r_3r == -1.0
+
+
+def test_simulate_trade_prior_bar_tp1_then_subsequent_bar_sl():
+    """If TP1 was reached on bar 1 (no SL breach), policy 1R locks +1.0R when stopped out on bar 2."""
+    sub1 = make_candle(3000, 100, 112, 95, 109)  # high 112 >= TP1 (110), low 95 > SL (90)
+    sub2 = make_candle(4000, 109, 110, 85, 88)   # low 85 <= SL (90)
+
+    trade = simulate_trade_execution(
+        symbol="ETH",
+        direction="Bullish",
+        entry_price=100.0,
+        stop_loss=90.0,
+        entry_timestamp=3000,
+        subsequent_candles=[sub1, sub2],
+        anchor=TouchedAnchor(_bullish_fvg(), first_touch_timestamp=1000, most_recent_touch_timestamp=1000),
+        ltf_fvg=_bullish_fvg(),
+    )
+
+    assert trade.hit_1r is True
+    assert trade.hit_2r is False
+    assert trade.hit_3r is False
+    assert trade.exit_reason == "STOPPED_OUT"
+    assert trade.realized_r_1r == 1.0
+    assert trade.realized_r_2r == -1.0
+    assert trade.realized_r_3r == -1.0
+
+
 @pytest.mark.asyncio
 async def test_backtest_resolves_exits_on_fill_candle(monkeypatch):
     """End-to-end regression for run_extreme_backtest: the forward simulation must

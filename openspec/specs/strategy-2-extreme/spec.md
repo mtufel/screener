@@ -52,6 +52,7 @@ The system MUST select the single deepest unmitigated LTF FVG closest to the 4H 
 The system SHALL place the entry price at the outer FVG boundary, stop loss at the extreme 3-candle wick $\min(c_1.l, c_2.l, c_3.l)$ for Bullish and $\max(c_1.h, c_2.h, c_3.h)$ for Bearish, and calculate 1R, 2R (Primary $\star$), and 3R targets.
 
 * **Backtest Fill-Candle Evaluation**: The backtest forward-simulation MUST include the entry/fill candle itself in exit resolution, evaluating the fill candle's high/low against TP and stop levels exactly as the live ledger does (candles where `timestamp >= entry_timestamp`).
+* **Backtest Stop Loss Precedence**: On any candle in forward-simulation where both Stop Loss and Take Profit levels are reached, Stop Loss MUST be evaluated first and take precedence (`STOPPED_OUT`, -1.0R), guaranteeing conservative risk accounting without sub-bar tick data.
 
 #### Scenario: Bullish parameter calculation
 - **WHEN** a Bullish LTF FVG is selected with top at $60,000 and 3-candle lowest wick at $59,000
@@ -67,6 +68,11 @@ The system SHALL place the entry price at the outer FVG boundary, stop loss at t
 * **GIVEN** a Bullish LTF FVG with entry at $100 and stop at $90
 * **WHEN** the fill candle's low breaches $90
 * **THEN** the backtest SHALL resolve the trade as a loss (`STOPPED_OUT`) using the fill candle's extreme.
+
+#### Scenario: Backtest same-bar SL and TP collision precedence
+* **GIVEN** an active trade entered at $100 with SL at $90 and 3R TP at $130
+* **WHEN** a simulation candle has low <= $90 AND high >= $130
+* **THEN** the trade MUST resolve as `STOPPED_OUT` with `hit_1r = hit_2r = hit_3r = False` and realized R equal to `-1.0R` for all policy targets.
 
 ---
 

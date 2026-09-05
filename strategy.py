@@ -718,14 +718,10 @@ async def phase2_check(
             if direction == "Bullish":
                 sl_ref = min(c1.low, c2.low, c3.low)
                 if sl_ref >= current_price:
-                    if phase1_coin.htf_touch_ts is not None:
-                        return None
                     continue
             else:
                 sl_ref = max(c1.high, c2.high, c3.high)
                 if sl_ref <= current_price:
-                    if phase1_coin.htf_touch_ts is not None:
-                        return None
                     continue
 
             fvg_formation_time_ist = datetime.fromtimestamp(ltf_fvg.close_timestamp / 1000.0, tz=IST).strftime("%d-%b-%Y %I:%M %p IST")
@@ -785,8 +781,6 @@ async def phase2_check(
                 is_closed = True
 
             if is_closed:
-                if phase1_coin.htf_touch_ts is not None:
-                    return None
                 continue
 
             # Found a valid active open or pending setup!
