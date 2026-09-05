@@ -45,7 +45,7 @@ logger = logging.getLogger("extreme-live-scanner")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-DEFAULT_WHITELIST = [c.strip().upper() for c in os.getenv("COINS_WHITELIST", "BTC,ETH,SOL,PAXG").split(",") if c.strip()]
+DEFAULT_WHITELIST = [c.strip().upper() for c in os.getenv("COINS_WHITELIST", "BTC,ETH,SOL").split(",") if c.strip()]
 
 
 async def send_telegram_notification(message: str) -> bool:
@@ -60,7 +60,7 @@ class ExtremeLiveScanner:
     def __init__(
         self,
         symbols: List[str],
-        ltf_timeframe: str = "15m",
+        ltf_timeframe: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m"),
         use_close_invalidation: bool = False,
         min_gap_pct: float = 0.05,
         completion_target: str = "2R",

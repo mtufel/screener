@@ -511,7 +511,9 @@ def test_historical_trade_simulation_and_metrics():
 def test_commodity_and_crypto_symbol_mapping():
     client = HyperliquidClient()
     # Direct commodity aliases
-    assert client.get_hl_symbol("GOLD") == "PAXG"
+    assert client.get_hl_symbol("XAU") == "PAXG"
+    assert client.get_hl_symbol("XAUUSD") == "PAXG"
+    assert client.get_hl_symbol("PAXG") == "PAXG"
     assert client.get_hl_symbol("SILVER") == "SILVER"
     assert client.get_hl_symbol("WTIOIL") == "WTIOIL"
     assert client.get_hl_symbol("BTC-PERP") == "BTC"

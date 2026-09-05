@@ -34,7 +34,7 @@ HTF_TIMEFRAME: str = os.getenv("HTF_TIMEFRAME", "4h")
 LTF_TIMEFRAME: str = os.getenv("LTF_TIMEFRAME", "5m")
 LOOKBACK_CANDLES: int = int(os.getenv("LOOKBACK_CANDLES", "50"))
 TOP_N_ALERTS: int = int(os.getenv("TOP_N_ALERTS", "10"))
-COINS_WHITELIST: str = os.getenv("COINS_WHITELIST", "BTC,ETH,WTIOIL,SILVER,GOLD,PAXG").strip()
+COINS_WHITELIST: str = os.getenv("COINS_WHITELIST", "BTC,ETH,SOL").strip()
 HTF_SELECTION_MODE: str = os.getenv("HTF_SELECTION_MODE", "ANY_VALID").strip().upper()  # "ANY_VALID" or "MOST_RECENT"
 USE_CLOSE_BASED_INVALIDATION: bool = os.getenv("USE_CLOSE_BASED_INVALIDATION", "false").strip().lower() in ("true", "1", "yes")
 MAX_HTF_RETRACE_CANDLES: int = int(os.getenv("MAX_HTF_RETRACE_CANDLES", "18"))  # 18 * 4h = 72 hours / 3 days

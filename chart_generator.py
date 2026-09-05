@@ -35,6 +35,23 @@ LTF_FVG_COLOR = "#d97706"  # Amber for LTF FVG
 TARGET_GREEN_BOX = "#089981"
 STOP_RED_BOX = "#f23645"
 
+TIMEFRAME_MS = {
+    "1m": 60 * 1000,
+    "3m": 3 * 60 * 1000,
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "30m": 30 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 3600 * 1000,
+    "1d": 24 * 3600 * 1000,
+}
+
+
+def get_candle_duration_ms(timeframe: Optional[str], default_tf: str = "5m") -> int:
+    """Returns the candle duration in milliseconds for any timeframe string."""
+    tf = (timeframe or default_tf).lower()
+    return TIMEFRAME_MS.get(tf, TIMEFRAME_MS.get(default_tf, 5 * 60 * 1000))
+
 
 def generate_setup_chart(
     symbol: str,
@@ -46,7 +63,7 @@ def generate_setup_chart(
     sl_price: float,
     tp_levels: TPLevels,
     stage: str = "ACTIVATED",
-    ltf_timeframe: str = "5m",
+    ltf_timeframe: str = os.getenv("LTF_TIMEFRAME", "5m"),
     entry_time_ms: Optional[int] = None,
     fvg_formed_time_ms: Optional[int] = None,
     output_path: Optional[str] = None,
@@ -478,7 +495,7 @@ def generate_extreme_setup_chart(
     tp_3r: float,
     state: str = "PENDING_RETRACE",
     floating_r: float = 0.0,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m"),
     entry_time_ts: Optional[int] = None,
     exit_time_ts: Optional[int] = None,
     output_path: Optional[str] = None,
@@ -489,6 +506,8 @@ def generate_extreme_setup_chart(
     """
     if not candles_ltf:
         return b""
+
+    c_dur = get_candle_duration_ms(ltf_timeframe, os.getenv("EXTREME_LTF_TIMEFRAME", "5m"))
 
     # Smart Window Slicing:
     # For live setups, always include candles leading up to the current live moment.
@@ -509,9 +528,8 @@ def generate_extreme_setup_chart(
                 exit_idx = min(len(candles_ltf) - 1, entry_idx + 15)
 
             # Check if LTF FVG formation fits within delta (<= 25 bars before entry)
-            timeframe_ms = 15 * 60 * 1000 if ltf_timeframe == "15m" else 5 * 60 * 1000
             start_win = max(0, entry_idx - 8)
-            if ltf_fvg_formed_ts and 0 < (anchor_entry - ltf_fvg_formed_ts) <= 25 * timeframe_ms:
+            if ltf_fvg_formed_ts and 0 < (anchor_entry - ltf_fvg_formed_ts) <= 25 * c_dur:
                 fvg_idx = min(range(len(candles_ltf)), key=lambda idx: abs(candles_ltf[idx].timestamp - ltf_fvg_formed_ts))
                 start_win = max(0, min(start_win, fvg_idx - 4))
 
@@ -613,47 +631,8 @@ def generate_extreme_setup_chart(
             zorder=10,
         )
 
-    # 3. Draw Extreme LTF FVG (Amber)
-    ltf_start_idx = 0
-    if ltf_fvg_formed_ts:
-        for idx, c in enumerate(view_candles):
-            if c.timestamp >= ltf_fvg_formed_ts:
-                ltf_start_idx = max(0, idx - 2)
-                break
-
-    ltf_fvg_rect = patches.Rectangle(
-        (ltf_start_idx, min(ltf_fvg_bottom, ltf_fvg_top)),
-        n_candles - ltf_start_idx + 3,
-        abs(ltf_fvg_top - ltf_fvg_bottom),
-        linewidth=1.2,
-        edgecolor=LTF_FVG_COLOR,
-        facecolor=LTF_FVG_COLOR,
-        alpha=0.28,
-        zorder=2,
-    )
-    ax.add_patch(ltf_fvg_rect)
-
-    # 4. Draw Trade Position Lines (Entry, SL, TP 1R, 2R, 3R)
-    entry_line_color = "#38bdf8" if direction == "Bullish" else "#fb923c"
-    ax.axhline(entry_price, color=entry_line_color, linestyle="-", linewidth=1.8, label=f"Entry: ${entry_price:,.2f}", zorder=5)
-    ax.axhline(stop_loss, color=STOP_RED_BOX, linestyle="--", linewidth=1.6, label=f"Stop Loss: ${stop_loss:,.2f}", zorder=5)
-    ax.axhline(tp_1r, color="#22d3ee", linestyle=":", linewidth=1.2, label=f"TP 1R: ${tp_1r:,.2f}", zorder=5)
-    ax.axhline(tp_2r, color=TARGET_GREEN_BOX, linestyle="-", linewidth=2.0, label=f"TP 2R (Primary): ${tp_2r:,.2f}", zorder=5)
-    ax.axhline(tp_3r, color="#34d399", linestyle=":", linewidth=1.2, label=f"TP 3R: ${tp_3r:,.2f}", zorder=5)
-
-    # Annotations on the right price axis with clean styling
-    right_x = n_candles + 0.2
-    pill_kw = dict(boxstyle="square,pad=0.15", facecolor=BG_COLOR, edgecolor="none", alpha=0.75)
-    ax.text(right_x, entry_price, f" ENTRY ${entry_price:,.2f}", color=entry_line_color, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
-    ax.text(right_x, stop_loss, f" SL ${stop_loss:,.2f}", color=STOP_RED_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
-    ax.text(right_x, tp_1r, f" 1R ${tp_1r:,.2f}", color="#22d3ee", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
-    ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
-    ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
-
-    # 5. Mark the Entry Candle
+    # 3. Locate Entry Candle
     entry_idx = None
-    c_dur = 15 * 60 * 1000 if ltf_timeframe == "15m" else (5 * 60 * 1000 if ltf_timeframe == "5m" else (60 * 60 * 1000 if ltf_timeframe == "1h" else 60 * 1000))
-
     # Priority 1: Match exact entry_time_ts if passed
     if entry_time_ts and entry_time_ts > 0:
         for idx, c in enumerate(view_candles):
@@ -674,6 +653,51 @@ def generate_extreme_setup_chart(
                 entry_idx = idx
                 break
 
+    # 4. Draw Extreme LTF FVG (Amber)
+    ltf_start_idx = 0
+    if ltf_fvg_formed_ts:
+        for idx, c in enumerate(view_candles):
+            if c.timestamp >= ltf_fvg_formed_ts:
+                ltf_start_idx = max(0, idx - 2)
+                break
+
+    # If trade has filled entry, box terminates cleanly at entry; otherwise extends forward
+    if entry_idx is not None and 0 <= entry_idx < n_candles:
+        fvg_box_end = min(n_candles - 1, entry_idx) + 1.2
+    else:
+        fvg_box_end = n_candles + 2.5
+    fvg_width = max(1.0, fvg_box_end - ltf_start_idx)
+
+    ltf_fvg_rect = patches.Rectangle(
+        (ltf_start_idx, min(ltf_fvg_bottom, ltf_fvg_top)),
+        fvg_width,
+        abs(ltf_fvg_top - ltf_fvg_bottom),
+        linewidth=1.2,
+        edgecolor=LTF_FVG_COLOR,
+        facecolor=LTF_FVG_COLOR,
+        alpha=0.28,
+        zorder=2,
+    )
+    ax.add_patch(ltf_fvg_rect)
+
+    # 5. Draw Trade Position Lines (Entry, SL, TP 1R, 2R, 3R)
+    entry_line_color = "#38bdf8" if direction == "Bullish" else "#fb923c"
+    ax.axhline(entry_price, color=entry_line_color, linestyle="-", linewidth=1.8, label=f"Entry: ${entry_price:,.2f}", zorder=5)
+    ax.axhline(stop_loss, color=STOP_RED_BOX, linestyle="--", linewidth=1.6, label=f"Stop Loss: ${stop_loss:,.2f}", zorder=5)
+    ax.axhline(tp_1r, color="#22d3ee", linestyle=":", linewidth=1.2, label=f"TP 1R: ${tp_1r:,.2f}", zorder=5)
+    ax.axhline(tp_2r, color=TARGET_GREEN_BOX, linestyle="-", linewidth=2.0, label=f"TP 2R (Primary): ${tp_2r:,.2f}", zorder=5)
+    ax.axhline(tp_3r, color="#34d399", linestyle=":", linewidth=1.2, label=f"TP 3R: ${tp_3r:,.2f}", zorder=5)
+
+    # Annotations on the right price axis with clean styling
+    right_x = n_candles + 0.2
+    pill_kw = dict(boxstyle="square,pad=0.15", facecolor=BG_COLOR, edgecolor="none", alpha=0.75)
+    ax.text(right_x, entry_price, f" ENTRY ${entry_price:,.2f}", color=entry_line_color, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, stop_loss, f" SL ${stop_loss:,.2f}", color=STOP_RED_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, tp_1r, f" 1R ${tp_1r:,.2f}", color="#22d3ee", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, tp_2r, f" 2R ${tp_2r:,.2f} ★", color=TARGET_GREEN_BOX, fontsize=8, fontweight="bold", fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+    ax.text(right_x, tp_3r, f" 3R ${tp_3r:,.2f}", color="#34d399", fontsize=7.5, fontfamily="monospace", va="center", bbox=pill_kw, zorder=6)
+
+    # Annotate the Entry Candle
     if entry_idx is not None and 0 <= entry_idx < n_candles:
         entry_c = view_candles[entry_idx]
         entry_color = "#38bdf8" if direction == "Bullish" else "#fb923c"
@@ -715,14 +739,20 @@ def generate_extreme_setup_chart(
     # 6. Mark the Exit Candle (if historical trade or exit timestamp is provided)
     if exit_time_ts and exit_time_ts > 0:
         exit_idx = None
+        # Match exact candle containing or closest to exit timestamp using timeframe duration
         for idx, c in enumerate(view_candles):
-            if abs(c.timestamp - exit_time_ts) < 60000 or (c.timestamp <= exit_time_ts < c.timestamp + 15 * 60 * 1000):
+            if abs(c.timestamp - exit_time_ts) < (c_dur / 2) or (c.timestamp <= exit_time_ts < c.timestamp + c_dur):
                 exit_idx = idx
                 break
 
+        if exit_idx is None and view_candles:
+            closest_idx = min(range(len(view_candles)), key=lambda idx: abs(view_candles[idx].timestamp - exit_time_ts))
+            if abs(view_candles[closest_idx].timestamp - exit_time_ts) <= 2 * c_dur:
+                exit_idx = closest_idx
+
         if exit_idx is not None and 0 <= exit_idx < n_candles:
             exit_c = view_candles[exit_idx]
-            is_win = "TP" in str(state).upper() or floating_r > 0
+            is_win = ("TP" in str(state).upper() and "STOPPED" not in str(state).upper()) or (floating_r > 0 and not str(state).startswith("HISTORICAL_"))
             exit_color = TARGET_GREEN_BOX if is_win else STOP_RED_BOX
             ax.axvline(exit_idx, color=exit_color, linestyle=":", linewidth=1.2, alpha=0.6, zorder=2)
 
@@ -770,12 +800,20 @@ def generate_extreme_setup_chart(
         spine.set_color(BORDER_COLOR)
 
     # Header and Status
-    if state == "TRADE_ACTIVE":
+    state_str = str(state).replace("HISTORICAL_", "").upper()
+    if state_str == "TRADE_ACTIVE":
         status_str = f"ACTIVE ({floating_r:+.2f}R)"
-    elif str(state).startswith("HISTORICAL_"):
-        status_str = f"{state.replace('HISTORICAL_', '')} ({floating_r:+.2f}R)"
-    else:
+    elif state_str in ("COMPLETED_TP", "TP_HIT", "WIN") or "TP" in state_str:
+        status_str = f"COMPLETED_TP ({floating_r:+.2f}R)"
+    elif state_str in ("STOPPED_OUT", "SL_HIT", "LOSS") or "STOPPED" in state_str or "SL" in state_str:
+        status_str = f"STOPPED_OUT ({floating_r:+.2f}R)"
+    elif state_str == "INVALIDATED":
+        status_str = "INVALIDATED"
+    elif state_str == "PENDING_RETRACE":
         status_str = "PENDING RETRACE"
+    else:
+        status_str = f"{state_str} ({floating_r:+.2f}R)" if floating_r != 0 else state_str
+
     now_ist_str = datetime.now(IST).strftime("%d-%b-%Y %I:%M:%S %p IST")
     plt.title(
         f"{symbol}-PERP · {ltf_timeframe}  |  EXTREME LTF STRATEGY  [{status_str}]",

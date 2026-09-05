@@ -33,7 +33,7 @@ TIMEFRAME_MS: Dict[str, int] = {
     "1h": 60 * 60 * 1000,
     "4h": 4 * 3600 * 1000,
 }
-DEFAULT_LTF_TIMEFRAME = "5m"
+DEFAULT_LTF_TIMEFRAME: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 
 
 @dataclass

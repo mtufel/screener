@@ -307,7 +307,7 @@ def simulate_trade_execution(
 async def run_extreme_backtest(
     symbol: str,
     days: int = 30,
-    ltf_timeframe: str = "15m",
+    ltf_timeframe: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m"),
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
     client: Optional[HyperliquidClient] = None,
