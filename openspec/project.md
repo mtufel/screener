@@ -17,7 +17,7 @@ The system continuously scans crypto perpetuals markets for multi-timeframe Fair
 | **Chart Generation** | **Matplotlib / Agg backend** | High-contrast dark-themed candlestick charts with bounding boxes & entry markers |
 | **Frontend UI** | **HTML5 + Tailwind CSS + FontAwesome + JS** | Responsive live screener cards, dual strategy tabs, backtester suite, trade log |
 | **Alerting** | **Telegram Bot API** (httpx async) | Automated entry fills, take profit, and stop loss alerts with chart photo attachments |
-| **Test Suite** | **pytest / pytest-asyncio** | Comprehensive unit, integration, and backtest test suite (87 tests, 100% offline) |
+| **Test Suite** | **pytest / pytest-asyncio** | Comprehensive unit, integration, and backtest test suite (200 tests, 100% offline) |
 
 ---
 

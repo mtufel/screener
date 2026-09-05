@@ -153,3 +153,32 @@ All `PENDING_RETRACE` monitor evaluations — same-bar fill/TP detection and sto
 * **WHEN** the daemon restarts and executes its first scan cycle
 * **THEN** no pending record SHALL be expired due to the downtime window
 * **AND** absence counting resumes only from the first executed cycle onward.
+
+---
+
+### Requirement: Standardized Candle Close / Ending Timestamps
+All candle-derived lifecycle milestone timestamps (`fvg_formation_time_ist`, `entry_filled_at_ist`, `closed_at_ist` / `exit_time_ist`) MUST consistently report the **Candle Close / Ending Time** (`timestamp + duration_ms`) across live tracking, backtesting, charts, Telegram alerts, and dashboard tables.
+
+#### Scenario: Differentiate formation from fill on first bar
+* **GIVEN** a 5m FVG forms at Candle 3 close `06:10 PM IST`
+* **WHEN** Candle 4 (open `06:10 PM`, close `06:15 PM`) retraces and fills entry
+* **THEN** FVG formation timestamp SHALL be reported as `06:10 PM IST`
+* **AND** entry fill timestamp SHALL be reported as `06:15 PM IST` (candle ending time), preventing confusing duplicate timestamps.
+
+---
+
+### Requirement: Universal FVG Formation Display
+The system MUST prominently display the FVG formation timestamp across all operational surfaces:
+1. **TradingView Chart Generator**: Amber bounding box badge (`FVG Formed: <time>`) and chart subtitle.
+2. **Telegram Bot Alerts**: Explicit `4H Anchor Formed` and `LTF FVG Formed` metadata rows on `NEW_SETUP`, `ENTRY_FILLED`, `TP_HIT`, and `SL_HIT`.
+3. **Web Dashboard**: Dedicated `Formed: <time>` line in Live Setups, Tracked Trades Log, and Backtest results tables.
+
+---
+
+### Requirement: Gentle Async Rate Limiter & Inter-Request Pacing
+The Hyperliquid market data client MUST enforce token-bucket rate limiting (`RATE_LIMIT_RPS=3.0`, `MAX_CONCURRENT_REQUESTS=3`) with minimum inter-request pacing (`min_interval=0.25s`) and reuse recently fetched candle caches across background daemons and on-demand chart generators to prevent rate limit spikes and HTTP 429 penalties.
+
+---
+
+### Requirement: Config-Driven Strategy Execution
+The application MUST support declarative strategy activation via the `ENABLED_STRATEGY` environment variable (`STRATEGY_1`, `STRATEGY_2`, or `ALL`), enabling selective execution and monitoring without modifying application code.
