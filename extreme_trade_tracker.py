@@ -203,7 +203,11 @@ class ExtremeTradeTracker:
                 # Scanner offers a different setup for a symbol with an unfilled pending
                 # record. The pending record must follow the FRESHEST emission (newer
                 # formed_at) in place: stale anchor/FVG pairings are replaced and no
-                # duplicate rows are created. Older/deeper re-selections are ignored.
+                formed_ist = s.get("target_fvg", {}).get("formed_time_ist") or s.get("fvg_formation_time_ist")
+                if not formed_ist and fvg_formed_at:
+                    formed_ist = _candle_close_ist(fvg_formed_at, s.get("ltf_timeframe", "15m"))
+                setup_created_ist = formed_ist or now_ist_str
+
                 existing_formed = existing_pending.ltf_fvg.get("formed_at", 0) or 0
                 if fvg_formed_at > existing_formed:
                     refreshed = TrackedExtremeTrade(
@@ -223,7 +227,7 @@ class ExtremeTradeTracker:
                         ltf_fvg=s.get("target_fvg", {}),
                         state="PENDING_RETRACE",
                         status_detail="Waiting for Retrace (refreshed to latest emission)",
-                        created_at_ist=now_ist_str,
+                        created_at_ist=setup_created_ist,
                         max_favorable_price=curr_px,
                     )
                     self.active_trades.pop(existing_pending.trade_id, None)
@@ -238,6 +242,11 @@ class ExtremeTradeTracker:
                 # Register new setup
                 is_active = (s.get("state") == "TRADE_ACTIVE")
                 status_det = f"Active (+{s.get('floating_r', 0)}R)" if is_active else "Waiting for Retrace"
+                formed_ist = s.get("target_fvg", {}).get("formed_time_ist") or s.get("fvg_formation_time_ist")
+                if not formed_ist and fvg_formed_at:
+                    formed_ist = _candle_close_ist(fvg_formed_at, s.get("ltf_timeframe", "15m"))
+                setup_created_ist = formed_ist or now_ist_str
+
                 trade = TrackedExtremeTrade(
                     trade_id=trade_id,
                     symbol=sym,
@@ -255,7 +264,7 @@ class ExtremeTradeTracker:
                     ltf_fvg=s.get("target_fvg", {}),
                     state=s.get("state", "PENDING_RETRACE"),
                     status_detail=status_det,
-                    created_at_ist=now_ist_str,
+                    created_at_ist=setup_created_ist,
                     entry_filled_at_ist=s.get("entry_time_ist") if is_active else None,
                     floating_r=s.get("floating_r", 0.0),
                     max_favorable_price=curr_px,

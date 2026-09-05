@@ -1497,7 +1497,16 @@
             </td>
             <td class="py-3 px-4 font-mono">
               <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
-              <span class="text-[9px] text-slate-400 block">${t.entry_filled_at_ist ? `Filled: ${t.entry_filled_at_ist}` : (t.created_at_ist ? `Created: ${t.created_at_ist}` : '--')}</span>
+              ${t.entry_filled_at_ist 
+                ? `<span class="text-[9px] text-emerald-400 font-semibold block">Filled: ${t.entry_filled_at_ist}</span>` 
+                : (t.state === 'PENDING_RETRACE' 
+                    ? `<span class="text-[9px] text-amber-400/90 font-medium block">⏳ Awaiting Retrace</span>` 
+                    : (t.state === 'INVALIDATED' 
+                        ? `<span class="text-[9px] text-rose-400/70 block">${t.closed_at_ist ? `Invalidated: ${t.closed_at_ist}` : 'Never Filled'}</span>` 
+                        : `<span class="text-[9px] text-slate-500 block">--</span>`
+                      )
+                  )
+              }
             </td>
             <td class="py-3 px-4 font-mono">
               <span class="text-rose-400 font-bold block">$${formatNumber(t.stop_loss)}</span>
