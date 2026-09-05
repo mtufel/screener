@@ -353,8 +353,8 @@ def test_symbol_alias_resolution_for_live_mids(tmp_path):
     storage_file = tmp_path / "test_trades_alias.json"
     tracker = ExtremeTradeTracker(storage_path=str(storage_file))
 
-    mock_gold_setup = {
-        "symbol": "GOLD",
+    mock_xau_setup = {
+        "symbol": "XAU",
         "direction": "Bullish",
         "state": "TRADE_ACTIVE",
         "entry_price": 2500.0,
@@ -372,9 +372,9 @@ def test_symbol_alias_resolution_for_live_mids(tmp_path):
         "entry_timestamp": 1788001000,
     }
 
-    # Hyperliquid mids keyed by PAXG for GOLD
+    # Hyperliquid mids keyed by PAXG for XAU
     mids = {"PAXG": 2530.0}
-    events = tracker.process_live_setups([mock_gold_setup], mids)
+    events = tracker.process_live_setups([mock_xau_setup], mids)
     trade = list(tracker.active_trades.values())[0]
 
     # floating_r should resolve PAXG mid-price (+1.5R) instead of staying frozen at 0.00R

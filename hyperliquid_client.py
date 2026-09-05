@@ -24,7 +24,6 @@ RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "5.0"))  # Sustained requests
 
 # Symbol aliases for commodities and alternative naming
 SYMBOL_ALIASES: Dict[str, str] = {
-    "GOLD": "PAXG",
     "XAU": "PAXG",
     "XAUUSD": "PAXG",
     "PAXGOLD": "PAXG",
@@ -290,7 +289,6 @@ class HyperliquidClient:
             "ETH": "ETHUSDT",
             "SOL": "SOLUSDT",
             "PAXG": "PAXGUSDT",
-            "GOLD": "PAXGUSDT",
             "SILVER": "XAGUSDT",
         }
         binance_symbol = sym_map.get(coin.upper(), f"{coin.upper()}USDT")
