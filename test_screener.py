@@ -762,3 +762,37 @@ def test_trade_tracker_disk_persistence_and_recovery(tmp_path):
     assert restored_trade.stage == "ACTIVATED"
     assert restored_trade.tp1_alert_sent is True  # Milestone state preserved!
 
+
+@pytest.mark.asyncio
+async def test_1h_timeframe_backtest_execution():
+    """Validates that 1h timeframe runs smoothly through historical backtest simulations."""
+    from backtest import _simulate_trade_forward
+    # 1h candle: 3600000ms
+    base_ts = 1700000000000
+    h1_ms = 3600000
+    c_entry = Candle(base_ts, 100, 105, 98, 102, 100)
+    c_tp = Candle(base_ts + h1_ms, 102, 125, 101, 122, 120)
+    c_sl = Candle(base_ts + 2 * h1_ms, 120, 121, 90, 92, 110)
+
+    htf = FVG("Bullish", top=130, bottom=90, c1=c_entry, c2=c_entry, c3=c_entry, formed_at=base_ts, timeframe="4h")
+    ltf = FVG("Bullish", top=105, bottom=98, c1=c_entry, c2=c_entry, c3=c_entry, formed_at=base_ts, timeframe="1h")
+
+    trade = _simulate_trade_forward(
+        symbol="BTC",
+        direction="Bullish",
+        entry_idx=0,
+        candles_ltf=[c_entry, c_tp, c_sl],
+        entry_price=100.0,
+        sl_price=95.0,
+        target_rr=2.0,
+        htf_fvg=htf,
+        ltf_fvg=ltf,
+        score=0.85,
+        ltf_timeframe="1h",
+    )
+    assert trade is not None
+    assert trade.outcome == "WIN"
+    assert trade.r_multiple == 2.0
+    assert trade.ltf_timeframe == "1h"
+
+

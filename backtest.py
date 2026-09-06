@@ -23,6 +23,7 @@ from strategy import (
     FVG,
     HTF_TIMEFRAME,
     LTF_TIMEFRAME,
+    TIMEFRAME_MS,
     TPLevels,
     calculate_tp_levels,
     compute_all_active_4h_fvgs,
@@ -416,11 +417,11 @@ async def run_historical_backtest(
     candles_ltf = [Candle.from_dict(c) for c in sorted(raw_ltf, key=lambda x: x.get("t", 0))]
 
     trades: List[HistoricalTrade] = []
-    candle_gap = min_candle_gap if min_candle_gap is not None else (40 if ltf == "1m" else (20 if ltf == "5m" else 8))
+    candle_gap = min_candle_gap if min_candle_gap is not None else (40 if ltf == "1m" else (20 if ltf == "5m" else (8 if ltf == "15m" else 4)))
     last_trade_candle_idx = -candle_gap
     active_trade_exit_idx = -1
     htf_candle_duration_ms = 4 * 3600 * 1000
-    ltf_candle_duration_ms = 60 * 1000 if ltf == "1m" else (15 * 60 * 1000 if ltf == "15m" else 5 * 60 * 1000)
+    ltf_candle_duration_ms = TIMEFRAME_MS.get(ltf, 5 * 60 * 1000)
     active_sessions: Dict[str, int] = {}
     fvg_busy_until: Dict[str, int] = {}
 

@@ -323,6 +323,13 @@
               >
                 15m
               </button>
+              <button
+                onclick="setLiveLtf('1h')"
+                id="ltfBtn1h"
+                class="px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]"
+              >
+                1h
+              </button>
             </div>
           </div>
 
@@ -476,6 +483,7 @@
                 <option value="1m">1m FVG</option>
                 <option value="5m" selected>5m FVG</option>
                 <option value="15m">15m FVG</option>
+                <option value="1h">1h FVG</option>
               </select>
             </div>
 
@@ -989,6 +997,7 @@
                 <select id="extremeBtLtf" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
                   <option value="5m" selected>5m (Default)</option>
                   <option value="15m">15m</option>
+                  <option value="1h">1h</option>
                   <option value="1m">1m</option>
                 </select>
               </div>
@@ -1742,11 +1751,13 @@
 
     function setLiveLtf(ltf) {
       currentLiveLtf = ltf;
-      ['ltfBtn1m', 'ltfBtn5m', 'ltfBtn15m'].forEach(id => {
-        document.getElementById(id).className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+      ['ltfBtn1m', 'ltfBtn5m', 'ltfBtn15m', 'ltfBtn1h'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
       });
-      const activeBtnId = ltf === '1m' ? 'ltfBtn1m' : (ltf === '5m' ? 'ltfBtn5m' : 'ltfBtn15m');
-      document.getElementById(activeBtnId).className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+      const activeBtnId = ltf === '1m' ? 'ltfBtn1m' : (ltf === '5m' ? 'ltfBtn5m' : (ltf === '15m' ? 'ltfBtn15m' : 'ltfBtn1h'));
+      const activeEl = document.getElementById(activeBtnId);
+      if (activeEl) activeEl.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
 
       showToast(`Switched Lower Timeframe to ${ltf}. Scanning...`, 'info');
       triggerManualScan();
