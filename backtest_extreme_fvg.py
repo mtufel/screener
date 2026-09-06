@@ -323,11 +323,16 @@ async def run_extreme_backtest(
     start_ms = now_ms - (days * 24 * 3600 * 1000)
 
     # 1. Fetch historical 4H and LTF candles
-    raw_4h = await cli.get_candle_snapshot(raw_sym, "4h", start_ms - (14 * 24 * 3600 * 1000), now_ms)
-    raw_ltf = await cli.get_candle_snapshot(raw_sym, ltf_timeframe, start_ms, now_ms)
+    try:
+        raw_4h = await cli.get_candle_snapshot(raw_sym, "4h", start_ms - (14 * 24 * 3600 * 1000), now_ms)
+        raw_ltf = await cli.get_candle_snapshot(raw_sym, ltf_timeframe, start_ms, now_ms)
+    except Exception as exc:
+        logger.error("Failed to retrieve historical candles for %s (%s): %s", symbol, ltf_timeframe, exc)
+        raw_4h = []
+        raw_ltf = []
 
     if not raw_4h or not raw_ltf:
-        logger.error("Failed to retrieve sufficient historical candles for %s", symbol)
+        logger.warning("Insufficient or unavailable historical candles for %s (%s)", symbol, ltf_timeframe)
         return ExtremeBacktestReport(
             symbol=symbol,
             days=days,

@@ -1049,21 +1049,27 @@ async def backtest_endpoint(
         min_candle_gap,
     )
 
-    summary = await run_historical_backtest(
-        symbol=clean_symbol,
-        days=days,
-        start_date=start_date,
-        end_date=end_date,
-        target_rr=target_rr,
-        ltf_timeframe=ltf,
-        htf_mode=htf_mode,
-        single_position=single_position,
-        use_close_invalidation=use_close_invalidation,
-        max_htf_retrace_candles=max_htf_retrace_candles,
-        min_candle_gap=min_candle_gap,
-    )
-
-    return JSONResponse(content={"status": "success", "data": summary.to_dict()})
+    try:
+        summary = await run_historical_backtest(
+            symbol=clean_symbol,
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+            target_rr=target_rr,
+            ltf_timeframe=ltf,
+            htf_mode=htf_mode,
+            single_position=single_position,
+            use_close_invalidation=use_close_invalidation,
+            max_htf_retrace_candles=max_htf_retrace_candles,
+            min_candle_gap=min_candle_gap,
+        )
+        return JSONResponse(content={"status": "success", "data": summary.to_dict()})
+    except Exception as exc:
+        logger.error("Error executing Strategy 1 backtest for %s (%s): %s", clean_symbol, ltf, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Backtest failed: {str(exc)}", "data": None}
+        )
 
 
 # ==============================================================================
@@ -1197,42 +1203,59 @@ async def api_extreme_backtest(
     invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
     min_gap_pct: float = Query(default=0.05, ge=0.0, description="Min gap size %"),
 ):
+    import math
     from backtest_extreme_fvg import run_extreme_backtest
 
-    use_close = (invalidation == "close")
-    report = await run_extreme_backtest(
-        symbol=symbol.strip().upper(),
-        days=days,
-        ltf_timeframe=ltf,
-        use_close_invalidation=use_close,
-        min_gap_pct=min_gap_pct,
-    )
-    return JSONResponse(content={
-        "status": "success",
-        "symbol": report.symbol,
-        "days": report.days,
-        "ltf_timeframe": report.ltf_timeframe,
-        "invalidation_mode": report.invalidation_mode,
-        "min_gap_pct": report.min_gap_pct,
-        "total_trades": report.total_trades,
-        "wins_1r": report.wins_1r,
-        "wins_2r": report.wins_2r,
-        "wins_3r": report.wins_3r,
-        "losses": report.losses,
-        "win_rate_1r": round(report.win_rate_1r, 1),
-        "win_rate_2r": round(report.win_rate_2r, 1),
-        "win_rate_3r": round(report.win_rate_3r, 1),
-        "net_pnl_1r": round(report.net_pnl_1r, 1),
-        "net_pnl_2r": round(report.net_pnl_2r, 1),
-        "net_pnl_3r": round(report.net_pnl_3r, 1),
-        "profit_factor_1r": round(report.profit_factor_1r, 2) if report.profit_factor_1r != float("inf") else 999.0,
-        "profit_factor_2r": round(report.profit_factor_2r, 2) if report.profit_factor_2r != float("inf") else 999.0,
-        "profit_factor_3r": round(report.profit_factor_3r, 2) if report.profit_factor_3r != float("inf") else 999.0,
-        "max_drawdown_r": round(report.max_drawdown_r, 1),
-        "avg_trade_duration_min": round(report.avg_trade_duration_min, 1),
-        "avg_mfe_r": round(report.avg_mfe_r, 2),
-        "trades": [t.to_dict() for t in report.trades],
-    })
+    def _safe_float(val: Any, default: float = 0.0, digits: int = 2) -> float:
+        try:
+            f = float(val)
+            if math.isnan(f) or math.isinf(f):
+                return default
+            return round(f, digits)
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        use_close = (invalidation == "close")
+        report = await run_extreme_backtest(
+            symbol=symbol.strip().upper(),
+            days=days,
+            ltf_timeframe=ltf,
+            use_close_invalidation=use_close,
+            min_gap_pct=min_gap_pct,
+        )
+        return JSONResponse(content={
+            "status": "success",
+            "symbol": report.symbol,
+            "days": report.days,
+            "ltf_timeframe": report.ltf_timeframe,
+            "invalidation_mode": report.invalidation_mode,
+            "min_gap_pct": report.min_gap_pct,
+            "total_trades": report.total_trades,
+            "wins_1r": report.wins_1r,
+            "wins_2r": report.wins_2r,
+            "wins_3r": report.wins_3r,
+            "losses": report.losses,
+            "win_rate_1r": _safe_float(report.win_rate_1r, 0.0, 1),
+            "win_rate_2r": _safe_float(report.win_rate_2r, 0.0, 1),
+            "win_rate_3r": _safe_float(report.win_rate_3r, 0.0, 1),
+            "net_pnl_1r": _safe_float(report.net_pnl_1r, 0.0, 1),
+            "net_pnl_2r": _safe_float(report.net_pnl_2r, 0.0, 1),
+            "net_pnl_3r": _safe_float(report.net_pnl_3r, 0.0, 1),
+            "profit_factor_1r": _safe_float(report.profit_factor_1r, 999.0, 2),
+            "profit_factor_2r": _safe_float(report.profit_factor_2r, 999.0, 2),
+            "profit_factor_3r": _safe_float(report.profit_factor_3r, 999.0, 2),
+            "max_drawdown_r": _safe_float(report.max_drawdown_r, 0.0, 1),
+            "avg_trade_duration_min": _safe_float(report.avg_trade_duration_min, 0.0, 1),
+            "avg_mfe_r": _safe_float(report.avg_mfe_r, 0.0, 2),
+            "trades": [t.to_dict() for t in report.trades],
+        })
+    except Exception as exc:
+        logger.error("Error executing extreme backtest for %s (%s): %s", symbol, ltf, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Backtest failed: {str(exc)}", "symbol": symbol, "days": days, "total_trades": 0, "trades": []}
+        )
 
 
 @app.get("/api/extreme/status", summary="Get Extreme Background Daemon Status and Live Setups")
