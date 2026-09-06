@@ -659,3 +659,36 @@ def test_unentered_fvg_stays_pending():
     assert unmitigated[0].lifecycle_state == "PENDING_RETRACE"
     assert unmitigated[0].entry_timestamp is None
 
+
+def test_1h_timeframe_extreme_fvg_detection_and_lifecycle():
+    """Validates that 1H LTF timeframe correctly detects FVGs, computes proper duration, and sets pending/fill states."""
+    H1 = 3600 * 1000
+    touch_ts = 1000000
+
+    c1 = make_candle(touch_ts, 100, 110, 95, 108)
+    c2 = make_candle(touch_ts + H1, 108, 130, 107, 128)
+    c3 = make_candle(touch_ts + 2 * H1, 128, 135, 115, 132)  # FVG [110, 115], SL=95
+
+    # c4 pulls back to 112 (enters trade at 115)
+    c4 = make_candle(touch_ts + 3 * H1, 132, 133, 112, 125)
+
+    now_ms = touch_ts + 4 * H1
+    unmitigated = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=125.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="1h",
+        completion_target="2R",
+    )
+
+    assert len(unmitigated) == 1
+    fvg_res = unmitigated[0]
+    assert fvg_res.timeframe == "1h"
+    assert fvg_res.formed_at == touch_ts + 2 * H1  # c3 open timestamp
+    assert fvg_res.close_timestamp == touch_ts + 3 * H1  # c3 close timestamp (formed time)
+    assert fvg_res.lifecycle_state == "TRADE_ACTIVE"
+    assert fvg_res.entry_timestamp == touch_ts + 3 * H1
+
+
