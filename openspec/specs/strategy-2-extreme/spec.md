@@ -1,7 +1,7 @@
 # Strategy 2: ⚡ Extreme LTF FVG Strategy Specification
 
 ## Purpose
-Specifies the requirements and architecture for Strategy 2, an extreme precision day-trading system executing on Lower Timeframe (15m/5m) Fair Value Gaps formed strictly post-4H-touch, with an Immutable Active Trade Ledger.
+Specifies the requirements and architecture for Strategy 2, an extreme precision day-trading system executing on Lower Timeframe (1m/5m/15m/1h) Fair Value Gaps formed strictly post-4H-touch, with an Immutable Active Trade Ledger.
 
 ---
 
@@ -180,5 +180,20 @@ The Hyperliquid market data client MUST enforce token-bucket rate limiting (`RAT
 
 ---
 
-### Requirement: Config-Driven Strategy Execution
-The application MUST support declarative strategy activation via the `ENABLED_STRATEGY` environment variable (`STRATEGY_1`, `STRATEGY_2`, or `ALL`), enabling selective execution and monitoring without modifying application code.
+### Requirement: Multi-Timeframe LTF Support (1m, 5m, 15m, 1h)
+The system MUST support full-pipeline execution across 1m, 5m, 15m, and 1h lower timeframes across real-time scanning, background daemon monitoring, historical backtesting, chart visualization, and UI selection controls.
+
+#### Scenario: 1h timeframe execution and serialization
+* **WHEN** a 1h LTF timeframe is configured in `.env` (`EXTREME_LTF_TIMEFRAME=1h`) or via runtime API
+* **THEN** candidate LTF FVGs SHALL be evaluated on 1h bars with 1h candle gap offsets applied to timestamp calculations
+* **AND** historical backtests SHALL include `ltf_timeframe` across all serialized trade results and metrics.
+
+---
+
+### Requirement: Runtime Configuration & Dashboard UI Synchronization
+The application MUST dynamically synchronize runtime configuration parameters (`coins_whitelist`, `ltf_timeframe`, `use_close_invalidation`, `completion_target`, `min_gap_pct`, `interval_seconds`) between environment defaults, background daemons, API status endpoints (`/api/extreme/status`, `/api/extreme/config`), and frontend dashboard controls on initial load and polling cycles.
+
+#### Scenario: Automatic UI initialization from environment configuration
+* **GIVEN** custom configuration in `.env` (e.g. `EXTREME_LTF_TIMEFRAME=1h` and `EXTREME_USE_CLOSE_INVALIDATION=true`)
+* **WHEN** a user loads the Web Dashboard
+* **THEN** the UI dropdowns, toggles, and backtest selector defaults SHALL automatically reflect the active server configuration without manual user intervention.
