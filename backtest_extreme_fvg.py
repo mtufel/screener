@@ -73,6 +73,7 @@ class ExtremeHistoricalTrade:
     htf_fvg_bottom: float
     htf_fvg_top: float
     fvg_formation_timestamp: int
+    ltf_timeframe: str = "5m"
     fvg_formed_at: int = 0
     htf_formed_timestamp: int = 0
     htf_first_touch_timestamp: int = 0
@@ -117,6 +118,7 @@ class ExtremeHistoricalTrade:
         return {
             "symbol": self.symbol,
             "direction": self.direction,
+            "ltf_timeframe": self.ltf_timeframe,
             "entry_time": self.entry_time_ist,
             "exit_time": self.exit_time_ist,
             "entry_price": self.entry_price,
@@ -303,6 +305,7 @@ def simulate_trade_execution(
         htf_first_touch_timestamp=anchor.first_touch_timestamp,
         htf_most_recent_touch_timestamp=anchor.most_recent_touch_timestamp,
         ltf_gap_pct=ltf_fvg.gap_pct,
+        ltf_timeframe=ltf_fvg.timeframe or "5m",
     )
 
 
