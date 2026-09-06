@@ -1405,14 +1405,72 @@
       }
     }
 
-    async function pollExtremeStatus() {
-      const s2Wrap = document.getElementById('strat2Wrapper');
-      if (!s2Wrap || s2Wrap.classList.contains('hidden')) return;
+    let extremeConfigInitialized = false;
 
+    function syncExtremeConfigUI(data) {
+      if (!data) return;
+      const activeEl = document.activeElement;
+
+      if (data.coins_whitelist !== undefined) {
+        const el = document.getElementById('extremeSymbols');
+        if (el && (!extremeConfigInitialized || activeEl !== el)) {
+          el.value = data.coins_whitelist;
+        }
+      }
+
+      if (data.ltf_timeframe !== undefined) {
+        const el = document.getElementById('extremeLtf');
+        if (el && (!extremeConfigInitialized || activeEl !== el)) {
+          el.value = data.ltf_timeframe;
+        }
+        const btLtf = document.getElementById('extremeBtLtf');
+        if (btLtf && !extremeConfigInitialized) {
+          btLtf.value = data.ltf_timeframe;
+        }
+      }
+
+      if (data.use_close_invalidation !== undefined) {
+        const el = document.getElementById('extremeInvalidation');
+        const val = data.use_close_invalidation ? 'close' : 'wick';
+        if (el && (!extremeConfigInitialized || activeEl !== el)) {
+          el.value = val;
+        }
+        const btInval = document.getElementById('extremeBtInval');
+        if (btInval && !extremeConfigInitialized) {
+          btInval.value = val;
+        }
+      }
+
+      if (data.completion_target !== undefined) {
+        const el = document.getElementById('extremeTarget');
+        if (el && (!extremeConfigInitialized || activeEl !== el)) {
+          el.value = data.completion_target;
+        }
+      }
+
+      if (data.min_gap_pct !== undefined) {
+        const el = document.getElementById('extremeMinGap');
+        if (el && (!extremeConfigInitialized || activeEl !== el)) {
+          el.value = data.min_gap_pct;
+        }
+      }
+
+      if (data.interval_seconds !== undefined) {
+        const el = document.getElementById('extremeDaemonInterval');
+        if (el && (!extremeConfigInitialized || activeEl !== el)) {
+          el.value = String(data.interval_seconds);
+        }
+      }
+
+      extremeConfigInitialized = true;
+    }
+
+    async function pollExtremeStatus() {
       try {
         const resp = await fetchWithRetry('/api/extreme/status', {}, 10000, 1);
         const data = await resp.json();
         updateExtremeDaemonUI(data.is_running, data.interval_seconds);
+        syncExtremeConfigUI(data);
 
         if (data.last_scan_time_ist) {
           const timeEl = document.getElementById('extremeScanTime');
@@ -1845,6 +1903,33 @@
         }
         if (data.single_position !== undefined && document.getElementById('liveSinglePos')) {
           document.getElementById('liveSinglePos').value = String(data.single_position);
+        }
+
+        // Sync Strategy 1 LTF and HTF Mode buttons if returned from server
+        if (data.ltf_timeframe && typeof currentLiveLtf !== 'undefined') {
+          currentLiveLtf = data.ltf_timeframe;
+          ['ltfBtn1m', 'ltfBtn5m', 'ltfBtn15m', 'ltfBtn1h'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+          });
+          const activeBtnId = data.ltf_timeframe === '1m' ? 'ltfBtn1m' : (data.ltf_timeframe === '5m' ? 'ltfBtn5m' : (data.ltf_timeframe === '15m' ? 'ltfBtn15m' : 'ltfBtn1h'));
+          const activeEl = document.getElementById(activeBtnId);
+          if (activeEl) activeEl.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+        }
+
+        if (data.htf_mode && typeof currentHtfMode !== 'undefined') {
+          currentHtfMode = data.htf_mode;
+          const btnAny = document.getElementById('htfModeAny');
+          const btnRecent = document.getElementById('htfModeRecent');
+          if (btnAny && btnRecent) {
+            if (data.htf_mode === 'ANY_VALID') {
+              btnAny.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+              btnRecent.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+            } else {
+              btnRecent.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all bg-indigo-600 text-white shadow-sm font-mono text-[11px]';
+              btnAny.className = 'px-2.5 py-1 rounded-xl font-semibold transition-all text-slate-400 hover:text-white font-mono text-[11px]';
+            }
+          }
         }
 
         if (data.last_scan_time_ist) {
@@ -2373,6 +2458,7 @@
 
     initDatePickers();
     fetchStatus();
+    pollExtremeStatus();
 
     setInterval(() => {
       const toggle = document.getElementById('autoRefreshToggle');

@@ -17,6 +17,8 @@ def test_api_extreme_status_endpoint():
     assert "interval_seconds" in data
     assert "completion_target" in data
     assert data["completion_target"] == "2R"
+    assert "use_close_invalidation" in data
+    assert "coins_whitelist" in data
     assert "setups" in data
 
 
@@ -39,7 +41,15 @@ def test_api_extreme_toggle_daemon():
 
 def test_api_extreme_config_endpoint():
     client = TestClient(app)
-    resp = client.post("/api/extreme/config?interval_seconds=45&ltf=5m&target=3R&min_gap_pct=0.10")
+    # GET config
+    get_resp = client.get("/api/extreme/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["status"] == "success"
+    assert "config" in get_data
+
+    # POST config
+    resp = client.post("/api/extreme/config?interval_seconds=45&ltf=5m&target=3R&min_gap_pct=0.10&invalidation=close&symbols=BTC,ETH")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
@@ -47,7 +57,10 @@ def test_api_extreme_config_endpoint():
     assert data["config"]["ltf_timeframe"] == "5m"
     assert data["config"]["completion_target"] == "3R"
     assert data["config"]["min_gap_pct"] == 0.10
+    assert data["config"]["use_close_invalidation"] is True
+    assert data["config"]["coins_whitelist"] == "BTC,ETH"
     assert state["extreme_interval_seconds"] == 45
+    assert state["extreme_use_close"] is True
 
 
 def test_strategy_enablement_flags():

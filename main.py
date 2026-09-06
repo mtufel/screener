@@ -58,7 +58,7 @@ EXTREME_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTREME_SCAN_INTERVAL_SECONDS", "
 EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 EXTREME_COMPLETION_TARGET = os.getenv("EXTREME_COMPLETION_TARGET", "2R")
 EXTREME_MIN_GAP_PCT = float(os.getenv("EXTREME_MIN_GAP_PCT", "0.05"))
-EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").lower() == "true"
+EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").strip().lower() in ("true", "1", "yes")
 
 state: Dict[str, Any] = {
     "strategy_1_enabled": ENABLE_STRATEGY_1,
@@ -1265,10 +1265,12 @@ async def api_extreme_status():
         "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
         "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "is_running": state.get("extreme_is_running", False),
-        "interval_seconds": state.get("extreme_interval_seconds", 30),
+        "interval_seconds": state.get("extreme_interval_seconds", EXTREME_SCAN_INTERVAL_SECONDS),
         "ltf_timeframe": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
-        "completion_target": state.get("extreme_target", "2R"),
-        "min_gap_pct": state.get("extreme_min_gap", 0.05),
+        "completion_target": state.get("extreme_target", EXTREME_COMPLETION_TARGET),
+        "min_gap_pct": state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT),
+        "use_close_invalidation": state.get("extreme_use_close", EXTREME_USE_CLOSE_INVALIDATION),
+        "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
         "active_count": state.get("extreme_active_count", 0),
         "pending_count": state.get("extreme_pending_count", 0),
@@ -1303,6 +1305,7 @@ async def api_extreme_toggle_daemon(
     })
 
 
+@app.get("/api/extreme/config", summary="Get Extreme Daemon Runtime Configuration")
 @app.post("/api/extreme/config", summary="Update Extreme Daemon Runtime Configuration")
 async def api_extreme_config(
     interval_seconds: Optional[int] = Query(default=None, ge=5, le=3600, description="Daemon interval in seconds"),
