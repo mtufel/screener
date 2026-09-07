@@ -45,6 +45,24 @@ IST = timezone(timedelta(hours=5, minutes=30))
 logger = logging.getLogger("extreme-backtester")
 
 
+def is_in_ny_session(timestamp_ms: int) -> bool:
+    """Return True if the UTC hour of timestamp_ms is within NY session 13:00-22:00 UTC."""
+    try:
+        dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+        return 13 <= dt.hour < 22
+    except (ValueError, OSError):
+        return False
+
+
+def is_weekday(timestamp_ms: int) -> bool:
+    """Return True if timestamp_ms falls on Monday-Friday (UTC)."""
+    try:
+        dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+        return dt.weekday() < 5
+    except (ValueError, OSError):
+        return False
+
+
 @dataclass
 class ExtremeHistoricalTrade:
     """Represents an executed trade during historical backtesting."""
@@ -180,6 +198,9 @@ class ExtremeBacktestReport:
     max_drawdown_r: float
     avg_trade_duration_min: float
     avg_mfe_r: float
+    session_filter_enabled: bool = False
+    weekday_filter_enabled: bool = False
+    trades_filtered_out: int = 0
     trades: List[ExtremeHistoricalTrade] = field(default_factory=list)
 
 
@@ -315,6 +336,8 @@ async def run_extreme_backtest(
     ltf_timeframe: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m"),
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
+    session_filter: bool = False,
+    weekday_filter: bool = False,
     client: Optional[HyperliquidClient] = None,
 ) -> ExtremeBacktestReport:
     """
@@ -342,6 +365,8 @@ async def run_extreme_backtest(
             ltf_timeframe=ltf_timeframe,
             invalidation_mode="close" if use_close_invalidation else "wick",
             min_gap_pct=min_gap_pct,
+            session_filter_enabled=session_filter,
+            weekday_filter_enabled=weekday_filter,
             total_trades=0,
             wins_1r=0,
             wins_2r=0,
@@ -424,6 +449,15 @@ async def run_extreme_backtest(
 
         best_ltf = select_extreme_ltf_fvg(unmitigated, anchor.fvg.direction)
         if not best_ltf or best_ltf.formed_at in entered_fvg_timestamps:
+            i += 1
+            continue
+
+        # Apply session/weekday filters to LTF FVG c3 close timestamp
+        c3_close_ts = best_ltf.close_timestamp
+        if session_filter and not is_in_ny_session(c3_close_ts):
+            i += 1
+            continue
+        if weekday_filter and not is_weekday(c3_close_ts):
             i += 1
             continue
 
@@ -520,6 +554,8 @@ async def run_extreme_backtest(
         ltf_timeframe=ltf_timeframe,
         invalidation_mode="close" if use_close_invalidation else "wick",
         min_gap_pct=min_gap_pct,
+        session_filter_enabled=session_filter,
+        weekday_filter_enabled=weekday_filter,
         total_trades=total_trades,
         wins_1r=wins_1r,
         wins_2r=wins_2r,
@@ -549,6 +585,10 @@ def print_backtest_report(report: ExtremeBacktestReport):
     print(f"  • Lower Timeframe:   {report.ltf_timeframe}")
     print(f"  • Invalidation Mode: {report.invalidation_mode.upper()}")
     print(f"  • Min Gap Size:      {report.min_gap_pct:.2f}%")
+    session_state = "NY (13:00-22:00 UTC) [ENABLED]" if report.session_filter_enabled else "[DISABLED]"
+    weekday_state = "Mon-Fri [ENABLED]" if report.weekday_filter_enabled else "[DISABLED]"
+    print(f"  • Session Filter:    {session_state}")
+    print(f"  • Weekday Filter:    {weekday_state}")
     print(f"  • Total Trades:      {report.total_trades}")
     print(f"  • Avg Hold Duration: {report.avg_trade_duration_min:.1f} minutes")
     print(f"  • Avg Max MFE:       {report.avg_mfe_r:+.2f}R")
@@ -582,7 +622,13 @@ async def main():
     parser.add_argument("--ltf", default="15m", choices=["1m", "5m", "15m", "1h"], help="LTF timeframe (default: 15m)")
     parser.add_argument("--invalidation", default="wick", choices=["wick", "close"], help="Invalidation mode (default: wick)")
     parser.add_argument("--min-gap-pct", type=float, default=0.05, help="Minimum gap size in %% (default: 0.05%%)")
+    parser.add_argument("--session-filter", action="store_true", default=None, help="Only include trades formed during NY session (13:00-22:00 UTC)")
+    parser.add_argument("--weekday-filter", action="store_true", default=None, help="Only include trades formed on weekdays (Mon-Fri UTC)")
     args = parser.parse_args()
+
+    # CLI args override env vars; env vars override False defaults
+    session_filter = args.session_filter if args.session_filter else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").lower() == "true"
+    weekday_filter = args.weekday_filter if args.weekday_filter else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").lower() == "true"
 
     use_close = (args.invalidation == "close")
     report = await run_extreme_backtest(
@@ -591,6 +637,8 @@ async def main():
         ltf_timeframe=args.ltf,
         use_close_invalidation=use_close,
         min_gap_pct=args.min_gap_pct,
+        session_filter=session_filter,
+        weekday_filter=weekday_filter,
     )
     print_backtest_report(report)
 
