@@ -391,8 +391,9 @@ async def run_extreme_backtest(
     candles_ltf = [Candle.from_dict(c) for c in sorted(raw_ltf, key=lambda x: x.get("t", 0))]
 
     ltf_duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
+    entered_fvg_timestamps = set()
     executed_trades: List[ExtremeHistoricalTrade] = []
-    entered_fvg_timestamps: set = set()
+    trades_filtered_out = 0
 
     # Step forward through LTF candles (skipping initial 10 for warm-up)
     i = 10
@@ -455,9 +456,13 @@ async def run_extreme_backtest(
         # Apply session/weekday filters to LTF FVG c3 close timestamp
         c3_close_ts = best_ltf.close_timestamp
         if session_filter and not is_in_ny_session(c3_close_ts):
+            trades_filtered_out += 1
+            entered_fvg_timestamps.add(best_ltf.formed_at)
             i += 1
             continue
         if weekday_filter and not is_weekday(c3_close_ts):
+            trades_filtered_out += 1
+            entered_fvg_timestamps.add(best_ltf.formed_at)
             i += 1
             continue
 
@@ -556,6 +561,7 @@ async def run_extreme_backtest(
         min_gap_pct=min_gap_pct,
         session_filter_enabled=session_filter,
         weekday_filter_enabled=weekday_filter,
+        trades_filtered_out=trades_filtered_out,
         total_trades=total_trades,
         wins_1r=wins_1r,
         wins_2r=wins_2r,
@@ -589,6 +595,8 @@ def print_backtest_report(report: ExtremeBacktestReport):
     weekday_state = "Mon-Fri [ENABLED]" if report.weekday_filter_enabled else "[DISABLED]"
     print(f"  • Session Filter:    {session_state}")
     print(f"  • Weekday Filter:    {weekday_state}")
+    if report.session_filter_enabled or report.weekday_filter_enabled:
+        print(f"  • Trades Filtered:   {report.trades_filtered_out}")
     print(f"  • Total Trades:      {report.total_trades}")
     print(f"  • Avg Hold Duration: {report.avg_trade_duration_min:.1f} minutes")
     print(f"  • Avg Max MFE:       {report.avg_mfe_r:+.2f}R")

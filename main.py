@@ -1202,6 +1202,8 @@ async def api_extreme_backtest(
     ltf: str = Query(default="5m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
     invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
     min_gap_pct: float = Query(default=0.05, ge=0.0, description="Min gap size %"),
+    session_filter: Optional[bool] = Query(default=None, description="NY Session filter (13:00-22:00 UTC)"),
+    weekday_filter: Optional[bool] = Query(default=None, description="Weekday filter (Mon-Fri UTC)"),
 ):
     import math
     from backtest_extreme_fvg import run_extreme_backtest
@@ -1217,12 +1219,25 @@ async def api_extreme_backtest(
 
     try:
         use_close = (invalidation == "close")
+        sess_filter = (
+            session_filter
+            if session_filter is not None
+            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        wkday_filter = (
+            weekday_filter
+            if weekday_filter is not None
+            else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+
         report = await run_extreme_backtest(
             symbol=symbol.strip().upper(),
             days=days,
             ltf_timeframe=ltf,
             use_close_invalidation=use_close,
             min_gap_pct=min_gap_pct,
+            session_filter=sess_filter,
+            weekday_filter=wkday_filter,
         )
         return JSONResponse(content={
             "status": "success",
@@ -1231,6 +1246,9 @@ async def api_extreme_backtest(
             "ltf_timeframe": report.ltf_timeframe,
             "invalidation_mode": report.invalidation_mode,
             "min_gap_pct": report.min_gap_pct,
+            "session_filter_enabled": report.session_filter_enabled,
+            "weekday_filter_enabled": report.weekday_filter_enabled,
+            "trades_filtered_out": report.trades_filtered_out,
             "total_trades": report.total_trades,
             "wins_1r": report.wins_1r,
             "wins_2r": report.wins_2r,

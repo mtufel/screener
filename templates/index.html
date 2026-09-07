@@ -1008,6 +1008,20 @@
                   <option value="close">Candle Close</option>
                 </select>
               </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Session Filter</label>
+                <select id="extremeBtSession" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="false" selected>All Hours</option>
+                  <option value="true">NY (13:00-22:00 UTC)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Weekday Filter</label>
+                <select id="extremeBtWeekday" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="false" selected>All Days</option>
+                  <option value="true">Mon-Fri (Weekdays)</option>
+                </select>
+              </div>
               <div class="self-end">
                 <button
                   onclick="runExtremeBacktest()"
@@ -1653,6 +1667,8 @@
       const days = document.getElementById('extremeBtDays').value;
       const ltf = document.getElementById('extremeBtLtf').value;
       const invalidation = document.getElementById('extremeBtInval').value;
+      const sessionFilter = document.getElementById('extremeBtSession') ? document.getElementById('extremeBtSession').value : 'false';
+      const weekdayFilter = document.getElementById('extremeBtWeekday') ? document.getElementById('extremeBtWeekday').value : 'false';
 
       btn.disabled = true;
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting...</span>';
@@ -1660,9 +1676,13 @@
       tbody.innerHTML = '';
 
       try {
-        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05`;
+        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05&session_filter=${sessionFilter}&weekday_filter=${weekdayFilter}`;
         const resp = await fetchWithRetry(url, {}, 60000, 2);
         const data = await resp.json();
+
+        const filterBadge = (data.session_filter_enabled || data.weekday_filter_enabled)
+          ? `<span class="text-[9px] text-amber-400/90 block mt-0.5">(${data.trades_filtered_out || 0} filtered out)</span>`
+          : '';
 
         summary.innerHTML = `
           <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
@@ -1684,6 +1704,7 @@
             <span class="text-[11px] text-slate-400 block font-mono">TOTAL TRADES / MFE</span>
             <span class="text-lg font-black text-white font-mono">${data.total_trades}</span>
             <span class="text-[10px] text-slate-400 block font-mono">Avg MFE: +${data.avg_mfe_r}R (DD: -${data.max_drawdown_r}R)</span>
+            ${filterBadge}
           </div>
         `;
 

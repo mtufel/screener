@@ -354,5 +354,105 @@ async def test_backtest_resolves_exits_on_fill_candle(monkeypatch):
     assert t.exit_timestamp == 106 * DUR    # last candle's close
 
 
+def test_is_in_ny_session():
+    from datetime import datetime, timezone
+    from backtest_extreme_fvg import is_in_ny_session
+
+    # Monday 14:00 UTC (in NY session 13-22 UTC)
+    dt_ny = datetime(2026, 9, 7, 14, 0, 0, tzinfo=timezone.utc)
+    ts_ny = int(dt_ny.timestamp() * 1000)
+    assert is_in_ny_session(ts_ny) is True
+
+    # Monday 08:00 UTC (outside NY session)
+    dt_asia = datetime(2026, 9, 7, 8, 0, 0, tzinfo=timezone.utc)
+    ts_asia = int(dt_asia.timestamp() * 1000)
+    assert is_in_ny_session(ts_asia) is False
+
+    # Monday 22:30 UTC (after NY session close)
+    dt_late = datetime(2026, 9, 7, 22, 30, 0, tzinfo=timezone.utc)
+    ts_late = int(dt_late.timestamp() * 1000)
+    assert is_in_ny_session(ts_late) is False
+
+
+def test_is_weekday():
+    from datetime import datetime, timezone
+    from backtest_extreme_fvg import is_weekday
+
+    # Friday (weekday)
+    dt_fri = datetime(2026, 9, 4, 15, 0, 0, tzinfo=timezone.utc)
+    ts_fri = int(dt_fri.timestamp() * 1000)
+    assert is_weekday(ts_fri) is True
+
+    # Saturday (weekend)
+    dt_sat = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
+    ts_sat = int(dt_sat.timestamp() * 1000)
+    assert is_weekday(ts_sat) is False
+
+    # Sunday (weekend)
+    dt_sun = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
+    ts_sun = int(dt_sun.timestamp() * 1000)
+    assert is_weekday(ts_sun) is False
+
+
+@pytest.mark.asyncio
+async def test_extreme_backtest_with_session_and_weekday_filters():
+    from datetime import datetime, timezone
+    H = 4 * 3600 * 1000
+    DUR = 15 * 60 * 1000
+
+    def bar(ts, o, h, l, c):
+        return {"t": ts, "o": o, "h": h, "l": l, "c": c, "v": 100.0}
+
+    # Start at Saturday 02:00 UTC (weekend & outside NY)
+    base_dt = datetime(2026, 9, 5, 2, 0, 0, tzinfo=timezone.utc)
+    base_ts = int(base_dt.timestamp() * 1000)
+
+    raw_4h = [
+        bar(base_ts, 85, 92, 80, 88),
+        bar(base_ts + H, 88, 105, 87, 104),
+        bar(base_ts + 2 * H, 104, 110, 95, 108),
+        bar(base_ts + 3 * H, 108, 118, 106, 115),
+        bar(base_ts + 4 * H, 115, 125, 112, 122),
+    ]
+
+    raw_ltf = []
+    for n in range(96):
+        raw_ltf.append(bar(base_ts + n * DUR, 96, 96.5, 95.5, 96))
+    raw_ltf.append(bar(base_ts + 96 * DUR, 96, 97, 92, 95))
+    raw_ltf.append(bar(base_ts + 97 * DUR, 93.7, 93.8, 93.5, 93.6))
+    raw_ltf.append(bar(base_ts + 98 * DUR, 93.6, 98.0, 93.5, 97.5))
+    raw_ltf.append(bar(base_ts + 99 * DUR, 97.5, 98.5, 94.0, 98.0))
+    raw_ltf.append(bar(base_ts + 100 * DUR, 95.0, 95.3, 93.9, 94.8))
+    for n in range(101, 106):
+        raw_ltf.append(bar(base_ts + n * DUR, 94.7, 94.9, 94.3, 94.6))
+
+    class FakeClient:
+        async def get_candle_snapshot(self, symbol, timeframe, start_ms, end_ms):
+            return raw_4h if timeframe == "4h" else raw_ltf
+
+    # 1. Without filters -> 1 trade executed
+    rep_no_filter = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m", session_filter=False, weekday_filter=False, client=FakeClient()
+    )
+    assert rep_no_filter.total_trades == 1
+    assert rep_no_filter.trades_filtered_out == 0
+
+    # 2. With weekday_filter=True -> filtered out (Saturday)
+    rep_wkday = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m", session_filter=False, weekday_filter=True, client=FakeClient()
+    )
+    assert rep_wkday.total_trades == 0
+    assert rep_wkday.trades_filtered_out == 1
+    assert rep_wkday.weekday_filter_enabled is True
+
+    # 3. With session_filter=True -> filtered out (02:00 UTC is outside 13-22 UTC)
+    rep_sess = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m", session_filter=True, weekday_filter=False, client=FakeClient()
+    )
+    assert rep_sess.total_trades == 0
+    assert rep_sess.trades_filtered_out == 1
+    assert rep_sess.session_filter_enabled is True
+
+
 
 
