@@ -1202,10 +1202,7 @@
         s2Wrap.classList.remove('hidden');
         tab2.className = 'px-4 py-2 rounded-xl text-xs font-bold transition-all bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/20 flex items-center space-x-2 border border-amber-500/30';
         tab1.className = 'px-4 py-2 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-white flex items-center space-x-2 border border-transparent';
-        const c = document.getElementById('extremeSetupsContainer');
-        if (c && c.children.length <= 1) {
-          loadExtremeSetups();
-        }
+        pollExtremeStatus();
       }
     }
 
@@ -1477,7 +1474,7 @@
           if (timeEl) timeEl.innerText = `Daemon scan: ${data.last_scan_time_ist} (Cycle #${data.total_cycles})`;
         }
 
-        if (data.setups && data.setups.length > 0) {
+        if (data.setups !== undefined) {
           renderExtremeSetups(data.setups);
         }
 
