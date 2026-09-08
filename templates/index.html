@@ -1009,17 +1009,31 @@
                 </select>
               </div>
               <div>
-                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Session Filter</label>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">FVG Session</label>
                 <select id="extremeBtSession" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
                   <option value="false" selected>All Hours</option>
-                  <option value="true">NY (13:00-22:00 UTC)</option>
+                  <option value="true">NY (13-22 UTC)</option>
                 </select>
               </div>
               <div>
-                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Weekday Filter</label>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">FVG Weekday</label>
                 <select id="extremeBtWeekday" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
                   <option value="false" selected>All Days</option>
-                  <option value="true">Mon-Fri (Weekdays)</option>
+                  <option value="true">Mon-Fri</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Entry Session</label>
+                <select id="extremeBtEntrySession" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="false" selected>All Hours</option>
+                  <option value="true">NY (13-22 UTC)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Entry Weekday</label>
+                <select id="extremeBtEntryWeekday" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="false" selected>All Days</option>
+                  <option value="true">Mon-Fri</option>
                 </select>
               </div>
               <div class="self-end">
@@ -1669,6 +1683,8 @@
       const invalidation = document.getElementById('extremeBtInval').value;
       const sessionFilter = document.getElementById('extremeBtSession') ? document.getElementById('extremeBtSession').value : 'false';
       const weekdayFilter = document.getElementById('extremeBtWeekday') ? document.getElementById('extremeBtWeekday').value : 'false';
+      const entrySessionFilter = document.getElementById('extremeBtEntrySession') ? document.getElementById('extremeBtEntrySession').value : 'false';
+      const entryWeekdayFilter = document.getElementById('extremeBtEntryWeekday') ? document.getElementById('extremeBtEntryWeekday').value : 'false';
 
       btn.disabled = true;
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting...</span>';
@@ -1676,11 +1692,11 @@
       tbody.innerHTML = '';
 
       try {
-        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05&session_filter=${sessionFilter}&weekday_filter=${weekdayFilter}`;
+        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05&session_filter=${sessionFilter}&weekday_filter=${weekdayFilter}&entry_session_filter=${entrySessionFilter}&entry_weekday_filter=${entryWeekdayFilter}`;
         const resp = await fetchWithRetry(url, {}, 60000, 2);
         const data = await resp.json();
 
-        const filterBadge = (data.session_filter_enabled || data.weekday_filter_enabled)
+        const filterBadge = (data.session_filter_enabled || data.weekday_filter_enabled || data.entry_session_filter_enabled || data.entry_weekday_filter_enabled)
           ? `<span class="text-[9px] text-amber-400/90 block mt-0.5">(${data.trades_filtered_out || 0} filtered out)</span>`
           : '';
 

@@ -35,6 +35,8 @@ from strategy_extreme_fvg import (
     select_extreme_ltf_fvg,
     build_extreme_trade_setup,
     get_extreme_setup_for_symbol,
+    is_in_ny_session,
+    is_weekday,
     TIMEFRAME_MS,
 )
 
@@ -66,6 +68,10 @@ class ExtremeLiveScanner:
         completion_target: str = "2R",
         poll_interval_seconds: int = 30,
         enable_telegram: bool = True,
+        session_filter: Optional[bool] = None,
+        weekday_filter: Optional[bool] = None,
+        entry_session_filter: Optional[bool] = None,
+        entry_weekday_filter: Optional[bool] = None,
     ):
         self.symbols = symbols
         self.ltf_timeframe = ltf_timeframe
@@ -74,6 +80,26 @@ class ExtremeLiveScanner:
         self.completion_target = completion_target
         self.poll_interval = poll_interval_seconds
         self.enable_telegram = enable_telegram
+        self.session_filter = (
+            session_filter
+            if session_filter is not None
+            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.weekday_filter = (
+            weekday_filter
+            if weekday_filter is not None
+            else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.entry_session_filter = (
+            entry_session_filter
+            if entry_session_filter is not None
+            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.entry_weekday_filter = (
+            entry_weekday_filter
+            if entry_weekday_filter is not None
+            else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
 
         # State tracking: symbol -> last known state ("PENDING_RETRACE", "TRADE_ACTIVE", etc.)
         self.active_setups: Dict[str, ExtremeTradeSetup] = {}
@@ -121,6 +147,12 @@ class ExtremeLiveScanner:
         # 4. Select #1 Extreme
         best_ltf = select_extreme_ltf_fvg(unmitigated, anchor.fvg.direction)
         if not best_ltf:
+            return None
+
+        # Apply FVG formation session/weekday filters
+        if self.session_filter and not is_in_ny_session(best_ltf.close_timestamp):
+            return None
+        if self.weekday_filter and not is_weekday(best_ltf.close_timestamp):
             return None
 
         return build_extreme_trade_setup(
@@ -223,6 +255,8 @@ class ExtremeLiveScanner:
         print(f"  • Target:           {self.completion_target}")
         print(f"  • Min Gap Size:     {self.min_gap_pct:.2f}%")
         print(f"  • Invalidation:     {'CLOSE' if self.use_close_invalidation else 'WICK'}")
+        print(f"  • FVG Formation:    Session={'ENABLED' if self.session_filter else 'ALL'} | Weekday={'ENABLED' if self.weekday_filter else 'ALL'}")
+        print(f"  • Entry Fill:       Session={'ENABLED' if self.entry_session_filter else 'ALL'} | Weekday={'ENABLED' if self.entry_weekday_filter else 'ALL'}")
         print(f"  • Poll Interval:    Every {self.poll_interval} seconds")
         print(f"  • Telegram Alerts:  {'ENABLED' if self.enable_telegram and TELEGRAM_BOT_TOKEN else 'DISABLED'}")
         print("#" * 80 + "\n")
@@ -247,6 +281,10 @@ def main():
     parser.add_argument("--min-gap-pct", type=float, default=0.05, help="Minimum gap size in %% (default: 0.05%%)")
     parser.add_argument("--target", default="2R", choices=["1R", "2R", "3R"], help="Completion target (default: 2R)")
     parser.add_argument("--interval", type=int, default=30, help="Poll interval in seconds (default: 30s)")
+    parser.add_argument("--session-filter", action="store_true", default=None, help="Only include FVGs formed in NY session (13-22 UTC)")
+    parser.add_argument("--weekday-filter", action="store_true", default=None, help="Only include FVGs formed on weekdays (Mon-Fri UTC)")
+    parser.add_argument("--entry-session-filter", action="store_true", default=None, help="Only fill entries during NY session (13-22 UTC)")
+    parser.add_argument("--entry-weekday-filter", action="store_true", default=None, help="Only fill entries on weekdays (Mon-Fri UTC)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram notifications")
     args = parser.parse_args()
 
@@ -261,6 +299,10 @@ def main():
         completion_target=args.target,
         poll_interval_seconds=args.interval,
         enable_telegram=not args.no_telegram,
+        session_filter=args.session_filter,
+        weekday_filter=args.weekday_filter,
+        entry_session_filter=args.entry_session_filter,
+        entry_weekday_filter=args.entry_weekday_filter,
     )
 
     try:

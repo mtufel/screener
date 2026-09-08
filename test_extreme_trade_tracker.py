@@ -459,3 +459,111 @@ def test_bullish_earlier_sl_hit_never_overridden_by_later_tp_touch(tmp_path):
     assert tracker.history[0].state == "STOPPED_OUT"
     assert tracker.history[0].realized_r == -1.0
     assert tracker.history[0].closed_timestamp == entry_t + 300000
+
+
+def test_tracker_formation_session_and_weekday_filters(tmp_path):
+    """Verify that FVG formation session/weekday filters block pending ingestion if formed off-hours."""
+    from datetime import datetime, timezone
+    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "filter_test.json"))
+
+    # Saturday 03:00 UTC (weekend & outside NY session)
+    dt_sat_asia = datetime(2026, 9, 5, 3, 0, 0, tzinfo=timezone.utc)
+    ts_sat_asia = int(dt_sat_asia.timestamp() * 1000)
+
+    setup = {
+        "symbol": "BTC",
+        "direction": "Bullish",
+        "state": "PENDING_RETRACE",
+        "entry_price": 100.0,
+        "stop_loss": 95.0,
+        "risk_r": 5.0,
+        "risk_pct": 5.0,
+        "tp_1r": 105.0,
+        "tp_2r": 110.0,
+        "tp_3r": 115.0,
+        "floating_r": 0.0,
+        "completion_target": "2R",
+        "ltf_timeframe": "15m",
+        "anchor": {"bottom": 90.0, "top": 105.0},
+        "target_fvg": {"bottom": 98.0, "top": 100.0, "formed_at": ts_sat_asia},
+    }
+
+    # 1. With session_filter=True -> should be ignored (not ingested)
+    events_sess = tracker.process_live_setups([setup], {"BTC": 102.0}, session_filter=True, weekday_filter=False)
+    assert len(events_sess) == 0
+    assert len(tracker.active_trades) == 0
+
+    # 2. With weekday_filter=True -> should be ignored (not ingested)
+    events_wkday = tracker.process_live_setups([setup], {"BTC": 102.0}, session_filter=False, weekday_filter=True)
+    assert len(events_wkday) == 0
+    assert len(tracker.active_trades) == 0
+
+    # 3. With no filters -> ingested successfully into PENDING_RETRACE
+    events_pass = tracker.process_live_setups([setup], {"BTC": 102.0}, session_filter=False, weekday_filter=False)
+    assert len(events_pass) == 1
+    assert events_pass[0][0] == "NEW_SETUP"
+    assert len(tracker.active_trades) == 1
+
+
+def test_tracker_entry_session_and_weekday_filters(tmp_path):
+    """Verify that entry session/weekday filters prevent pending setups from filling off-hours."""
+    from datetime import datetime, timezone
+    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "entry_filter_test.json"))
+
+    # Monday 08:00 UTC (weekday, but London/Asia hours - outside NY 13-22 UTC)
+    dt_mon_london = datetime(2026, 9, 7, 8, 0, 0, tzinfo=timezone.utc)
+    ts_mon_london = int(dt_mon_london.timestamp() * 1000)
+
+    # Monday 15:00 UTC (weekday, inside NY session 13-22 UTC)
+    dt_mon_ny = datetime(2026, 9, 7, 15, 0, 0, tzinfo=timezone.utc)
+    ts_mon_ny = int(dt_mon_ny.timestamp() * 1000)
+
+    setup = {
+        "symbol": "BTC",
+        "direction": "Bullish",
+        "state": "PENDING_RETRACE",
+        "entry_price": 100.0,
+        "stop_loss": 95.0,
+        "risk_r": 5.0,
+        "risk_pct": 5.0,
+        "tp_1r": 105.0,
+        "tp_2r": 110.0,
+        "tp_3r": 115.0,
+        "floating_r": 0.0,
+        "completion_target": "2R",
+        "ltf_timeframe": "15m",
+        "anchor": {"bottom": 90.0, "top": 105.0},
+        "target_fvg": {"bottom": 98.0, "top": 100.0, "formed_at": ts_mon_london},
+    }
+
+    # Ingest pending setup
+    tracker.process_live_setups([setup], {"BTC": 102.0}, session_filter=False, weekday_filter=False)
+    assert len(tracker.active_trades) == 1
+    trade = list(tracker.active_trades.values())[0]
+    assert trade.state == "PENDING_RETRACE"
+
+    # Candle at 08:30 UTC touches entry (100.0) -> outside NY session!
+    c_off_session = {"t": ts_mon_london + 1800000, "o": 101.0, "h": 101.5, "l": 99.5, "c": 100.5}
+
+    # With entry_session_filter=True -> fill is ignored, remains PENDING_RETRACE
+    events1 = tracker.process_live_setups(
+        [], {"BTC": 100.5},
+        recent_candles_map={"BTC": [c_off_session]},
+        entry_session_filter=True,
+    )
+    assert not any(e[0] == "ENTRY_FILLED" for e in events1)
+    assert trade.state == "PENDING_RETRACE"
+
+    # Candle at 15:00 UTC touches entry (100.0) -> inside NY session!
+    c_in_session = {"t": ts_mon_ny, "o": 101.0, "h": 101.5, "l": 99.8, "c": 100.2}
+
+    # With entry_session_filter=True -> fill is registered, transitions to TRADE_ACTIVE!
+    events2 = tracker.process_live_setups(
+        [], {"BTC": 100.2},
+        recent_candles_map={"BTC": [c_off_session, c_in_session]},
+        entry_session_filter=True,
+    )
+    assert any(e[0] == "ENTRY_FILLED" for e in events2)
+    assert trade.state == "TRADE_ACTIVE"
+    assert trade.entry_timestamp == ts_mon_ny
+

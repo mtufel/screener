@@ -36,6 +36,24 @@ TIMEFRAME_MS: Dict[str, int] = {
 DEFAULT_LTF_TIMEFRAME: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 
 
+def is_in_ny_session(timestamp_ms: int) -> bool:
+    """Return True if the UTC hour of timestamp_ms is within NY session 13:00-22:00 UTC."""
+    try:
+        dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+        return 13 <= dt.hour < 22
+    except (ValueError, OSError):
+        return False
+
+
+def is_weekday(timestamp_ms: int) -> bool:
+    """Return True if timestamp_ms falls on Monday-Friday (UTC)."""
+    try:
+        dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+        return dt.weekday() < 5
+    except (ValueError, OSError):
+        return False
+
+
 @dataclass
 class Candle:
     """Standard OHLCV Candle."""
@@ -1041,13 +1059,16 @@ async def get_extreme_setup_for_symbol(
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
+    session_filter: bool = False,
+    weekday_filter: bool = False,
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:
     1. Finds the most recent touched 4H FVG anchor.
     2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter and state machine).
     3. Selects the #1 Extreme FVG (lowest for Bullish, highest for Bearish).
-    4. Computes Entry, SL, and 1R/2R/3R targets.
+    4. Applies optional formation session/weekday filters on candidate FVG completion time.
+    5. Computes Entry, SL, and 1R/2R/3R targets.
     """
     cli = client or hyperliquid_client
     anchor = await get_most_recent_touched_anchor_for_symbol(
@@ -1080,6 +1101,12 @@ async def get_extreme_setup_for_symbol(
 
     best_ltf = select_extreme_ltf_fvg(unmitigated, anchor.fvg.direction)
     if not best_ltf:
+        return None
+
+    if session_filter and not is_in_ny_session(best_ltf.close_timestamp):
+        return None
+
+    if weekday_filter and not is_weekday(best_ltf.close_timestamp):
         return None
 
     return build_extreme_trade_setup(

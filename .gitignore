@@ -41,3 +41,5 @@ logs/
 .clinerules/
 .opencode/
 scratch/
+*.out
+render_logs.json

@@ -17,6 +17,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from strategy_extreme_fvg import is_in_ny_session, is_weekday
+
 logger = logging.getLogger("extreme_trade_tracker")
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -101,10 +103,37 @@ class TrackedExtremeTrade:
 
 
 class ExtremeTradeTracker:
-    def __init__(self, storage_path: str = PERSISTENCE_FILE):
+    def __init__(
+        self,
+        storage_path: str = PERSISTENCE_FILE,
+        session_filter: Optional[bool] = None,
+        weekday_filter: Optional[bool] = None,
+        entry_session_filter: Optional[bool] = None,
+        entry_weekday_filter: Optional[bool] = None,
+    ):
         self.storage_path = Path(storage_path)
         self.active_trades: Dict[str, TrackedExtremeTrade] = {}
         self.history: List[TrackedExtremeTrade] = []
+        self.session_filter_enabled = (
+            session_filter
+            if session_filter is not None
+            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.weekday_filter_enabled = (
+            weekday_filter
+            if weekday_filter is not None
+            else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.entry_session_filter_enabled = (
+            entry_session_filter
+            if entry_session_filter is not None
+            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.entry_weekday_filter_enabled = (
+            entry_weekday_filter
+            if entry_weekday_filter is not None
+            else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
         self._load()
 
     def _load(self):
@@ -170,6 +199,10 @@ class ExtremeTradeTracker:
         setups: List[Dict[str, Any]],
         current_mids: Dict[str, float],
         recent_candles_map: Optional[Dict[str, List[Any]]] = None,
+        session_filter: Optional[bool] = None,
+        weekday_filter: Optional[bool] = None,
+        entry_session_filter: Optional[bool] = None,
+        entry_weekday_filter: Optional[bool] = None,
     ) -> List[Tuple[str, TrackedExtremeTrade]]:
         """
         Ingests live scanner setups, tracks new entries, monitors open positions,
@@ -180,6 +213,11 @@ class ExtremeTradeTracker:
         events = []
         now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
         now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        use_sess_filter = session_filter if session_filter is not None else self.session_filter_enabled
+        use_wkday_filter = weekday_filter if weekday_filter is not None else self.weekday_filter_enabled
+        use_entry_sess_filter = entry_session_filter if entry_session_filter is not None else self.entry_session_filter_enabled
+        use_entry_wkday_filter = entry_weekday_filter if entry_weekday_filter is not None else self.entry_weekday_filter_enabled
 
         # 1. Ingest/Update setups from scanner
         seen_symbols = set()
@@ -197,6 +235,14 @@ class ExtremeTradeTracker:
             entry_px = s["entry_price"]
             trade_id = f"{sym}:{fvg_formed_at}:{entry_px:.2f}"
             seen_symbols.add(sym)
+
+            # Check FVG formation session/weekday filters
+            dur_ms = TIMEFRAME_MS.get(s.get("ltf_timeframe", "15m"), 15 * 60 * 1000)
+            fvg_close_ts = fvg_formed_at + dur_ms if fvg_formed_at else now_ts
+            if use_sess_filter and not is_in_ny_session(fvg_close_ts):
+                continue
+            if use_wkday_filter and not is_weekday(fvg_close_ts):
+                continue
 
             existing_pending = self.get_pending_trade_for_symbol(sym)
             if existing_pending is not None and existing_pending.trade_id != trade_id:
@@ -241,6 +287,12 @@ class ExtremeTradeTracker:
             if trade_id not in self.active_trades:
                 # Register new setup
                 is_active = (s.get("state") == "TRADE_ACTIVE")
+                if is_active:
+                    entry_ts_eval = s.get("entry_timestamp") or now_ts
+                    if (use_entry_sess_filter and not is_in_ny_session(entry_ts_eval)) or (use_entry_wkday_filter and not is_weekday(entry_ts_eval)):
+                        # If entry occurred outside allowed window, don't ingest as active
+                        is_active = False
+
                 status_det = f"Active (+{s.get('floating_r', 0)}R)" if is_active else "Waiting for Retrace"
                 formed_ist = s.get("target_fvg", {}).get("formed_time_ist") or s.get("fvg_formation_time_ist")
                 if not formed_ist and fvg_formed_at:
@@ -262,13 +314,13 @@ class ExtremeTradeTracker:
                     completion_target=s.get("completion_target", "2R"),
                     htf_anchor=s.get("anchor", {}),
                     ltf_fvg=s.get("target_fvg", {}),
-                    state=s.get("state", "PENDING_RETRACE"),
+                    state="TRADE_ACTIVE" if is_active else s.get("state", "PENDING_RETRACE"),
                     status_detail=status_det,
                     created_at_ist=setup_created_ist,
                     entry_filled_at_ist=s.get("entry_time_ist") if is_active else None,
-                    floating_r=s.get("floating_r", 0.0),
+                    floating_r=s.get("floating_r", 0.0) if is_active else 0.0,
                     max_favorable_price=curr_px,
-                    mfe_r=max(0.0, s.get("floating_r", 0.0)),
+                    mfe_r=max(0.0, s.get("floating_r", 0.0)) if is_active else 0.0,
                     entry_timestamp=s.get("entry_timestamp") or (now_ts if is_active else None),
                 )
                 self.active_trades[trade_id] = trade
@@ -282,11 +334,16 @@ class ExtremeTradeTracker:
 
                 # Check if transitioned to active
                 if old_state == "PENDING_RETRACE" and new_state == "TRADE_ACTIVE":
-                    trade.state = "TRADE_ACTIVE"
-                    trade.entry_filled_at_ist = s.get("entry_time_ist") or now_ist_str
-                    trade.entry_timestamp = s.get("entry_timestamp") or now_ts
-                    trade.status_detail = "Active (Just Filled)"
-                    events.append(("ENTRY_FILLED", trade))
+                    entry_ts_eval = s.get("entry_timestamp") or now_ts
+                    if (use_entry_sess_filter and not is_in_ny_session(entry_ts_eval)) or (use_entry_wkday_filter and not is_weekday(entry_ts_eval)):
+                        # Suppress fill outside allowed window
+                        pass
+                    else:
+                        trade.state = "TRADE_ACTIVE"
+                        trade.entry_filled_at_ist = s.get("entry_time_ist") or now_ist_str
+                        trade.entry_timestamp = entry_ts_eval
+                        trade.status_detail = "Active (Just Filled)"
+                        events.append(("ENTRY_FILLED", trade))
 
         # 2. Monitor all open trades: check both TRADE_ACTIVE (for TP/SL) and PENDING_RETRACE (for invalidation / breach)
         from hyperliquid_client import SYMBOL_ALIASES
@@ -328,10 +385,14 @@ class ExtremeTradeTracker:
                                     break
                             # Check Fill
                             if c_low <= trade.entry_price:
-                                filled = True
-                                fill_ts = c_ts
-                                trade.entry_timestamp = fill_ts
-                                trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
+                                if (use_entry_sess_filter and not is_in_ny_session(c_ts)) or (use_entry_wkday_filter and not is_weekday(c_ts)):
+                                    # Entry fill occurred outside allowed session/weekday - ignore fill
+                                    pass
+                                else:
+                                    filled = True
+                                    fill_ts = c_ts
+                                    trade.entry_timestamp = fill_ts
+                                    trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
                         else:  # Bearish
                             if c_high >= trade.stop_loss or c_high > htf_top:
                                 if c_high >= trade.stop_loss and c_low > trade.entry_price:
@@ -344,10 +405,14 @@ class ExtremeTradeTracker:
                                     break
                             # Check Fill
                             if c_high >= trade.entry_price:
-                                filled = True
-                                fill_ts = c_ts
-                                trade.entry_timestamp = fill_ts
-                                trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
+                                if (use_entry_sess_filter and not is_in_ny_session(c_ts)) or (use_entry_wkday_filter and not is_weekday(c_ts)):
+                                    # Entry fill occurred outside allowed session/weekday - ignore fill
+                                    pass
+                                else:
+                                    filled = True
+                                    fill_ts = c_ts
+                                    trade.entry_timestamp = fill_ts
+                                    trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
 
                     if filled:
                         # Check exits chronologically on fill candle or subsequent candles

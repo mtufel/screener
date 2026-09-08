@@ -454,5 +454,74 @@ async def test_extreme_backtest_with_session_and_weekday_filters():
     assert rep_sess.session_filter_enabled is True
 
 
+@pytest.mark.asyncio
+async def test_extreme_backtest_entry_session_and_fvg_session_filters():
+    """Verify that FVG session filter checks FVG formation time while entry session filter checks entry fill timestamp."""
+    from datetime import datetime, timezone
+    H = 4 * 3600 * 1000
+    DUR = 15 * 60 * 1000
+
+    def bar(ts, o, h, l, c):
+        return {"t": ts, "o": o, "h": h, "l": l, "c": c, "v": 100.0}
+
+    # Start Monday at 08:00 UTC (FVG forms during London session at ~08:45 UTC)
+    base_dt = datetime(2026, 9, 7, 8, 0, 0, tzinfo=timezone.utc)
+    base_ts = int(base_dt.timestamp() * 1000)
+
+    raw_4h = [
+        bar(base_ts - 6 * H, 85, 92, 80, 88),
+        bar(base_ts - 5 * H, 88, 105, 87, 104),
+        bar(base_ts - 4 * H, 104, 110, 95, 108),
+        bar(base_ts - 3 * H, 108, 118, 106, 115),
+        bar(base_ts - 2 * H, 115, 125, 112, 122),
+    ]
+
+    raw_ltf = []
+    # Touch occurs at 08:15 UTC (candle 1)
+    raw_ltf.append(bar(base_ts, 96, 96.5, 95.5, 96))
+    raw_ltf.append(bar(base_ts + 1 * DUR, 96, 97, 92, 95))
+    # FVG forms at 08:30 - 08:45 UTC (outside NY session) -> top 94.0 / bottom 93.8, SL 93.5
+    raw_ltf.append(bar(base_ts + 2 * DUR, 93.7, 93.8, 93.5, 93.6))  # c1
+    raw_ltf.append(bar(base_ts + 3 * DUR, 93.6, 98.0, 93.5, 97.5))  # c2
+    raw_ltf.append(bar(base_ts + 4 * DUR, 97.5, 98.5, 94.0, 98.0))  # c3 (formed ~08:45 UTC)
+
+    # Price stays above entry (94.0) during London/Asian hours until 14:00 UTC (candle 24 = 6 hours later)
+    # Candle 24 is at 08:00 + 6h = 14:00 UTC (inside NY session 13-22 UTC)
+    for n in range(5, 24):
+        raw_ltf.append(bar(base_ts + n * DUR, 96, 96.5, 95.5, 96))
+
+    # Entry fills at 14:00 UTC (candle 24: low 93.9 touches entry 94.0)
+    raw_ltf.append(bar(base_ts + 24 * DUR, 95.0, 95.3, 93.9, 94.8))
+    for n in range(25, 30):
+        raw_ltf.append(bar(base_ts + n * DUR, 94.7, 94.9, 94.3, 94.6))
+
+    class FakeClient:
+        async def get_candle_snapshot(self, symbol, timeframe, start_ms, end_ms):
+            return raw_4h if timeframe == "4h" else raw_ltf
+
+    # 1. With entry_session_filter=True and session_filter=False:
+    # FVG formed at 08:45 UTC (London), but entry filled at 14:00 UTC (NY session) -> executed!
+    rep_entry_pass = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m",
+        session_filter=False, weekday_filter=False,
+        entry_session_filter=True, entry_weekday_filter=True,
+        client=FakeClient()
+    )
+    assert rep_entry_pass.total_trades == 1
+    assert rep_entry_pass.trades_filtered_out == 0
+    assert rep_entry_pass.trades[0].entry_timestamp == base_ts + 24 * DUR
+
+    # 2. With session_filter=True:
+    # FVG formed at 08:45 UTC (outside NY session) -> filtered out!
+    rep_fvg_filter = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m",
+        session_filter=True, weekday_filter=False,
+        entry_session_filter=False, entry_weekday_filter=False,
+        client=FakeClient()
+    )
+    assert rep_fvg_filter.total_trades == 0
+    assert rep_fvg_filter.trades_filtered_out == 1
+
+
 
 

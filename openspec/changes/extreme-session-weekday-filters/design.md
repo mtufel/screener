@@ -1,93 +1,52 @@
-## Context
+# Design: Extreme Session and Weekday Filters (Live Scanner & Backtest)
 
-See proposal.md for motivation. The current `backtest_extreme_fvg.py` processes all discovered LTF FVG setups regardless of when they formed, including low-volume overnight Asian sessions and weekends. Adding optional NY session (13:00–22:00 UTC) and weekday-only filtering as config-driven toggles enables A/B testing of session-constrained performance.
+## Context
+See `proposal.md` for motivation. Both backtests and live execution pipelines require identical filtering semantics to ensure live forward-testing matches backtested expectations.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Config-driven session/weekday filtering via env vars and CLI args
-- Seamless integration with existing backtest flow without breaking changes
-- Clear reporting of active filter state in backtest results
-- Filters apply only to LTF FVG c3 close timestamp (setup formation time)
+- Config-driven independent filtering for:
+  1. FVG formation timestamp (`session_filter`, `weekday_filter`)
+  2. Entry fill timestamp (`entry_session_filter`, `entry_weekday_filter`)
+- Unified helper functions shared across live scanner and backtester.
+- Live scanner gating:
+  - If formation filter fails, do not emit `PENDING_RETRACE` or send `NEW_SETUP` alert.
+  - If entry fill filter fails, do not transition to `TRADE_ACTIVE` or send `ENTRY_FILLED` alert.
+- Backtester gating:
+  - Exclude filtered setups/trades and tally `trades_filtered_out`.
+- Full configuration access via `.env`, CLI flags, FastAPI query/body params, and Web UI.
 
 **Non-Goals:**
-- Changes to live strategy engine (backtest-only for now)
-- Complex session definitions beyond NY hours
-- Timezone conversion or non-UTC session windows
-- Performance optimization of filter logic
+- Custom timezones other than UTC for session boundaries (NY session is standardized as 13:00–22:00 UTC).
+- Dynamic session definitions beyond NY hours.
 
-## Decisions
+## Architectural Decisions
 
-### Filter Logic Placement
-**Decision**: Apply filters in `run_extreme_backtest` function immediately after LTF FVG discovery, before trade simulation.
+### 1. Unified Time Helpers
+Place `is_in_ny_session(timestamp_ms: int) -> bool` and `is_weekday(timestamp_ms: int) -> bool` in `strategy_extreme_fvg.py` so they are accessible by `backtest_extreme_fvg.py`, `extreme_trade_tracker.py`, and `main.py`.
 
-**Rationale**: This approach:
-- Maintains clean separation between setup discovery and filtering
-- Preserves existing trade simulation logic unchanged
-- Makes filter impact clear in debug output and trade counts
-- Allows easy toggling without restructuring the main loop
+- `is_in_ny_session(ts)`: `datetime.fromtimestamp(ts / 1000, tz=timezone.utc).hour` in `range(13, 22)`.
+- `is_weekday(ts)`: `datetime.fromtimestamp(ts / 1000, tz=timezone.utc).weekday() < 5`.
 
-**Alternative considered**: Filter during LTF FVG discovery in `find_unmitigated_ltf_fvgs` - rejected because it couples filtering logic with FVG detection, making the function more complex.
+### 2. Live Scanner & Ledger Gating in `extreme_trade_tracker.py`
+- When ingesting a newly discovered setup into `PENDING_RETRACE`:
+  - Check `session_filter` and `weekday_filter` against `setup.ltf_fvg.close_timestamp` (or `formed_at + dur_ms`).
+  - If invalid, skip ingestion.
+- When evaluating a pending setup for fill against incoming candle stream (`low <= entry` for Bullish / `high >= entry` for Bearish):
+  - Check `entry_session_filter` and `entry_weekday_filter` against the fill candle's `timestamp`.
+  - If invalid, do not activate the trade (remain pending or expire/invalidate based on config).
 
-### Configuration Interface
-**Decision**: Dual configuration via environment variables and CLI arguments with CLI taking precedence.
+### 3. Backtester Gating in `backtest_extreme_fvg.py`
+- Check FVG formation at candidate selection: `best_ltf.close_timestamp`.
+- Check Entry fill at trigger candle: `candles_ltf[k].timestamp`.
+- Tally `trades_filtered_out` and record all 4 filter flags in `ExtremeBacktestReport`.
 
-**Rationale**: 
-- Env vars: `EXTREME_SESSION_FILTER_ENABLED`, `EXTREME_WEEKDAY_FILTER_ENABLED` for persistent config
-- CLI args: `--session-filter`, `--weekday-filter` for one-off testing
-- Follows existing pattern used by `EXTREME_LTF_TIMEFRAME` and `EXTREME_USE_CLOSE_INVALIDATION`
-- CLI override enables quick A/B testing without editing `.env`
-
-**Alternative considered**: CLI-only configuration - rejected because it doesn't support persistent deployment config.
-
-### Session Boundary Definition
-**Decision**: NY session defined as 13:00:00 UTC (inclusive) to 22:00:00 UTC (exclusive), weekdays as Monday–Friday (UTC).
-
-**Rationale**:
-- Aligns with traditional NY trading session (8am-5pm EST, accounting for DST variations by using fixed UTC)
-- Inclusive start, exclusive end prevents ambiguity at boundaries
-- UTC-based to avoid DST complexity and match existing timestamp handling
-- Monday–Friday captures traditional weekdays, avoiding crypto weekend noise
-
-### Function Signature Changes
-**Decision**: Add optional `session_filter: bool = False` and `weekday_filter: bool = False` parameters to `run_extreme_backtest`.
-
-**Rationale**:
-- Maintains backward compatibility (defaults to existing behavior)
-- Explicit boolean parameters are self-documenting
-- Propagates naturally to `print_backtest_report` for display
-
-**Alternative considered**: Single `filters: dict` parameter - rejected as less type-safe and harder to use.
-
-## Risks / Trade-offs
-
-**Risk**: Session filter may significantly reduce trade sample size → Mitigation: Make filters optional and report filtered vs total counts so users understand impact
-
-**Risk**: Hard-coded UTC session boundaries don't account for DST → Mitigation: Document the fixed UTC approach; future enhancement could add timezone-aware sessions if needed
-
-**Risk**: Filter logic adds complexity to backtest loop → Mitigation: Keep filter functions simple and well-tested; extract to helper functions for clarity
-
-**Trade-off**: Adding parameters to `run_extreme_backtest` increases API surface → Acceptable because the parameters are optional and self-explanatory
-
-## Migration Plan
-
-1. **Phase 1**: Add filter logic to `backtest_extreme_fvg.py`
-   - Add helper functions `is_in_ny_session()` and `is_weekday()`  
-   - Modify `run_extreme_backtest` signature and implementation
-   - Update `main()` CLI parsing and `print_backtest_report`
-
-2. **Phase 2**: Add environment variable support
-   - Add env var reading in `main()` 
-   - Document new env vars in `.env.example`
-
-3. **Phase 3**: Update backtest report
-   - Add filter status display to `ExtremeBacktestReport`
-   - Show active filters in report output
-
-4. **Validation**: Run BTC backtest with filters enabled/disabled to verify behavior
-
-**Rollback strategy**: The changes are additive with default behavior unchanged. If issues arise, simply avoid passing the new parameters or setting the env vars to revert to original behavior.
-
-## Open Questions
-
-None - the approach is straightforward and implementation details are well-defined.
+### 4. Application Configuration in `main.py`
+- Read env vars:
+  - `EXTREME_SESSION_FILTER_ENABLED`
+  - `EXTREME_WEEKDAY_FILTER_ENABLED`
+  - `EXTREME_ENTRY_SESSION_FILTER_ENABLED`
+  - `EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED`
+- Expose in `state` dictionary and `/api/extreme/config` endpoints.
+- Pass runtime values to `execute_extreme_screener_cycle()`.

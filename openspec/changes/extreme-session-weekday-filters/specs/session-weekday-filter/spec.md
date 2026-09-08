@@ -1,80 +1,65 @@
+# Specification: Session & Weekday Filter Engine (Live & Backtest)
+
 ## Purpose
+Enforces independent NY Session (13:00–22:00 UTC) and Weekday (Mon–Fri UTC) constraints on FVG formation and Entry fill across both real-time live scanning and historical backtesting.
 
-Filters Strategy 2 extreme backtest trades to NY session hours (13:00–22:00 UTC) and weekdays only (Monday–Friday), enabling A/B testing of session-constrained vs unconstrained performance.
+## Requirements
 
-## ADDED Requirements
+### Requirement: Unified Time Filter Helper Functions
+The system SHALL provide deterministic UTC-based helper functions `is_in_ny_session(timestamp_ms)` and `is_weekday(timestamp_ms)`.
 
-### Requirement: NY Session Filter for Backtest Trades
-The backtest engine SHALL support a configurable NY session filter that excludes trades whose LTF FVG c3 close timestamp falls outside 13:00–22:00 UTC when enabled.
+#### Scenario: NY Session Evaluation
+- **GIVEN** a UTC timestamp in milliseconds
+- **WHEN** the UTC hour is between 13 and 21 inclusive (13:00:00 to 21:59:59.999 UTC)
+- **THEN** `is_in_ny_session(timestamp_ms)` SHALL return `True`
+- **WHEN** the UTC hour is outside 13 to 21 (e.g. 08:30 or 22:00 UTC)
+- **THEN** `is_in_ny_session(timestamp_ms)` SHALL return `False`
 
-#### Scenario: Session filter disabled (default)
-- **GIVEN** `EXTREME_SESSION_FILTER_ENABLED=false` or `--session-filter` CLI arg not passed
-- **WHEN** a backtest runs
-- **THEN** trades formed at any hour SHALL be included in the backtest results
+#### Scenario: Weekday Evaluation
+- **GIVEN** a UTC timestamp in milliseconds
+- **WHEN** the day of the week is Monday through Friday (UTC)
+- **THEN** `is_weekday(timestamp_ms)` SHALL return `True`
+- **WHEN** the day of the week is Saturday or Sunday (UTC)
+- **THEN** `is_weekday(timestamp_ms)` SHALL return `False`
 
-#### Scenario: Session filter enabled with trade inside NY session
-- **GIVEN** `EXTREME_SESSION_FILTER_ENABLED=true` or `--session-filter` CLI arg passed
-- **WHEN** an LTF FVG's c3 close timestamp is at 15:30 UTC (within 13:00–22:00)
-- **THEN** the trade setup SHALL be counted and included in backtest results
+---
 
-#### Scenario: Session filter enabled with trade outside NY session
-- **GIVEN** `EXTREME_SESSION_FILTER_ENABLED=true` or `--session-filter` CLI arg passed
-- **WHEN** an LTF FVG's c3 close timestamp is at 03:00 UTC (outside 13:00–22:00)
-- **THEN** the trade setup SHALL be excluded from backtest results
+### Requirement: FVG Formation Session & Weekday Filtering
+The live scanner and backtest engines SHALL support filtering setups based on the completion time (`close_timestamp`) of the candidate extreme LTF FVG.
 
-#### Scenario: Session boundary inclusive at start, exclusive at end
-- **GIVEN** session filter is enabled
-- **WHEN** an LTF FVG's c3 close timestamp is exactly 13:00:00 UTC or exactly 22:00:00 UTC
-- **THEN** the 13:00:00 UTC trade SHALL be included
-- **AND** the 22:00:00 UTC trade SHALL be excluded
+#### Scenario: Live Scanner Formation Filter
+- **GIVEN** `EXTREME_SESSION_FILTER_ENABLED=true` or `session_filter=true`
+- **WHEN** an LTF FVG completes outside NY session hours (e.g. 08:30 UTC)
+- **THEN** the live scanner SHALL NOT emit the setup into `PENDING_RETRACE`
+- **AND** SHALL NOT send a `NEW_SETUP` Telegram alert
 
-### Requirement: Weekday Filter for Backtest Trades
-The backtest engine SHALL support a configurable weekday filter that excludes trades whose LTF FVG c3 close timestamp falls on Saturday or Sunday when enabled.
+#### Scenario: Backtest Formation Filter
+- **GIVEN** `session_filter=true` in `run_extreme_backtest`
+- **WHEN** an LTF FVG completes outside NY session hours
+- **THEN** the backtest engine SHALL skip the setup and increment `trades_filtered_out`
 
-#### Scenario: Weekday filter disabled (default)
-- **GIVEN** `EXTREME_WEEKDAY_FILTER_ENABLED=false` or `--weekday-filter` CLI arg not passed
-- **WHEN** a backtest runs
-- **THEN** trades formed on any day SHALL be included in the backtest results
+---
 
-#### Scenario: Weekday filter enabled with trade on weekday
-- **GIVEN** `EXTREME_WEEKDAY_FILTER_ENABLED=true` or `--weekday-filter` CLI arg passed
-- **WHEN** an LTF FVG's c3 close timestamp is on Monday, Tuesday, Wednesday, Thursday, or Friday (UTC)
-- **THEN** the trade setup SHALL be counted and included in backtest results
+### Requirement: Entry Fill Session & Weekday Filtering
+The live trade tracker and backtest engines SHALL support filtering trade execution based on the timestamp when price fills the limit entry.
 
-#### Scenario: Weekday filter enabled with trade on weekend
-- **GIVEN** `EXTREME_WEEKDAY_FILTER_ENABLED=true` or `--weekday-filter` CLI arg passed
-- **WHEN** an LTF FVG's c3 close timestamp is on Saturday or Sunday (UTC)
-- **THEN** the trade setup SHALL be excluded from backtest results
+#### Scenario: Live Trade Tracker Entry Filter
+- **GIVEN** `EXTREME_ENTRY_SESSION_FILTER_ENABLED=true`
+- **WHEN** price touches a pending setup's entry price outside NY session hours (e.g. 10:00 UTC)
+- **THEN** the setup SHALL NOT transition to `TRADE_ACTIVE`
+- **AND** SHALL NOT trigger an `ENTRY_FILLED` Telegram alert
 
-### Requirement: Filter Configuration Propagation
-The session and weekday filter flags SHALL propagate through the `run_extreme_backtest` function signature and be reflected in backtest reports.
+#### Scenario: Backtest Entry Filter
+- **GIVEN** `entry_session_filter=true` in `run_extreme_backtest`
+- **WHEN** entry fill occurs outside NY session hours
+- **THEN** the backtest engine SHALL skip the trade simulation and increment `trades_filtered_out`
 
-#### Scenario: Filter flags passed to backtest function
-- **GIVEN** session and/or weekday filter is enabled via env var or CLI
-- **WHEN** `run_extreme_backtest` is called
-- **THEN** the function SHALL accept `session_filter` and `weekday_filter` boolean parameters
-- **AND** the filter state SHALL be stored in `ExtremeBacktestReport`
+---
 
-#### Scenario: Backtest report shows active filters
-- **GIVEN** session filter is enabled and weekday filter is disabled
-- **WHEN** a backtest completes and prints the report
-- **THEN** the report output SHALL indicate "Session Filter: NY (13:00–22:00 UTC)"
-- **AND** the report output SHALL indicate "Weekday Filter: Disabled"
+### Requirement: Independent Multi-Dimension Filter Operation
+The system SHALL evaluate all four filter flags independently without conflict.
 
-### Requirement: Both Filters Combine with AND Logic
-When both session filter and weekday filter are enabled, both conditions MUST be satisfied for a trade to be included.
-
-#### Scenario: Both filters enabled with trade passing both
-- **GIVEN** both `session_filter=true` and `weekday_filter=true`
-- **WHEN** an LTF FVG's c3 close is at 15:00 UTC on a Wednesday
-- **THEN** the trade SHALL be included (inside session AND on weekday)
-
-#### Scenario: Both filters enabled with trade failing one
-- **GIVEN** both `session_filter=true` and `weekday_filter=true`
-- **WHEN** an LTF FVG's c3 close is at 15:00 UTC on a Saturday
-- **THEN** the trade SHALL be excluded (inside session BUT on weekend)
-
-#### Scenario: Both filters enabled with trade failing both
-- **GIVEN** both `session_filter=true` and `weekday_filter=true`
-- **WHEN** an LTF FVG's c3 close is at 03:00 UTC on a Sunday
-- **THEN** the trade SHALL be excluded (outside session AND on weekend)
+#### Scenario: FVG formed off-session, entry filled in-session with entry_session_filter=true
+- **GIVEN** `session_filter=false` and `entry_session_filter=true`
+- **WHEN** an FVG forms at 08:45 UTC (London) and price retraces to entry at 14:15 UTC (NY session)
+- **THEN** the trade SHALL execute successfully because entry occurred inside NY session

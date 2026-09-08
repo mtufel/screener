@@ -1,64 +1,31 @@
-## Implementation Tasks
+# Implementation Tasks: Extreme Session and Weekday Filters (Live & Backtest)
 
-### Task 1: Add Filter Helper Functions to backtest_extreme_fvg.py
-- **What**: Implement `is_in_ny_session(timestamp_ms)` and `is_weekday(timestamp_ms)` helper functions
-- **Where**: New functions in `backtest_extreme_fvg.py` after imports
-- **Details**: 
-  - `is_in_ny_session`: Check UTC hour is 13-21 (13:00 inclusive, 22:00 exclusive)
-  - `is_weekday`: Check datetime.weekday() is 0-4 (Mon-Fri)
-  - Both accept millisecond timestamps from FVG c3 close
-  - Returns boolean; False for any parse failure
+## Tasks
 
-### Task 2: Modify run_extreme_backtest Signature and Logic
-- **What**: Add `session_filter: bool = False` and `weekday_filter: bool = False` parameters
-- **Where**: `run_extreme_backtest` function definition (line 312)
-- **Details**:
-  - Add parameters after `min_gap_pct`
-  - Apply filters after `find_unmitigated_ltf_fvgs` returns candidates
-  - Before trade simulation, check `is_in_ny_session` and `is_weekday` on `ltf_fvg.close_timestamp`
-  - If filter enabled and timestamp fails check, skip the trade setup (continue to next iteration)
-  - Track filtered_count separately for reporting
+### Phase 1: Shared Filter Core (`strategy_extreme_fvg.py`)
+- [ ] Task 1.1: Implement/centralize `is_in_ny_session(timestamp_ms)` and `is_weekday(timestamp_ms)` in `strategy_extreme_fvg.py`.
+- [ ] Task 1.2: Add `session_filter` and `weekday_filter` parameters to `get_extreme_setup_for_symbol`.
 
-### Task 3: Update ExtremeBacktestReport with Filter Fields
-- **What**: Add filter status fields to `ExtremeBacktestReport` dataclass
-- **Where**: `ExtremeBacktestReport` dataclass (line 159)
-- **Details**:
-  - Add `session_filter_enabled: bool = False`
-  - Add `weekday_filter_enabled: bool = False`
-  - Add `trades_filtered_out: int = 0` for trades rejected by filters
-  - Update `to_dict()` to include filter fields
+### Phase 2: Live Trade Tracker Filtering (`extreme_trade_tracker.py`)
+- [ ] Task 2.1: Add `session_filter_enabled`, `weekday_filter_enabled`, `entry_session_filter_enabled`, `entry_weekday_filter_enabled` properties to `ExtremeTradeTracker`.
+- [ ] Task 2.2: Enforce formation filters when ingesting `PENDING_RETRACE` setups.
+- [ ] Task 2.3: Enforce entry fill filters in `process_live_setups` when evaluating entry touch timestamp before transitioning to `TRADE_ACTIVE`.
 
-### Task 4: Update print_backtest_report to Show Filter State
-- **What**: Display active filters in report output
-- **Where**: `print_backtest_report` function
-- **Details**:
-  - Print "Session Filter: NY (13:00-22:00 UTC) [ENABLED]" or "[DISABLED]"
-  - Print "Weekday Filter: Mon-Fri [ENABLED]" or "[DISABLED]"
-  - Print "Trades filtered out: X" if any filters enabled
+### Phase 3: Application Server & Configuration (`main.py`, `live_screener_extreme.py`)
+- [ ] Task 3.1: Read live filter environment variables in `main.py` and store in `state`.
+- [ ] Task 3.2: Update `execute_extreme_screener_cycle()` to supply filter parameters.
+- [ ] Task 3.3: Expose filter settings in `/api/extreme/config` GET and POST endpoints.
+- [ ] Task 3.4: Add CLI flags in `live_screener_extreme.py`.
 
-### Task 5: Update main() CLI and Env Var Propagation
-- **What**: Add CLI arguments and env var reading in `main()`
-- **Where**: `main()` function (line 578)
-- **Details**:
-  - Read env vars: `EXTREME_SESSION_FILTER_ENABLED`, `EXTREME_WEEKDAY_FILTER_ENABLED`
-  - Add CLI args: `--session-filter` (action='store_true'), `--weekday-filter` (action='store_true')
-  - CLI args override env vars (if passed, True; else use env; else default False)
-  - Pass filter booleans to `run_extreme_backtest` calls
+### Phase 4: Backtest Engine Integration (`backtest_extreme_fvg.py`)
+- [ ] Task 4.1: Support all four filter parameters in `run_extreme_backtest()`, CLI arguments, and `ExtremeBacktestReport`.
+- [ ] Task 4.2: Expose all four filter flags in `/api/extreme/backtest` API.
 
-### Task 6: Run BTC Backtest with Filters
-- **What**: Execute backtest to validate filter behavior
-- **Details**:
-  - Run BTC backtest without filters (baseline)
-  - Run BTC backtest with session filter only
-  - Run BTC backtest with weekday filter only
-  - Run BTC backtest with both filters enabled
-  - Compare trade counts and metrics across runs
-  - Verify trades formed outside session/weekday are excluded
+### Phase 5: Web UI & Dashboard Controls (`templates/index.html`)
+- [ ] Task 5.1: Update Strategy 2 Backtest controls with FVG and Entry session/weekday dropdowns.
+- [ ] Task 5.2: Update Live Scanner configuration badges / controls.
 
-### Task 7: Update .env and Validate Deployment
-- **What**: Set filter env vars in `.env` if needed
-- **Details**:
-  - Add `EXTREME_SESSION_FILTER_ENABLED=false` (default, disabled)
-  - Add `EXTREME_WEEKDAY_FILTER_ENABLED=false` (default, disabled)
-  - No changes needed if filters remain opt-in
-  - Push to Render only if env vars need updating
+### Phase 6: Test Suite Verification
+- [ ] Task 6.1: Add unit tests for `ExtremeTradeTracker` live session and entry fill filtering.
+- [ ] Task 6.2: Add unit tests for `get_extreme_setup_for_symbol` formation filtering.
+- [ ] Task 6.3: Run full test suite (`pytest -v`) to confirm 100% pass rate.

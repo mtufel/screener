@@ -59,6 +59,10 @@ EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 EXTREME_COMPLETION_TARGET = os.getenv("EXTREME_COMPLETION_TARGET", "2R")
 EXTREME_MIN_GAP_PCT = float(os.getenv("EXTREME_MIN_GAP_PCT", "0.05"))
 EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_SESSION_FILTER_ENABLED = os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_ENTRY_SESSION_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 
 state: Dict[str, Any] = {
     "strategy_1_enabled": ENABLE_STRATEGY_1,
@@ -90,6 +94,10 @@ state: Dict[str, Any] = {
     "extreme_target": EXTREME_COMPLETION_TARGET,
     "extreme_min_gap": EXTREME_MIN_GAP_PCT,
     "extreme_use_close": EXTREME_USE_CLOSE_INVALIDATION,
+    "extreme_session_filter": EXTREME_SESSION_FILTER_ENABLED,
+    "extreme_weekday_filter": EXTREME_WEEKDAY_FILTER_ENABLED,
+    "extreme_entry_session_filter": EXTREME_ENTRY_SESSION_FILTER_ENABLED,
+    "extreme_entry_weekday_filter": EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     "extreme_last_scan_time_ist": None,
     "extreme_setups": [],
     "extreme_active_count": 0,
@@ -265,6 +273,10 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     target = state.get("extreme_target", EXTREME_COMPLETION_TARGET)
     min_gap = state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT)
     use_close = state.get("extreme_use_close", EXTREME_USE_CLOSE_INVALIDATION)
+    sess_filter = state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED)
+    wkday_filter = state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED)
+    entry_sess_filter = state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED)
+    entry_wkday_filter = state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED)
 
     from extreme_trade_tracker import extreme_trade_tracker
 
@@ -320,6 +332,8 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 use_close_invalidation=use_close,
                 min_gap_pct=min_gap,
                 completion_target=target,
+                session_filter=sess_filter,
+                weekday_filter=wkday_filter,
             )
             if setup:
                 if curr_px == 0.0:
@@ -391,7 +405,15 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             logger.debug("Failed to fetch recent candles for %s: %s", sym, c_err)
 
     # Process all setups through ExtremeTradeTracker
-    events = extreme_trade_tracker.process_live_setups(setups_out, mids, recent_candles_map=recent_candles_map)
+    events = extreme_trade_tracker.process_live_setups(
+        setups_out,
+        mids,
+        recent_candles_map=recent_candles_map,
+        session_filter=sess_filter,
+        weekday_filter=wkday_filter,
+        entry_session_filter=entry_sess_filter,
+        entry_weekday_filter=entry_wkday_filter,
+    )
 
     for evt_type, tr in events:
         raw_sym = SYMBOL_ALIASES.get(tr.symbol, tr.symbol)
@@ -1082,6 +1104,8 @@ async def api_extreme_scan(
     invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
     min_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Minimum LTF FVG gap size %"),
     target: Optional[str] = Query(default=None, pattern="^(1R|2R|3R)$", description="Completion target"),
+    session_filter: Optional[bool] = Query(default=None, description="FVG formation NY session filter (13:00-22:00 UTC)"),
+    weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter (Mon-Fri UTC)"),
 ):
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
     from hyperliquid_client import SYMBOL_ALIASES
@@ -1092,6 +1116,8 @@ async def api_extreme_scan(
     min_gap_to_use = min_gap_pct if min_gap_pct is not None else state.get("extreme_min_gap", 0.05)
     inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
     use_close = (inval_to_use == "close")
+    sess_filter = session_filter if session_filter is not None else state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED)
+    wkday_filter = weekday_filter if weekday_filter is not None else state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED)
 
     whitelist_raw = symbols or state.get("coins_whitelist") or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL")
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
@@ -1147,6 +1173,8 @@ async def api_extreme_scan(
                 use_close_invalidation=use_close,
                 min_gap_pct=min_gap_to_use,
                 completion_target=target_to_use,
+                session_filter=sess_filter,
+                weekday_filter=wkday_filter,
             )
             if setup:
                 if curr_px == 0.0:
@@ -1202,8 +1230,10 @@ async def api_extreme_backtest(
     ltf: str = Query(default="5m", pattern="^(1m|5m|15m|1h)$", description="LTF timeframe"),
     invalidation: str = Query(default="wick", pattern="^(wick|close)$", description="Invalidation mode"),
     min_gap_pct: float = Query(default=0.05, ge=0.0, description="Min gap size %"),
-    session_filter: Optional[bool] = Query(default=None, description="NY Session filter (13:00-22:00 UTC)"),
-    weekday_filter: Optional[bool] = Query(default=None, description="Weekday filter (Mon-Fri UTC)"),
+    session_filter: Optional[bool] = Query(default=None, description="FVG formation NY session filter (13:00-22:00 UTC)"),
+    weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter (Mon-Fri UTC)"),
+    entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill NY session filter (13:00-22:00 UTC)"),
+    entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter (Mon-Fri UTC)"),
 ):
     import math
     from backtest_extreme_fvg import run_extreme_backtest
@@ -1229,6 +1259,16 @@ async def api_extreme_backtest(
             if weekday_filter is not None
             else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
+        entry_sess_filter = (
+            entry_session_filter
+            if entry_session_filter is not None
+            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        entry_wkday_filter = (
+            entry_weekday_filter
+            if entry_weekday_filter is not None
+            else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
 
         report = await run_extreme_backtest(
             symbol=symbol.strip().upper(),
@@ -1238,6 +1278,8 @@ async def api_extreme_backtest(
             min_gap_pct=min_gap_pct,
             session_filter=sess_filter,
             weekday_filter=wkday_filter,
+            entry_session_filter=entry_sess_filter,
+            entry_weekday_filter=entry_wkday_filter,
         )
         return JSONResponse(content={
             "status": "success",
@@ -1248,6 +1290,8 @@ async def api_extreme_backtest(
             "min_gap_pct": report.min_gap_pct,
             "session_filter_enabled": report.session_filter_enabled,
             "weekday_filter_enabled": report.weekday_filter_enabled,
+            "entry_session_filter_enabled": report.entry_session_filter_enabled,
+            "entry_weekday_filter_enabled": report.entry_weekday_filter_enabled,
             "trades_filtered_out": report.trades_filtered_out,
             "total_trades": report.total_trades,
             "wins_1r": report.wins_1r,
@@ -1288,6 +1332,10 @@ async def api_extreme_status():
         "completion_target": state.get("extreme_target", EXTREME_COMPLETION_TARGET),
         "min_gap_pct": state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT),
         "use_close_invalidation": state.get("extreme_use_close", EXTREME_USE_CLOSE_INVALIDATION),
+        "session_filter_enabled": state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED),
+        "weekday_filter_enabled": state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED),
+        "entry_session_filter_enabled": state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED),
+        "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
         "active_count": state.get("extreme_active_count", 0),
@@ -1331,6 +1379,10 @@ async def api_extreme_config(
     target: Optional[str] = Query(default=None, pattern="^(1R|2R|3R)$", description="Completion target"),
     min_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Min gap size %"),
     invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
+    session_filter: Optional[bool] = Query(default=None, description="FVG formation NY session filter"),
+    weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter"),
+    entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill NY session filter"),
+    entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter"),
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
 ):
     if interval_seconds is not None:
@@ -1344,6 +1396,14 @@ async def api_extreme_config(
         state["extreme_min_gap"] = min_gap_pct
     if invalidation is not None:
         state["extreme_use_close"] = (invalidation == "close")
+    if session_filter is not None:
+        state["extreme_session_filter"] = session_filter
+    if weekday_filter is not None:
+        state["extreme_weekday_filter"] = weekday_filter
+    if entry_session_filter is not None:
+        state["extreme_entry_session_filter"] = entry_session_filter
+    if entry_weekday_filter is not None:
+        state["extreme_entry_weekday_filter"] = entry_weekday_filter
     if symbols is not None and symbols.strip():
         state["coins_whitelist"] = symbols.strip().upper()
 
@@ -1356,6 +1416,10 @@ async def api_extreme_config(
             "completion_target": state["extreme_target"],
             "min_gap_pct": state["extreme_min_gap"],
             "use_close_invalidation": state["extreme_use_close"],
+            "session_filter_enabled": state["extreme_session_filter"],
+            "weekday_filter_enabled": state["extreme_weekday_filter"],
+            "entry_session_filter_enabled": state["extreme_entry_session_filter"],
+            "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
             "coins_whitelist": state["coins_whitelist"],
         },
     })
