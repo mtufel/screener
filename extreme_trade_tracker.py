@@ -22,7 +22,10 @@ from strategy_extreme_fvg import is_in_ny_session, is_weekday
 logger = logging.getLogger("extreme_trade_tracker")
 IST = timezone(timedelta(hours=5, minutes=30))
 
-PERSISTENCE_FILE = os.getenv("EXTREME_LIVE_TRADES_FILE", "data/extreme_live_trades.json")
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).strip().lower()
+IS_PRODUCTION = APP_ENV in ("production", "prod", "server")
+DEFAULT_STORAGE_FILE = "data/extreme_live_trades.json" if IS_PRODUCTION else f"data/extreme_live_trades_{APP_ENV or 'local'}.json"
+PERSISTENCE_FILE = os.getenv("EXTREME_LIVE_TRADES_FILE", DEFAULT_STORAGE_FILE)
 
 # A PENDING_RETRACE record whose scanner setup is absent for this many consecutive
 # scan-valid cycles transitions to INVALIDATED (default 40 cycles ~ 20 min at 30s).
@@ -160,7 +163,42 @@ class ExtremeTradeTracker:
             self.active_trades = {}
             self.history = []
 
-    def _save(self):
+    async def load_async(self) -> bool:
+        """
+        Asynchronously loads active trades and history from Redis if available,
+        falling back to local disk persistence.
+        """
+        try:
+            from redis_client import redis_client
+            if redis_client.is_configured():
+                redis_key = redis_client.get_key("extreme_trades")
+                data = await redis_client.get_json(redis_key)
+                if data and isinstance(data, dict):
+                    self.active_trades = {
+                        k: TrackedExtremeTrade.from_dict(v)
+                        for k, v in data.get("active_trades", {}).items()
+                    }
+                    self.history = [
+                        TrackedExtremeTrade.from_dict(t)
+                        for t in data.get("history", [])
+                    ]
+                    logger.info(
+                        "Restored %d active trades and %d history records from Redis ('%s')",
+                        len(self.active_trades),
+                        len(self.history),
+                        redis_key,
+                    )
+                    self._save_local()
+                    return True
+        except Exception as exc:
+            logger.warning("Failed to load extreme live trades from Redis: %s", exc)
+
+        # Fallback to local file
+        self._load()
+        return bool(self.active_trades or self.history)
+
+    def _save_local(self):
+        """Saves trade state synchronously to local JSON file."""
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.storage_path, "w", encoding="utf-8") as f:
@@ -174,6 +212,36 @@ class ExtremeTradeTracker:
                 )
         except Exception as exc:
             logger.warning("Failed to save extreme live trades to %s: %s", self.storage_path, exc)
+
+    async def save_async(self) -> bool:
+        """Saves trade state to both local disk and Redis."""
+        self._save_local()
+        try:
+            from redis_client import redis_client
+            if redis_client.is_configured():
+                redis_key = redis_client.get_key("extreme_trades")
+                data = {
+                    "active_trades": {k: t.to_dict() for k, t in self.active_trades.items()},
+                    "history": [t.to_dict() for t in self.history],
+                }
+                return await redis_client.set_json(redis_key, data)
+        except Exception as exc:
+            logger.warning("Failed to save extreme live trades to Redis: %s", exc)
+        return False
+
+    def _save(self):
+        """Saves trade state locally and schedules async Redis save if event loop is running."""
+        self._save_local()
+        try:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                if loop and loop.is_running():
+                    loop.create_task(self.save_async())
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            logger.debug("Could not schedule async Redis save: %s", exc)
 
     def get_active_trade_for_symbol(self, symbol: str) -> Optional[TrackedExtremeTrade]:
         """

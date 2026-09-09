@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Strategy 2 Backtest — Findings Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ── Palette ─────────────────────────────────────────────────────────── */
+  :root {
+    --ink:          #0C1220;
+    --ink-2:        #131D2E;
+    --paper:        #F3EDD8;
+    --paper-deep:   #EAE3CA;
+
+    --accent:       #B5451B;   /* rust accent */
+    --accent-soft:   rgba(181,69,27,0.10);
+
+    --positive:     #1A6B3A;   /* forest green — PnL up, PF good */
+    --positive-bg:  rgba(26,107,58,0.08);
+    --positive-bar: #2D9E5A;
+
+    --warning:      #8A5A00;   /* amber — neutral / caution */
+    --warning-bg:   rgba(138,90,0,0.08);
+    --warning-bar:  #C48A1A;
+
+    --negative:     #9B2C1A;   /* dark rust — loss / danger */
+    --negative-bg:  rgba(155,44,26,0.08);
+    --negative-bar: #C44A1A;
+
+    --gold:         #A07830;   /* gold — best-in-class accent */
+    --gold-bg:      rgba(160,120,48,0.12);
+
+    --slate:        #7A8790;
+    --slate-deep:   #4A5560;
+    --line:         #DDD6C0;
+    --line-dark:    #2A3342;
+  }
+
+  /* Dark theme */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:        #EDE5CF;
+      --ink-2:      #E0D8C4;
+      --paper:      #0C1220;
+      --paper-deep: #131D2E;
+      --accent:     #D4683A;
+      --positive:   #4CAF7A;
+      --positive-bg:rgba(76,175,122,0.10);
+      --positive-bar:#4CAF7A;
+      --warning:    #D4A040;
+      --warning-bg: rgba(212,160,64,0.10);
+      --warning-bar:#D4A040;
+      --negative:   #D4604A;
+      --negative-bg:rgba(212,96,74,0.10);
+      --negative-bar:#D4604A;
+      --gold:       #DDBB70;
+      --gold-bg:    rgba(221,187,112,0.12);
+      --slate:      #9AAAB8;
+      --slate-deep: #B0BBC8;
+      --line:       #2A3342;
+      --line-dark:  #DDD6C0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:        #EDE5CF;
+    --ink-2:      #E0D8C4;
+    --paper:      #0C1220;
+    --paper-deep: #131D2E;
+    --accent:     #D4683A;
+    --positive:   #4CAF7A;
+    --positive-bg:rgba(76,175,122,0.10);
+    --positive-bar:#4CAF7A;
+    --warning:    #D4A040;
+    --warning-bg: rgba(212,160,64,0.10);
+    --warning-bar:#D4A040;
+    --negative:   #D4604A;
+    --negative-bg:rgba(212,96,74,0.10);
+    --negative-bar:#D4604A;
+    --gold:       #DDBB70;
+    --gold-bg:    rgba(221,187,112,0.12);
+    --slate:      #9AAAB8;
+    --slate-deep: #B0BBC8;
+    --line:       #2A3342;
+    --line-dark:  #DDD6C0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "Inter","system-ui",sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.55;
+    letter-spacing: -0.01em;
+  }
+  ::selection { background: var(--accent-soft); color: inherit; }
+
+  /* ── Header ──────────────────────────────────────────────────────────── */
+  header { padding: 72px 24px 52px; max-width: 1200px; margin: 0 auto; }
+  .kicker {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.14em; color: var(--accent); margin-bottom: 14px;
+  }
+  h1 {
+    font-family: "Instrument Serif","Georgia",serif;
+    font-size: clamp(42px,6vw,76px); font-weight: 400;
+    line-height: 1.02; margin: 0 0 16px;
+    text-wrap: balance; letter-spacing: -0.03em;
+  }
+  .subtitle { font-size: 18px; color: var(--slate-deep); max-width: 620px; line-height: 1.5; margin-bottom: 8px; }
+  .meta { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--slate); letter-spacing: 0.02em; }
+
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  .grid { max-width: 1200px; margin: 0 auto; padding: 0 24px 96px; display: grid; grid-template-columns: 1fr 360px; gap: 48px; align-items: start; }
+  @media (max-width: 1020px) { .grid { grid-template-columns: 1fr; gap: 48px; } }
+
+  /* ── Editorial ───────────────────────────────────────────────────────── */
+  article h2 {
+    font-family: "Instrument Serif", serif; font-size: 28px; font-weight: 400;
+    line-height: 1.15; margin: 52px 0 14px; text-wrap: balance;
+    letter-spacing: -0.02em; border-left: 3px solid var(--accent); padding-left: 14px;
+  }
+  article p { font-size: 15.5px; color: var(--slate-deep); margin: 0 0 14px; max-width: 640px; }
+  .pull {
+    font-family: "Instrument Serif", serif; font-size: 22px; line-height: 1.35;
+    color: var(--ink); padding: 22px 0; margin: 24px 0 28px;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  .pull strong {
+    font-family: "Inter", sans-serif; font-weight: 600; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.09em; color: var(--accent);
+    display: block; margin-bottom: 6px;
+  }
+
+  /* ── Semantic cell colors ────────────────────────────────────────────── */
+  .pos { color: var(--positive); font-weight: 500; }
+  .neg { color: var(--negative); font-weight: 500; }
+  .warn { color: var(--warning); font-weight: 500; }
+
+  /* ── Table ──────────────────────────────────────────────────────────── */
+  .table-wrap {
+    overflow-x: auto; margin: 14px 0 28px;
+    border-radius: 2px; border: 1px solid var(--line);
+    background: rgba(243,237,216,0.35);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th {
+    font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    text-align: left; padding: 10px 12px;
+    background: var(--ink-2); color: var(--paper);
+    white-space: nowrap;
+  }
+  tbody tr {
+    border-top: 1px solid var(--line);
+    transition: background 0.15s;
+  }
+  tbody tr:hover td { background: var(--accent-soft); }
+
+  /* Row-level health border */
+  tbody tr.row-neg  { border-left: 4px solid var(--negative); }
+  tbody tr.row-warn { border-left: 4px solid var(--warning); }
+  tbody tr.row-pos  { border-left: 4px solid var(--positive); }
+  tbody tr.row-best { border-left: 4px solid var(--gold); }
+
+  /* Health bg tint */
+  tbody tr.row-neg  td { background: var(--negative-bg); }
+  tbody tr.row-warn td { background: var(--warning-bg); }
+  tbody tr.row-pos  td { background: var(--positive-bg); }
+  tbody tr.row-best td { background: var(--gold-bg); }
+
+  tbody td {
+    padding: 9px 12px; font-variant-numeric: tabular-nums;
+    color: var(--ink-2); font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px;
+  }
+  tbody td.txt { font-family: "Inter", sans-serif; font-size: 12.5px; }
+
+  /* Win-rate mini bar */
+  .wr-cell { position: relative; }
+  .wr-bar {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    border-radius: 1px 0 0 1px; opacity: 0.18;
+    pointer-events: none;
+  }
+
+  /* ── Cards ──────────────────────────────────────────────────────────── */
+  .cards { display: flex; flex-direction: column; gap: 20px; position: sticky; top: 24px; }
+  .card {
+    background: var(--ink-2); color: var(--paper);
+    border-radius: 2px; padding: 24px 26px;
+    border-left: 3px solid var(--negative);
+    box-shadow: 0 1px 0 rgba(243,237,216,0.05) inset;
+  }
+  .card.warn  { border-left-color: var(--warning); }
+  .card.pos   { border-left-color: var(--positive); }
+  .card.gold  { border-left-color: var(--gold); }
+
+  .card h3 {
+    font-family: "Instrument Serif", serif; font-size: 21px; font-weight: 400;
+    margin: 0 0 4px; letter-spacing: -0.01em;
+  }
+  .card .tag {
+    font-family: "IBM Plex Mono", monospace; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--slate); margin-bottom: 16px;
+  }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+  .kv dt {
+    font-family: "IBM Plex Mono", monospace; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.07em; color: var(--slate);
+  }
+  .kv dd {
+    font-family: "IBM Plex Mono", monospace; font-size: 18px;
+    color: var(--paper); margin: 0; font-variant-numeric: tabular-nums; font-weight: 500;
+  }
+  .kv dd.pos { color: var(--positive-bar); }
+  .kv dd.neg { color: var(--negative-bar); }
+  .kv dd.warn { color: var(--warning-bar); }
+
+  /* ── Chart ──────────────────────────────────────────────────────────── */
+  .chart-section { max-width: 1200px; margin: 0 auto 48px; padding: 0 24px; }
+  .chart-box { background: var(--ink-2); padding: 24px 28px; border-radius: 2px; }
+  .chart-box h4 { font-family: "Instrument Serif", serif; font-size: 18px; margin: 0 0 4px; color: var(--paper); }
+  .chart-sub { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--slate); letter-spacing: 0.05em; margin-bottom: 16px; }
+
+  .bar-chart {
+    display: flex; align-items: flex-end; gap: 6px;
+    height: 200px; padding-left: 52px; position: relative;
+  }
+  .y-label {
+    position: absolute; left: 0; top: 0;
+    font-family: "IBM Plex Mono", monospace; font-size: 10px;
+    color: var(--slate); line-height: 1.75;
+  }
+  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0; min-width: 0; }
+  .bar {
+    width: 100%; border-radius: 2px 2px 0 0; min-height: 4px;
+    position: relative; flex-shrink: 0;
+  }
+  .bar-val {
+    position: absolute; top: -16px; left: 50%; transform: translateX(-50%);
+    font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    color: var(--paper); font-weight: 500; white-space: nowrap;
+  }
+  .bar-label {
+    margin-top: 4px; font-family: "IBM Plex Mono", monospace;
+    font-size: 8px; color: var(--slate); text-align: center;
+    line-height: 1.3; letter-spacing: 0.03em;
+  }
+
+  /* Semantic bar colors by PF range */
+  .bar-pf-neg { background: linear-gradient(180deg, var(--negative-bar) 0%, #8B2A10 100%); }
+  .bar-pf-warn { background: linear-gradient(180deg, var(--warning-bar) 0%, #7A5000 100%); }
+  .bar-pf-pos { background: linear-gradient(180deg, var(--positive-bar) 0%, #1A5A30 100%); }
+  .bar-pf-best { background: linear-gradient(180deg, var(--gold) 0%, #7A5C1A 100%); }
+
+  /* ── Footer ─────────────────────────────────────────────────────────── */
+  footer {
+    max-width: 1200px; margin: 0 auto; padding: 48px 24px 64px;
+    border-top: 1px solid var(--line); font-size: 12px; color: var(--slate);
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 12px;
+  }
+  footer strong { font-family: "Instrument Serif", serif; font-size: 16px; color: var(--ink); font-weight: 400; }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="kicker">Backtest Report — Strategy 2</div>
+  <h1>Extreme LTF FVG<br><em style="font-style:italic;color:var(--accent)">Backtest Findings</em></h1>
+  <p class="subtitle">BTC 30-day historical simulation (15m LTF, wick invalidation). 23 trades — negative expectancy, large drawdown, and a clear configuration fix.</p>
+  <div class="meta">Symbol BTC · LTF 15m · 30 days · 2026-09-04 · backtest_extreme_fvg.py</div>
+</header>
+
+<main class="grid">
+  <article>
+
+    <h2>The baseline is broken</h2>
+    <p>The default Strategy 2 configuration loses on every target tier: 43.5% win at 1R, 17.4% at 2R, 13.0% at 3R. Net realized PnL is <strong class="neg">-3.0R (1R)</strong>, expanding to <strong class="neg">-11.0R</strong> at 2R/3R. The maximum drawdown of <strong class="neg">-14.0R</strong> against only 23 trades is severe — roughly 61% of total risk capital drawn down in a single sequence.</p>
+
+    <div class="pull"><strong>Critical finding</strong>Price reaches the target zone (+1.46R avg MFE) and then reverses into the stop. The strategy has positive excursion but negative realization — entry selection is picking weak FVGs that lack follow-through.</div>
+
+    <h2>What the variants reveal</h2>
+    <p>Six configurations were tested. Only two produced positive expectancy:</p>
+    <p><strong class="pos">1h LTF + close invalidation</strong> yielded +2.0R net, 60% win rate, PF 1.50, and only -3.0R drawdown — the best combined risk/return profile. <strong class="pos">ETH at 15m/wick</strong> produced +5.0R with 59.3% win rate, confirming the strategy works better on different symbols than BTC at this granularity.</p>
+    <p>The worst outcome came from <strong class="neg">min-gap 0.1%</strong> (PF 0.40, -13R drawdown) — tightening the filter removed too many setups and left only the weakest survivors.</p>
+
+    <h2>Backtest bug — double counting</h2>
+    <p>Per <code>docs/strategy2-findings.md</code> §2.1, the backtest engine counts the same trade as both a win and a loss when a trade touches 2R/3R and later stops out. The sticky <code>hit_1r/hit_2r/hit_3r</code> flags mean <code>wins_2r</code> and <code>losses</code> can both increment for a single execution. Treat all stats as approximate until fixed.</p>
+
+    <!-- ── Comparison table ── -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Config</th>
+            <th>Trades</th>
+            <th>Win Rate</th>
+            <th>PF 2R</th>
+            <th>PF 3R</th>
+            <th>Net 2R</th>
+            <th>Net 3R</th>
+            <th>DD</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Default — negative -->
+          <tr class="row-neg">
+            <td class="txt">Default 15m / wick / BTC</td>
+            <td>23</td>
+            <td class="wr-cell">
+              <div class="wr-bar" style="width:43.5%;background:var(--negative-bar)"></div>
+              43.5%
+            </td>
+            <td class="neg">0.62</td>
+            <td class="neg">0.69</td>
+            <td class="neg">-11.0R</td>
+            <td class="neg">-11.0R</td>
+            <td class="neg">-14.0R</td>
+          </tr>
+          <!-- Close — warning -->
+          <tr class="row-warn">
+            <td class="txt">Close invalidation</td>
+            <td>20</td>
+            <td class="wr-cell">
+              <div class="wr-bar" style="width:40.0%;background:var(--warning-bar)"></div>
+              40.0%
+            </td>
+            <td class="warn">0.83</td>
+            <td class="warn">1.00</td>
+            <td class="neg">-5.0R</td>
+            <td class="neg">-4.0R</td>
+            <td class="neg">-7.0R</td>
+          </tr>
+          <!-- 1h — positive -->
+          <tr class="row-pos">
+            <td class="txt">1h LTF</td>
+            <td>10</td>
+            <td class="wr-cell">
+              <div class="wr-bar" style="width:50.0%;background:var(--positive-bar)"></div>
+              50.0%
+            </td>
+            <td class="pos">2.00</td>
+            <td class="warn">1.20</td>
+            <td class="pos">+5.0R</td>
+            <td class="neg">-2.0R</td>
+            <td class="neg">-2.0R</td>
+          </tr>
+          <!-- 1h+close — BEST -->
+          <tr class="row-best">
+            <td class="txt"><strong>1h + close <span style="font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--gold);font-weight:500">· best</span></strong></td>
+            <td>10</td>
+            <td class="wr-cell">
+              <div class="wr-bar" style="width:60.0%;background:var(--gold)"></div>
+              <strong>60.0%</strong>
+            </td>
+            <td class="pos"><strong>3.00</strong></td>
+            <td class="pos">2.25</td>
+            <td class="pos"><strong>+8.0R</strong></td>
+            <td class="pos">+2.0R</td>
+            <td class="warn">-3.0R</td>
+          </tr>
+          <!-- ETH — positive -->
+          <tr class="row-pos">
+            <td class="txt">ETH / 15m / wick</td>
+            <td>27</td>
+            <td class="wr-cell">
+              <div class="wr-bar" style="width:59.3%;background:var(--positive-bar)"></div>
+              59.3%
+            </td>
+            <td class="pos">1.64</td>
+            <td class="pos">2.18</td>
+            <td class="pos">+0.0R</td>
+            <td class="pos"><strong>+5.0R</strong></td>
+            <td class="neg">-5.0R</td>
+          </tr>
+          <!-- Min 0.1% — negative -->
+          <tr class="row-neg">
+            <td class="txt">Min gap 0.1%</td>
+            <td>16</td>
+            <td class="wr-cell">
+              <div class="wr-bar" style="width:37.5%;background:var(--negative-bar)"></div>
+              37.5%
+            </td>
+            <td class="neg">0.40</td>
+            <td class="neg">0.30</td>
+            <td class="neg">-10.0R</td>
+            <td class="neg">-12.0R</td>
+            <td class="neg">-13.0R</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Recommendations (priority order)</h2>
+    <ol style="font-size:15.5px;color:var(--slate-deep);padding-left:22px;line-height:1.7">
+      <li><strong>Pause live BTC 15m/wick deployments.</strong> Negative expectancy with -14R drawdown — not a risk-management problem, a setup-selection problem.</li>
+      <li><strong>Adopt 1h LTF + close invalidation for new setups.</strong> Best verified profile across all tested configurations.</li>
+      <li><strong>Test ETH or other symbols at 15m before abandoning that granularity.</strong> ETH already shows positive results in default mode.</li>
+      <li><strong>Do not raise min-gap above 0.05%.</strong> Higher filtering removed too many valid setups; only weak FVGs survived.</li>
+      <li><strong>Fix backtest double-count (docs §2.1)</strong> before relying on any percentage — corrupts win-rate, PF, and net-R across the board.</li>
+      <li><strong>Address stale PENDING ledger entries (docs §2.2).</strong> They suppress new alerts and inflate tracked-trade counts.</li>
+    </ol>
+  </article>
+
+  <aside class="cards">
+    <!-- Baseline card -->
+    <section class="card">
+      <h3>Baseline — BTC 15m / Wick</h3>
+      <div class="tag">23 trades · 30 days · failing</div>
+      <div class="kv">
+        <div><dt>Win rate</dt><dd class="neg">43.5%</dd></div>
+        <div><dt>PF (1R)</dt><dd class="neg">0.77</dd></div>
+        <div><dt>Net 1R</dt><dd class="neg">-3.0R</dd></div>
+        <div><dt>Drawdown</dt><dd class="neg">-14.0R</dd></div>
+        <div><dt>Avg MFE</dt><dd>+1.46R</dd></div>
+        <div><dt>Avg hold</dt><dd>414 min</dd></div>
+      </div>
+    </section>
+
+    <!-- Best card -->
+    <section class="card gold">
+      <h3>Best — 1h + Close</h3>
+      <div class="tag">10 trades · 60% win · passing</div>
+      <div class="kv">
+        <div><dt>Win rate</dt><dd class="pos">60.0%</dd></div>
+        <div><dt>PF 2R</dt><dd class="pos">3.00</dd></div>
+        <div><dt>Net 2R</dt><dd class="pos">+8.0R</dd></div>
+        <div><dt>Net 3R</dt><dd class="pos">+2.0R</dd></div>
+        <div><dt>PF 3R</dt><dd class="pos">2.25</dd></div>
+        <div><dt>Drawdown</dt><dd class="warn">-3.0R</dd></div>
+      </div>
+    </section>
+
+    <!-- ETH card -->
+    <section class="card pos">
+      <h3>ETH — 15m / Wick</h3>
+      <div class="tag">27 trades · 59% win · passing</div>
+      <div class="kv">
+        <div><dt>Win rate</dt><dd class="pos">59.3%</dd></div>
+        <div><dt>PF 3R</dt><dd class="pos">2.18</dd></div>
+        <div><dt>Net 3R</dt><dd class="pos">+5.0R</dd></div>
+        <div><dt>Net 2R</dt><dd class="pos">+0.0R</dd></div>
+        <div><dt>PF 2R</dt><dd class="pos">1.64</dd></div>
+        <div><dt>Drawdown</dt><dd class="neg">-5.0R</dd></div>
+      </div>
+    </section>
+
+    <!-- Bug card -->
+    <section class="card warn">
+      <h3>Backtest Bug</h3>
+      <div class="tag">docs/strategy2-findings.md §2.1</div>
+      <p style="font-size:13px;color:var(--slate);margin:8px 0 0;line-height:1.5">Sticky <code style="color:var(--paper)">hit_1r/2r/3r</code> flags cause same trade to count as win <em>and</em> loss. All stats are approximate until resolved.</p>
+    </section>
+  </aside>
+</main>
+
+<!-- ── Chart ── -->
+<div class="chart-section">
+  <div class="chart-box">
+    <h4>Profit Factor by Configuration</h4>
+    <div class="chart-sub">left bar = 2R target · right bar = 3R target &nbsp;|&nbsp; color = PF health</div>
+    <div class="bar-chart" role="img" aria-label="Bar chart of profit factor values">
+      <div class="y-label">3.0<br>2.0<br>1.0<br>0</div>
+
+      <!-- Default -->
+      <div class="bar-col">
+        <div class="bar bar-pf-neg" style="height:21%"><div class="bar-val">0.62</div></div>
+        <div class="bar bar-pf-neg" style="height:23%"><div class="bar-val">0.69</div></div>
+        <div class="bar-label">Default<br>2R / 3R</div>
+      </div>
+      <!-- Close invalidation -->
+      <div class="bar-col">
+        <div class="bar bar-pf-warn" style="height:28%"><div class="bar-val">0.83</div></div>
+        <div class="bar bar-pf-warn" style="height:33%"><div class="bar-val">1.00</div></div>
+        <div class="bar-label">Close<br>2R / 3R</div>
+      </div>
+      <!-- 1h -->
+      <div class="bar-col">
+        <div class="bar bar-pf-pos" style="height:67%"><div class="bar-val">2.00</div></div>
+        <div class="bar bar-pf-warn" style="height:40%"><div class="bar-val">1.20</div></div>
+        <div class="bar-label">1h<br>2R / 3R</div>
+      </div>
+      <!-- 1h + close -->
+      <div class="bar-col">
+        <div class="bar bar-pf-best" style="height:100%"><div class="bar-val">3.00</div></div>
+        <div class="bar bar-pf-best" style="height:75%"><div class="bar-val">2.25</div></div>
+        <div class="bar-label">1h+close<br>2R / 3R</div>
+      </div>
+      <!-- ETH -->
+      <div class="bar-col">
+        <div class="bar bar-pf-pos" style="height:55%"><div class="bar-val">1.64</div></div>
+        <div class="bar bar-pf-pos" style="height:73%"><div class="bar-val">2.18</div></div>
+        <div class="bar-label">ETH<br>2R / 3R</div>
+      </div>
+      <!-- Min 0.1% -->
+      <div class="bar-col">
+        <div class="bar bar-pf-neg" style="height:13%"><div class="bar-val">0.40</div></div>
+        <div class="bar bar-pf-neg" style="height:10%"><div class="bar-val">0.30</div></div>
+        <div class="bar-label">Min 0.1%<br>2R / 3R</div>
+      </div>
+    </div>
+    <!-- Legend -->
+    <div style="display:flex;gap:16px;margin-top:16px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:12px;height:12px;border-radius:2px;background:var(--negative-bar)"></div>
+        <span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--slate)">PF &lt; 1.0 &nbsp;(failing)</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:12px;height:12px;border-radius:2px;background:var(--warning-bar)"></div>
+        <span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--slate)">PF 1.0–1.5 &nbsp;(borderline)</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:12px;height:12px;border-radius:2px;background:var(--positive-bar)"></div>
+        <span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--slate)">PF &gt; 1.5 &nbsp;(passing)</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:12px;height:12px;border-radius:2px;background:var(--gold)"></div>
+        <span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--slate)">Best config</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div><strong>Strategy 2 Report</strong> · backtest_extreme_fvg.py</div>
+  <div>Data: 2026-09-04 · Bug notes: docs/strategy2-findings.md</div>
+</footer>
+
+</body>
+</html>

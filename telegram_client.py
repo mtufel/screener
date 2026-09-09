@@ -29,6 +29,30 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_API_BASE = "https://api.telegram.org"
 MAX_MESSAGE_LENGTH = 4000
 
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).strip().lower()
+IS_PRODUCTION = APP_ENV in ("production", "prod", "server")
+TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "true").strip().lower() in ("true", "1", "yes")
+TELEGRAM_DEV_CHAT_ID = os.getenv("TELEGRAM_DEV_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID_DEV", os.getenv("TELEGRAM_CHAT_ID_LOCAL", ""))).strip()
+
+
+def _apply_env_tag(text: str) -> str:
+    """Prepends environment tag for non-production environments."""
+    if IS_PRODUCTION:
+        return text
+    tag = f"🧪 <b>[{APP_ENV.upper()}]</b>\n"
+    if text.startswith(tag) or f"[{APP_ENV.upper()}]" in text:
+        return text
+    return f"{tag}{text}"
+
+
+def _resolve_chat_id(explicit_chat_id: Optional[str] = None) -> str:
+    """Resolves target Telegram chat ID with dev/local override support."""
+    if explicit_chat_id:
+        return explicit_chat_id.strip()
+    if not IS_PRODUCTION and TELEGRAM_DEV_CHAT_ID:
+        return TELEGRAM_DEV_CHAT_ID
+    return TELEGRAM_CHAT_ID
+
 
 def _format_price(price: float) -> str:
     """Formats price into human-readable representation."""
@@ -145,17 +169,22 @@ async def send_telegram_alert(
     retries: int = 3,
 ) -> bool:
     """Sends a single text message to Telegram with automatic retries and exponential backoff."""
+    if not TELEGRAM_ENABLED:
+        logger.info("Telegram alerting is disabled (TELEGRAM_ENABLED=false). Skipping alert.")
+        return False
+
     token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
-    chat = (chat_id or TELEGRAM_CHAT_ID).strip()
+    chat = _resolve_chat_id(chat_id)
 
     if not token or not chat:
         logger.debug("Telegram credentials not configured. Skipping alert.")
         return False
 
+    formatted_text = _apply_env_tag(text)
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
     payload = {
         "chat_id": chat,
-        "text": text,
+        "text": formatted_text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
@@ -198,16 +227,21 @@ async def send_telegram_photo(
     retries: int = 3,
 ) -> bool:
     """Sends a photo with caption to Telegram with automatic retries, falling back to text."""
+    if not TELEGRAM_ENABLED:
+        logger.info("Telegram alerting is disabled (TELEGRAM_ENABLED=false). Skipping photo alert.")
+        return False
+
     token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
-    chat = (chat_id or TELEGRAM_CHAT_ID).strip()
+    chat = _resolve_chat_id(chat_id)
 
     if not token or not chat:
         return False
 
+    formatted_caption = _apply_env_tag(caption)
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendPhoto"
     data = {
         "chat_id": chat,
-        "caption": caption[:1024],  # Telegram caption max 1024 chars
+        "caption": formatted_caption[:1024],  # Telegram caption max 1024 chars
         "parse_mode": "HTML",
     }
 

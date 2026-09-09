@@ -467,6 +467,109 @@ class HTFFVGCache:
             self.last_processed_candle_ts.clear()
             self.last_closed_candles.clear()
 
+    async def load_from_redis(self, symbol: str, use_close_invalidation: bool = False) -> bool:
+        """Attempts to restore cached 4H FVGs from Redis to eliminate startup bootstrap lag."""
+        try:
+            from redis_client import redis_client
+            if not redis_client.is_configured():
+                return False
+            key = self._key(symbol, use_close_invalidation)
+            redis_key = redis_client.get_key(f"htf_cache:{key}")
+            data = await redis_client.get_json(redis_key)
+            if not data or not isinstance(data, dict):
+                return False
+
+            fvgs_raw = data.get("active_fvgs", [])
+            self.active_fvgs[key] = [fvg_from_dict(d) for d in fvgs_raw]
+            self.last_processed_candle_ts[key] = int(data.get("last_processed_candle_ts", 0))
+            last_c = data.get("last_closed_candles", [])
+            self.last_closed_candles[key] = [Candle.from_dict(c) for c in last_c]
+
+            self.last_processed_candle_ts[symbol] = self.last_processed_candle_ts[key]
+            self.last_closed_candles[symbol] = self.last_closed_candles[key]
+
+            logger.info(
+                "[HTF Cache Redis Restore] %s: Restored %d active 4H FVGs from Redis ('%s').",
+                key,
+                len(self.active_fvgs[key]),
+                redis_key,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("Failed to load HTF cache from Redis for %s: %s", symbol, exc)
+            return False
+
+    async def save_to_redis(self, symbol: str, use_close_invalidation: bool = False, ttl_seconds: int = 86400) -> bool:
+        """Saves current active 4H FVGs to Redis with a 24-hour TTL."""
+        try:
+            from redis_client import redis_client
+            if not redis_client.is_configured():
+                return False
+            key = self._key(symbol, use_close_invalidation)
+            redis_key = redis_client.get_key(f"htf_cache:{key}")
+            data = {
+                "symbol": symbol,
+                "mode": "close" if use_close_invalidation else "wick",
+                "last_processed_candle_ts": self.last_processed_candle_ts.get(key, 0),
+                "last_closed_candles": [
+                    {"t": c.timestamp, "o": c.open, "h": c.high, "l": c.low, "c": c.close, "v": c.volume}
+                    for c in self.last_closed_candles.get(key, [])
+                ],
+                "active_fvgs": [fvg_to_dict(f) for f in self.active_fvgs.get(key, [])],
+            }
+            return await redis_client.set_json(redis_key, data, ex=ttl_seconds)
+        except Exception as exc:
+            logger.debug("Failed to save HTF cache to Redis for %s: %s", symbol, exc)
+            return False
+
+
+def fvg_to_dict(fvg: FVG) -> Dict[str, Any]:
+    """Serializes an FVG dataclass instance to a JSON-compatible dictionary."""
+    return {
+        "direction": fvg.direction,
+        "top": fvg.top,
+        "bottom": fvg.bottom,
+        "c1": {
+            "t": fvg.c1.timestamp, "o": fvg.c1.open, "h": fvg.c1.high,
+            "l": fvg.c1.low, "c": fvg.c1.close, "v": fvg.c1.volume
+        } if fvg.c1 else None,
+        "c2": {
+            "t": fvg.c2.timestamp, "o": fvg.c2.open, "h": fvg.c2.high,
+            "l": fvg.c2.low, "c": fvg.c2.close, "v": fvg.c2.volume
+        } if fvg.c2 else None,
+        "c3": {
+            "t": fvg.c3.timestamp, "o": fvg.c3.open, "h": fvg.c3.high,
+            "l": fvg.c3.low, "c": fvg.c3.close, "v": fvg.c3.volume
+        } if fvg.c3 else None,
+        "formed_at": fvg.formed_at,
+        "is_valid": fvg.is_valid,
+        "timeframe": fvg.timeframe,
+        "lifecycle_state": fvg.lifecycle_state,
+        "entry_timestamp": fvg.entry_timestamp,
+        "floating_r": fvg.floating_r,
+    }
+
+
+def fvg_from_dict(d: Dict[str, Any]) -> FVG:
+    """Deserializes a dictionary into an FVG dataclass instance."""
+    c1 = Candle.from_dict(d["c1"]) if d.get("c1") else Candle(0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    c2 = Candle.from_dict(d["c2"]) if d.get("c2") else Candle(0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    c3 = Candle.from_dict(d["c3"]) if d.get("c3") else Candle(0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    return FVG(
+        direction=d["direction"],
+        top=float(d["top"]),
+        bottom=float(d["bottom"]),
+        c1=c1,
+        c2=c2,
+        c3=c3,
+        formed_at=int(d["formed_at"]),
+        is_valid=d.get("is_valid", True),
+        timeframe=d.get("timeframe", "4h"),
+        lifecycle_state=d.get("lifecycle_state", "PENDING_RETRACE"),
+        entry_timestamp=d.get("entry_timestamp"),
+        floating_r=float(d.get("floating_r", 0.0)),
+    )
+
 
 # Global Singleton Cache Instance
 htf_fvg_cache = HTFFVGCache()
@@ -480,8 +583,12 @@ async def get_active_4h_fvgs_for_symbol(
 ) -> List[FVG]:
     """
     Fetches live 4H candles and returns active non-invalidated 4H FVGs
-    using the incremental cache.
+    using the incremental cache with Redis persistence.
     """
+    # 1. Attempt restore from Redis if not currently in memory and not forcing a bootstrap
+    if not force_bootstrap and not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
+        await htf_fvg_cache.load_from_redis(symbol, use_close_invalidation=use_close_invalidation)
+
     cli = client or hyperliquid_client
     raw = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
     if not raw:
@@ -491,20 +598,31 @@ async def get_active_4h_fvgs_for_symbol(
     current_price = candles[-1].close if candles else 0.0
 
     if force_bootstrap or not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
-        return htf_fvg_cache.bootstrap(
+        fvgs = htf_fvg_cache.bootstrap(
             symbol=symbol,
             candles_4h=candles,
             use_close_invalidation=use_close_invalidation,
             enforce_closed_filter=True,
         )
+    else:
+        fvgs = htf_fvg_cache.update_delta(
+            symbol=symbol,
+            recent_candles_4h=candles,
+            current_price=current_price,
+            use_close_invalidation=use_close_invalidation,
+            enforce_closed_filter=True,
+        )
 
-    return htf_fvg_cache.update_delta(
-        symbol=symbol,
-        recent_candles_4h=candles,
-        current_price=current_price,
-        use_close_invalidation=use_close_invalidation,
-        enforce_closed_filter=True,
-    )
+    # Sync updated cache state to Redis asynchronously
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        if loop and loop.is_running():
+            loop.create_task(htf_fvg_cache.save_to_redis(symbol, use_close_invalidation=use_close_invalidation))
+    except Exception as exc:
+        logger.debug("Failed to schedule Redis save for HTF cache %s: %s", symbol, exc)
+
+    return fvgs
 
 
 # ==============================================================================

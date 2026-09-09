@@ -25,6 +25,7 @@ import strategy
 from strategy import SetupResult, run_screener, get_last_n_candles, USE_CLOSE_BASED_INVALIDATION, MAX_HTF_RETRACE_CANDLES, SESSION_FILTER_ENABLED
 from telegram_client import broadcast_setups_stateful, broadcast_trade_updates, send_telegram_alert
 from trade_tracker import trade_tracker
+from redis_client import redis_client
 
 load_dotenv()
 
@@ -416,6 +417,11 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     )
 
     for evt_type, tr in events:
+        # Check Redis alert deduplication to prevent duplicate alerts across restarts
+        if await redis_client.is_alert_sent(tr.symbol, evt_type, tr.trade_id):
+            logger.info("Skipping already sent alert: %s %s (%s)", tr.symbol, evt_type, tr.trade_id)
+            continue
+
         raw_sym = SYMBOL_ALIASES.get(tr.symbol, tr.symbol)
         side = "LONG" if tr.direction == "Bullish" else "SHORT"
         chart_img = None
@@ -461,6 +467,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             )
             logger.info("Fired Telegram Setup Alert for %s %s (with chart)", tr.symbol, side)
             await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         elif evt_type == "ENTRY_FILLED":
             primary_tp = tr.tp_2r if tr.completion_target == "2R" else tr.tp_1r
@@ -478,6 +485,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             )
             logger.info("Fired Telegram Entry Alert for %s %s (with chart)", tr.symbol, side)
             await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         elif evt_type == "TP_HIT":
             msg = (
@@ -492,6 +500,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             )
             logger.info("Fired Telegram TP Hit Alert for %s %s", tr.symbol, side)
             await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         elif evt_type == "SL_HIT":
             msg = (
@@ -506,6 +515,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             )
             logger.info("Fired Telegram SL Hit Alert for %s %s", tr.symbol, side)
             await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
     act_count = len([s for s in setups_out if s["state"] == "TRADE_ACTIVE"])
     pend_count = len([s for s in setups_out if s["state"] == "PENDING_RETRACE"])
@@ -540,6 +550,40 @@ async def extreme_screener_background_worker():
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown events for FastAPI."""
     logger.info("Starting Crypto FVG Screener application (IST & Extreme Strategy Daemon)...")
+
+    # Restore trade ledger state from Redis/disk
+    try:
+        from extreme_trade_tracker import extreme_trade_tracker
+        await extreme_trade_tracker.load_async()
+
+        # Restore runtime configuration from Redis if present
+        if redis_client.is_configured():
+            cfg_key = redis_client.get_key("config")
+            saved_cfg = await redis_client.get_json(cfg_key)
+            if saved_cfg and isinstance(saved_cfg, dict):
+                if "interval_seconds" in saved_cfg:
+                    state["extreme_interval_seconds"] = int(saved_cfg["interval_seconds"])
+                if "ltf_timeframe" in saved_cfg:
+                    state["extreme_ltf"] = str(saved_cfg["ltf_timeframe"])
+                if "completion_target" in saved_cfg:
+                    state["extreme_target"] = str(saved_cfg["completion_target"])
+                if "min_gap_pct" in saved_cfg:
+                    state["extreme_min_gap"] = float(saved_cfg["min_gap_pct"])
+                if "use_close_invalidation" in saved_cfg:
+                    state["extreme_use_close"] = bool(saved_cfg["use_close_invalidation"])
+                if "session_filter_enabled" in saved_cfg:
+                    state["extreme_session_filter"] = bool(saved_cfg["session_filter_enabled"])
+                if "weekday_filter_enabled" in saved_cfg:
+                    state["extreme_weekday_filter"] = bool(saved_cfg["weekday_filter_enabled"])
+                if "entry_session_filter_enabled" in saved_cfg:
+                    state["extreme_entry_session_filter"] = bool(saved_cfg["entry_session_filter_enabled"])
+                if "entry_weekday_filter_enabled" in saved_cfg:
+                    state["extreme_entry_weekday_filter"] = bool(saved_cfg["entry_weekday_filter_enabled"])
+                if "coins_whitelist" in saved_cfg:
+                    state["coins_whitelist"] = str(saved_cfg["coins_whitelist"])
+                logger.info("Restored runtime configuration from Redis ('%s').", cfg_key)
+    except Exception as exc:
+        logger.warning("Failed to restore initial state from Redis: %s", exc)
 
     # Strategy 1 (Standard 4H+LTF) Lifecycle
     if ENABLE_STRATEGY_1:
@@ -582,6 +626,7 @@ async def lifespan(app: FastAPI):
         state["extreme_background_task"].cancel()
 
     await hyperliquid_client.close()
+    await redis_client.close()
     logger.info("Application shutdown complete.")
 
 
@@ -1407,21 +1452,31 @@ async def api_extreme_config(
     if symbols is not None and symbols.strip():
         state["coins_whitelist"] = symbols.strip().upper()
 
+    cfg_payload = {
+        "interval_seconds": state["extreme_interval_seconds"],
+        "ltf_timeframe": state["extreme_ltf"],
+        "completion_target": state["extreme_target"],
+        "min_gap_pct": state["extreme_min_gap"],
+        "use_close_invalidation": state["extreme_use_close"],
+        "session_filter_enabled": state["extreme_session_filter"],
+        "weekday_filter_enabled": state["extreme_weekday_filter"],
+        "entry_session_filter_enabled": state["extreme_entry_session_filter"],
+        "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
+        "coins_whitelist": state["coins_whitelist"],
+    }
+
+    # Persist updated configuration to Redis
+    try:
+        if redis_client.is_configured():
+            cfg_key = redis_client.get_key("config")
+            await redis_client.set_json(cfg_key, cfg_payload)
+    except Exception as exc:
+        logger.debug("Failed to persist config to Redis: %s", exc)
+
     return JSONResponse(content={
         "status": "success",
         "message": "Extreme Daemon configuration updated successfully",
-        "config": {
-            "interval_seconds": state["extreme_interval_seconds"],
-            "ltf_timeframe": state["extreme_ltf"],
-            "completion_target": state["extreme_target"],
-            "min_gap_pct": state["extreme_min_gap"],
-            "use_close_invalidation": state["extreme_use_close"],
-            "session_filter_enabled": state["extreme_session_filter"],
-            "weekday_filter_enabled": state["extreme_weekday_filter"],
-            "entry_session_filter_enabled": state["extreme_entry_session_filter"],
-            "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
-            "coins_whitelist": state["coins_whitelist"],
-        },
+        "config": cfg_payload,
     })
 
 
