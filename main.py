@@ -108,6 +108,7 @@ state: Dict[str, Any] = {
     "extreme_background_task": None,
     "extreme_notified_states": {},
     "data_provider": os.getenv("DATA_PROVIDER", "binance").strip().lower(),
+    "fallback_data_provider": os.getenv("FALLBACK_DATA_PROVIDER", "hyperliquid").strip().lower(),
 }
 
 
@@ -1404,6 +1405,7 @@ async def api_extreme_status():
         "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "data_provider": state.get("data_provider", "binance"),
+        "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
         "active_count": state.get("extreme_active_count", 0),
         "pending_count": state.get("extreme_pending_count", 0),
@@ -1452,6 +1454,7 @@ async def api_extreme_config(
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter"),
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
     provider: Optional[str] = Query(default=None, pattern="^(binance|binance_futures|binance_spot|oanda|hyperliquid)$", description="Market data provider"),
+    fallback_provider: Optional[str] = Query(default=None, pattern="^(hyperliquid|binance|binance_futures|binance_spot|oanda|none)$", description="Fallback market data provider"),
 ):
     if interval_seconds is not None:
         state["extreme_interval_seconds"] = interval_seconds
@@ -1477,6 +1480,9 @@ async def api_extreme_config(
     if provider is not None and provider.strip():
         state["data_provider"] = provider.strip().lower()
         logger.info("Switched active data provider to '%s'", state["data_provider"])
+    if fallback_provider is not None and fallback_provider.strip():
+        state["fallback_data_provider"] = fallback_provider.strip().lower()
+        logger.info("Switched active fallback data provider to '%s'", state["fallback_data_provider"])
 
     cfg_payload = {
         "interval_seconds": state["extreme_interval_seconds"],
@@ -1490,6 +1496,7 @@ async def api_extreme_config(
         "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
         "coins_whitelist": state["coins_whitelist"],
         "data_provider": state.get("data_provider", "binance"),
+        "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
     }
 
     # Persist updated configuration to Redis

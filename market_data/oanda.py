@@ -64,6 +64,7 @@ class OandaProvider(BaseMarketDataProvider):
         environment: Optional[str] = None,
         timeout: float = 15.0,
         store: Optional[CandleStore] = None,
+        fallback_provider: Optional[BaseMarketDataProvider] = None,
     ):
         self.api_key = (api_key or os.getenv("OANDA_API_KEY", os.getenv("OANDA_ACCESS_TOKEN", ""))).strip()
         self.account_id = (account_id or os.getenv("OANDA_ACCOUNT_ID", "")).strip()
@@ -75,6 +76,7 @@ class OandaProvider(BaseMarketDataProvider):
 
         self.timeout = timeout
         self._store = store or candle_store
+        self.fallback_provider = fallback_provider
         self._http_client: Optional[httpx.AsyncClient] = None
 
     @property
@@ -154,11 +156,23 @@ class OandaProvider(BaseMarketDataProvider):
             return cached
 
         if not self.is_configured():
-            logger.debug("OANDA API key not configured. get_all_mids returning empty dict.")
+            logger.debug("OANDA API key not configured. get_all_mids checking fallback.")
+            if self.fallback_provider:
+                logger.warning("[ProviderFallback] %s not configured -> Delegating get_all_mids to %s", self.name, self.fallback_provider.name)
+                fb_mids = await self.fallback_provider.get_all_mids()
+                if fb_mids:
+                    self._store.set_cached_mids(self.name, fb_mids)
+                    return fb_mids
             return {}
 
         if self._store.is_rate_limited(self.name):
             logger.warning("[RateLimit] Serving empty mids for %s due to rate limit cooldown", self.name)
+            if self.fallback_provider:
+                logger.warning("[ProviderFallback] %s rate limited -> Delegating get_all_mids to %s", self.name, self.fallback_provider.name)
+                fb_mids = await self.fallback_provider.get_all_mids()
+                if fb_mids:
+                    self._store.set_cached_mids(self.name, fb_mids)
+                    return fb_mids
             return {}
 
         instruments = [
@@ -205,6 +219,15 @@ class OandaProvider(BaseMarketDataProvider):
                 pass
         if mids:
             self._store.set_cached_mids(self.name, mids)
+            return mids
+
+        if self.fallback_provider:
+            logger.warning("[ProviderFallback] %s get_all_mids failed -> Delegating to %s", self.name, self.fallback_provider.name)
+            fb_mids = await self.fallback_provider.get_all_mids()
+            if fb_mids:
+                self._store.set_cached_mids(self.name, fb_mids)
+                return fb_mids
+
         return mids
 
     async def get_last_n_candles(
@@ -220,11 +243,25 @@ class OandaProvider(BaseMarketDataProvider):
 
         if not self.is_configured():
             logger.debug("OANDA API key not configured. Skipping candle fetch for %s.", symbol)
+            if cached:
+                return cached
+            if self.fallback_provider:
+                logger.warning("[ProviderFallback] %s not configured for %s %s -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+                fb_candles = await self.fallback_provider.get_last_n_candles(symbol, timeframe, n)
+                if fb_candles:
+                    self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                    return fb_candles
             return []
 
         if self._store.is_rate_limited(self.name):
             if cached:
                 return cached
+            if self.fallback_provider:
+                logger.warning("[ProviderFallback] %s rate limited for %s %s -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+                fb_candles = await self.fallback_provider.get_last_n_candles(symbol, timeframe, n)
+                if fb_candles:
+                    self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                    return fb_candles
             return []
 
         instrument = self.resolve_symbol(symbol)
@@ -273,11 +310,28 @@ class OandaProvider(BaseMarketDataProvider):
             elif resp.status_code in (418, 429):
                 self._store.set_rate_limited(self.name, 60.0)
                 logger.warning("OANDA candles hit rate limit (HTTP %d) for %s", resp.status_code, instrument)
+                if cached:
+                    return cached
+                if self.fallback_provider:
+                    logger.warning("[ProviderFallback] %s hit HTTP %d for %s (%s) -> Delegating to %s", self.name, resp.status_code, symbol, timeframe, self.fallback_provider.name)
+                    fb_candles = await self.fallback_provider.get_last_n_candles(symbol, timeframe, n)
+                    if fb_candles:
+                        self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                        return fb_candles
                 return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
             else:
                 logger.warning("OANDA candles for %s returned HTTP %d: %s", instrument, resp.status_code, resp.text[:200])
         except Exception as exc:
             logger.warning("Failed to fetch OANDA candles for %s: %s", instrument, exc)
+
+        if cached:
+            return cached
+        if self.fallback_provider:
+            logger.warning("[ProviderFallback] %s get_last_n_candles failed for %s (%s) -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+            fb_candles = await self.fallback_provider.get_last_n_candles(symbol, timeframe, n)
+            if fb_candles:
+                self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                return fb_candles
 
         return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
 
@@ -290,6 +344,9 @@ class OandaProvider(BaseMarketDataProvider):
     ) -> List[Dict[str, Any]]:
         """Fetches historical candles over an explicit epoch ms range."""
         if not self.is_configured():
+            if self.fallback_provider:
+                logger.warning("[ProviderFallback] %s not configured for historical range -> Delegating to %s", self.name, self.fallback_provider.name)
+                return await self.fallback_provider.get_historical_candles_range(coin, interval, start_time_ms, end_time_ms)
             return []
 
         instrument = self.resolve_symbol(coin)
@@ -338,9 +395,15 @@ class OandaProvider(BaseMarketDataProvider):
         except Exception as exc:
             logger.warning("Failed to fetch historical OANDA candles for %s: %s", instrument, exc)
 
+        if self.fallback_provider:
+            logger.warning("[ProviderFallback] %s historical range failed for %s -> Delegating to %s", self.name, coin, self.fallback_provider.name)
+            return await self.fallback_provider.get_historical_candles_range(coin, interval, start_time_ms, end_time_ms)
+
         return []
 
     async def get_universe_coins(self, min_volume: float = 0.0) -> List[str]:
+        if not self.is_configured() and self.fallback_provider:
+            return await self.fallback_provider.get_universe_coins(min_volume=min_volume)
         return ["XAU", "XAG", "WTIOIL", "BRENT", "EURUSD", "GBPUSD", "USDJPY", "BTC", "ETH"]
 
     async def close(self):

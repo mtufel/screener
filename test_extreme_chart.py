@@ -40,26 +40,34 @@ def test_generate_extreme_setup_chart_direct():
 
 
 def test_api_extreme_chart_endpoint():
-    client = TestClient(app)
-    params = {
-        "symbol": "BTC",
-        "direction": "Bullish",
-        "ltf": "15m",
-        "entry_price": "60000.0",
-        "stop_loss": "59500.0",
-        "tp_1r": "60500.0",
-        "tp_2r": "61000.0",
-        "tp_3r": "61500.0",
-        "htf_bottom": "59000.0",
-        "htf_top": "60200.0",
-        "ltf_bottom": "59800.0",
-        "ltf_top": "60000.0",
-        "ltf_formed_ts": "1700000000000",
-        "htf_first_touch_ist": "03-Sep 08:00 AM IST",
-        "state": "TRADE_ACTIVE",
-        "floating_r": "1.45",
-    }
-    resp = client.get("/api/extreme/chart", params=params)
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "image/png"
-    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+    from unittest.mock import patch, AsyncMock
+    fake_candles = [
+        {"t": 1000 + i * 900000, "o": 60000 + i * 5, "h": 60050 + i * 5, "l": 59950 + i * 5, "c": 60010 + i * 5, "v": 50.0}
+        for i in range(40)
+    ]
+    with patch("market_data.binance.BinanceProvider.get_last_n_candles", new=AsyncMock(return_value=fake_candles)), \
+         patch("market_data.hyperliquid.HyperliquidProvider.get_last_n_candles", new=AsyncMock(return_value=fake_candles)):
+        client = TestClient(app)
+        params = {
+            "symbol": "BTC",
+            "direction": "Bullish",
+            "ltf": "15m",
+            "entry_price": "60000.0",
+            "stop_loss": "59500.0",
+            "tp_1r": "60500.0",
+            "tp_2r": "61000.0",
+            "tp_3r": "61500.0",
+            "htf_bottom": "59000.0",
+            "htf_top": "60200.0",
+            "ltf_bottom": "59800.0",
+            "ltf_top": "60000.0",
+            "ltf_formed_ts": "1700000000000",
+            "htf_first_touch_ist": "03-Sep 08:00 AM IST",
+            "state": "TRADE_ACTIVE",
+            "floating_r": "1.45",
+        }
+        resp = client.get("/api/extreme/chart", params=params)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+

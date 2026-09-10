@@ -24,30 +24,53 @@ logger = logging.getLogger("market_data_provider")
 _PROVIDERS: Dict[str, BaseMarketDataProvider] = {}
 
 
-def get_market_data_provider(provider_name: Optional[str] = None) -> BaseMarketDataProvider:
+def get_market_data_provider(
+    provider_name: Optional[str] = None,
+    fallback_name: Optional[str] = None,
+) -> BaseMarketDataProvider:
     """
-    Returns the singleton instance of the requested market data provider.
-    Defaults to DATA_PROVIDER env var, or 'binance'.
-    Options: 'binance', 'binance_futures', 'binance_spot', 'oanda', 'hyperliquid'.
+    Returns the singleton instance of the requested market data provider with fallback delegation.
+    Defaults:
+      - Primary: DATA_PROVIDER env var, or 'binance'.
+      - Fallback: FALLBACK_DATA_PROVIDER env var, or 'hyperliquid'.
+    Options: 'binance', 'binance_futures', 'binance_spot', 'oanda', 'hyperliquid', 'none'.
     """
     selected = (provider_name or os.getenv("DATA_PROVIDER", "binance")).strip().lower()
+    fb_selected = (
+        fallback_name
+        if fallback_name is not None
+        else os.getenv("FALLBACK_DATA_PROVIDER", "hyperliquid")
+    ).strip().lower()
 
-    if selected in _PROVIDERS:
-        return _PROVIDERS[selected]
+    cache_key = f"{selected}:{fb_selected}"
+    if cache_key in _PROVIDERS:
+        return _PROVIDERS[cache_key]
+
+    # Resolve fallback provider if configured and not identical to primary
+    fallback_inst: Optional[BaseMarketDataProvider] = None
+    if fb_selected not in ("none", "", "disabled", "false", "0", selected):
+        if fb_selected in ("hyperliquid", "hl"):
+            fallback_inst = HyperliquidProvider()
+        elif fb_selected in ("binance", "binance_futures", "binance-futures"):
+            fallback_inst = BinanceProvider(use_futures=True)
+        elif fb_selected in ("binance_spot", "binance-spot"):
+            fallback_inst = BinanceProvider(use_futures=False)
+        elif fb_selected in ("oanda", "onda"):
+            fallback_inst = OandaProvider()
 
     if selected in ("binance", "binance_futures", "binance-futures"):
-        provider = BinanceProvider(use_futures=True)
+        provider = BinanceProvider(use_futures=True, fallback_provider=fallback_inst)
     elif selected in ("binance_spot", "binance-spot"):
-        provider = BinanceProvider(use_futures=False)
+        provider = BinanceProvider(use_futures=False, fallback_provider=fallback_inst)
     elif selected in ("oanda", "onda"):
-        provider = OandaProvider()
+        provider = OandaProvider(fallback_provider=fallback_inst)
     elif selected in ("hyperliquid", "hl"):
         provider = HyperliquidProvider()
     else:
-        logger.warning("Unknown DATA_PROVIDER '%s'. Defaulting to Binance Futures.", selected)
-        provider = BinanceProvider(use_futures=True)
+        logger.warning("Unknown DATA_PROVIDER '%s'. Defaulting to Binance Futures with Hyperliquid fallback.", selected)
+        provider = BinanceProvider(use_futures=True, fallback_provider=fallback_inst)
 
-    _PROVIDERS[selected] = provider
+    _PROVIDERS[cache_key] = provider
     return provider
 
 

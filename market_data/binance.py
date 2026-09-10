@@ -29,12 +29,14 @@ class BinanceProvider(BaseMarketDataProvider):
         api_url: Optional[str] = None,
         timeout: float = 15.0,
         store: Optional[CandleStore] = None,
+        fallback_provider: Optional[BaseMarketDataProvider] = None,
     ):
         self.use_futures = use_futures
         default_url = "https://fapi.binance.com" if use_futures else "https://api.binance.com"
         self.api_url = (api_url or os.getenv("BINANCE_API_URL", default_url)).rstrip("/")
         self.timeout = timeout
         self._store = store or candle_store
+        self.fallback_provider = fallback_provider
         self._http_client: Optional[httpx.AsyncClient] = None
         self._cached_universe: List[str] = []
         self._universe_cache_time = 0.0
@@ -136,6 +138,14 @@ class BinanceProvider(BaseMarketDataProvider):
                 logger.warning("Binance ticker/price returned status %d: %s", resp.status_code, resp.text[:200])
         except Exception as exc:
             logger.warning("Failed to fetch Binance mid prices: %s", exc)
+
+        if self.fallback_provider:
+            logger.warning("[ProviderFallback] %s get_all_mids failed or rate limited -> Delegating to %s fallback", self.name, self.fallback_provider.name)
+            fb_mids = await self.fallback_provider.get_all_mids()
+            if fb_mids:
+                self._store.set_cached_mids(self.name, fb_mids)
+                return fb_mids
+
         return {}
 
     async def get_last_n_candles(
@@ -156,6 +166,12 @@ class BinanceProvider(BaseMarketDataProvider):
             if cached:
                 logger.warning("[BinanceProvider] [RATE LIMITED] Serving %d cached bars for %s %s", len(cached), symbol, timeframe)
                 return cached
+            if self.fallback_provider:
+                logger.warning("[ProviderFallback] %s is rate limited with no cache for %s %s -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+                fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
+                if fb_candles:
+                    self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                    return fb_candles
             logger.warning("[BinanceProvider] [RATE LIMITED] Rate limited and no cache available for %s %s", symbol, timeframe)
             return []
 
@@ -208,6 +224,14 @@ class BinanceProvider(BaseMarketDataProvider):
             elif resp.status_code in (418, 429):
                 self._store.set_rate_limited(self.name, 60.0)
                 logger.warning("[BinanceProvider] [HTTP %d] Rate limit hit for %s (%s): %s", resp.status_code, symbol, timeframe, resp.text[:200])
+                if cached:
+                    return cached
+                if self.fallback_provider:
+                    logger.warning("[ProviderFallback] %s hit HTTP %d for %s (%s) -> Delegating to %s", self.name, resp.status_code, symbol, timeframe, self.fallback_provider.name)
+                    fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
+                    if fb_candles:
+                        self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                        return fb_candles
                 return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
             elif resp.status_code == 400 and self.use_futures:
                 logger.info("[BinanceProvider] Symbol %s not found on Futures, falling back to Binance Spot klines", binance_sym)
@@ -239,9 +263,26 @@ class BinanceProvider(BaseMarketDataProvider):
                 elif resp_spot.status_code in (418, 429):
                     self._store.set_rate_limited(self.name, 60.0)
                     logger.warning("[BinanceProvider] Binance spot klines hit rate limit (HTTP %d) for %s (%s)", resp_spot.status_code, symbol, timeframe)
+                    if cached:
+                        return cached
+                    if self.fallback_provider:
+                        logger.warning("[ProviderFallback] %s spot hit HTTP %d for %s (%s) -> Delegating to %s", self.name, resp_spot.status_code, symbol, timeframe, self.fallback_provider.name)
+                        fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
+                        if fb_candles:
+                            self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                            return fb_candles
                     return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
         except Exception as exc:
             logger.warning("[BinanceProvider] get_last_n_candles failed for %s (%s): %s", symbol, timeframe, exc)
+
+        if cached:
+            return cached
+        if self.fallback_provider:
+            logger.warning("[ProviderFallback] %s get_last_n_candles failed for %s (%s) -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+            fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
+            if fb_candles:
+                self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
+                return fb_candles
 
         return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
 
@@ -319,6 +360,10 @@ class BinanceProvider(BaseMarketDataProvider):
             curr_start = last_open + step_ms
             await asyncio.sleep(0.03)
 
+        if not all_candles and self.fallback_provider:
+            logger.warning("[ProviderFallback] %s get_historical_candles_range returned 0 candles for %s -> Delegating to %s", self.name, coin, self.fallback_provider.name)
+            return await self.fallback_provider.get_historical_candles_range(coin, interval, start_time_ms, end_time_ms)
+
         return all_candles
 
     async def get_universe_coins(self, min_volume: float = 0.0) -> List[str]:
@@ -350,6 +395,12 @@ class BinanceProvider(BaseMarketDataProvider):
                 return coins
         except Exception as exc:
             logger.warning("Failed to fetch Binance universe: %s", exc)
+
+        if self.fallback_provider:
+            logger.warning("[ProviderFallback] %s get_universe_coins failed -> Delegating to %s", self.name, self.fallback_provider.name)
+            fb_universe = await self.fallback_provider.get_universe_coins(min_volume=min_volume)
+            if fb_universe:
+                return fb_universe
 
         return ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PAXG"]
 
