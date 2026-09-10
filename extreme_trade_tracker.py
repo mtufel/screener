@@ -12,7 +12,7 @@ Tracks every live trade setup identified by the background daemon from discovery
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,6 +67,45 @@ def _candle_low(c: Any) -> float:
     return getattr(c, "low", c.get("l", 0.0) if isinstance(c, dict) else 0.0)
 
 
+def _compute_residual_fvg(trade: "TrackedExtremeTrade", min_gap_pct: float = 0.05) -> Optional[Dict[str, Any]]:
+    """Calculates residual FVG boundary and metadata after TP hit."""
+    deepest = trade.deepest_wick_reached
+    if deepest is None:
+        return None
+    if trade.direction == "Bullish":
+        fvg_bot = float(trade.ltf_fvg.get("bottom", 0.0))
+        if deepest <= fvg_bot:
+            return None
+        residual_gap_pct = ((deepest - fvg_bot) / fvg_bot) * 100.0 if fvg_bot > 0 else 0.0
+        if min_gap_pct > 0 and residual_gap_pct < min_gap_pct:
+            return None
+        return {
+            "direction": "Bullish",
+            "top": deepest,
+            "bottom": fvg_bot,
+            "gap_pct": round(residual_gap_pct, 4),
+            "mitigation_count": trade.mitigation_count + 1,
+            "original_top": trade.ltf_fvg.get("original_top", trade.ltf_fvg.get("top", deepest)),
+            "original_bottom": trade.ltf_fvg.get("original_bottom", trade.ltf_fvg.get("bottom", fvg_bot)),
+        }
+    else:
+        fvg_top = float(trade.ltf_fvg.get("top", 0.0))
+        if deepest >= fvg_top:
+            return None
+        residual_gap_pct = ((fvg_top - deepest) / fvg_top) * 100.0 if fvg_top > 0 else 0.0
+        if min_gap_pct > 0 and residual_gap_pct < min_gap_pct:
+            return None
+        return {
+            "direction": "Bearish",
+            "top": fvg_top,
+            "bottom": deepest,
+            "gap_pct": round(residual_gap_pct, 4),
+            "mitigation_count": trade.mitigation_count + 1,
+            "original_top": trade.ltf_fvg.get("original_top", trade.ltf_fvg.get("top", fvg_top)),
+            "original_bottom": trade.ltf_fvg.get("original_bottom", trade.ltf_fvg.get("bottom", deepest)),
+        }
+
+
 @dataclass
 class TrackedExtremeTrade:
     trade_id: str
@@ -96,13 +135,18 @@ class TrackedExtremeTrade:
     entry_timestamp: Optional[int] = None
     closed_timestamp: Optional[int] = None
     absent_cycles: int = 0
+    deepest_wick_reached: Optional[float] = None
+    mitigation_count: int = 0
+    residual_fvg: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TrackedExtremeTrade":
-        return cls(**d)
+        valid_keys = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in d.items() if k in valid_keys}
+        return cls(**filtered)
 
 
 class ExtremeTradeTracker:
@@ -487,6 +531,7 @@ class ExtremeTradeTracker:
                         if trade.direction == "Bullish":
                             trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, c_high)
                             trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
+                            trade.deepest_wick_reached = min(trade.deepest_wick_reached if trade.deepest_wick_reached is not None else c_low, c_low)
                             if c_low <= trade.stop_loss:
                                 trade.state = "STOPPED_OUT"
                                 trade.realized_r = -1.0
@@ -504,12 +549,14 @@ class ExtremeTradeTracker:
                                 trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                 trade.closed_timestamp = c_ts
                                 trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
+                                trade.residual_fvg = _compute_residual_fvg(trade)
                                 to_close.append((trade_id, "TP_HIT", trade))
                                 resolved = True
                                 break
                         else:  # Bearish
                             trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, c_low)
                             trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
+                            trade.deepest_wick_reached = max(trade.deepest_wick_reached if trade.deepest_wick_reached is not None else c_high, c_high)
                             if c_high >= trade.stop_loss:
                                 trade.state = "STOPPED_OUT"
                                 trade.realized_r = -1.0
@@ -527,6 +574,7 @@ class ExtremeTradeTracker:
                                 trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                                 trade.closed_timestamp = c_ts
                                 trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
+                                trade.residual_fvg = _compute_residual_fvg(trade)
                                 to_close.append((trade_id, "TP_HIT", trade))
                                 resolved = True
                                 break
@@ -588,6 +636,7 @@ class ExtremeTradeTracker:
                 if trade.direction == "Bullish":
                     trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, c_high)
                     trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
+                    trade.deepest_wick_reached = min(trade.deepest_wick_reached if trade.deepest_wick_reached is not None else c_low, c_low)
 
                     # 1. Stop Loss Check FIRST
                     if c_low <= trade.stop_loss:
@@ -609,6 +658,7 @@ class ExtremeTradeTracker:
                         trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                         trade.closed_timestamp = c_ts
                         trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
+                        trade.residual_fvg = _compute_residual_fvg(trade)
                         to_close.append((trade_id, "TP_HIT", trade))
                         trade_closed = True
                         break
@@ -616,6 +666,7 @@ class ExtremeTradeTracker:
                 else:  # Bearish
                     trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, c_low)
                     trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
+                    trade.deepest_wick_reached = max(trade.deepest_wick_reached if trade.deepest_wick_reached is not None else c_high, c_high)
 
                     # 1. Stop Loss Check FIRST
                     if c_high >= trade.stop_loss:
@@ -637,6 +688,7 @@ class ExtremeTradeTracker:
                         trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
                         trade.closed_timestamp = c_ts
                         trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
+                        trade.residual_fvg = _compute_residual_fvg(trade)
                         to_close.append((trade_id, "TP_HIT", trade))
                         trade_closed = True
                         break
@@ -649,6 +701,7 @@ class ExtremeTradeTracker:
                 trade.floating_r = round((curr_px - trade.entry_price) / risk_r, 2)
                 trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, curr_px)
                 trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
+                trade.deepest_wick_reached = min(trade.deepest_wick_reached if trade.deepest_wick_reached is not None else curr_px, curr_px)
 
                 if curr_px <= trade.stop_loss:
                     trade.state = "STOPPED_OUT"
@@ -665,6 +718,7 @@ class ExtremeTradeTracker:
                     trade.closed_at_ist = now_ist_str
                     trade.closed_timestamp = now_ts
                     trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
+                    trade.residual_fvg = _compute_residual_fvg(trade)
                     to_close.append((trade_id, "TP_HIT", trade))
                 else:
                     trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
@@ -673,6 +727,7 @@ class ExtremeTradeTracker:
                 trade.floating_r = round((trade.entry_price - curr_px) / risk_r, 2)
                 trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, curr_px)
                 trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
+                trade.deepest_wick_reached = max(trade.deepest_wick_reached if trade.deepest_wick_reached is not None else curr_px, curr_px)
 
                 if curr_px >= trade.stop_loss:
                     trade.state = "STOPPED_OUT"
@@ -689,6 +744,7 @@ class ExtremeTradeTracker:
                     trade.closed_at_ist = now_ist_str
                     trade.closed_timestamp = now_ts
                     trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
+                    trade.residual_fvg = _compute_residual_fvg(trade)
                     to_close.append((trade_id, "TP_HIT", trade))
                 else:
                     trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"

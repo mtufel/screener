@@ -431,9 +431,10 @@ async def run_extreme_backtest(
                     )
                 ))
 
+    entered_fvg_entries = set()
+    filtered_fvg_timestamps = set()
     executed_trades: List[ExtremeHistoricalTrade] = []
     trades_filtered_out = 0
-    entered_fvg_timestamps = set()
 
     # Pre-index 4H FVG first touches to eliminate redundant candle scans
     first_touch_map: Dict[int, Optional[Tuple[int, str]]] = {}
@@ -551,7 +552,9 @@ async def run_extreme_backtest(
             p_idx, p_fvg = ltf_fvgs[prev_ptr]
             if p_fvg.direction != anchor.fvg.direction or p_fvg.close_timestamp < anchor.first_touch_timestamp:
                 continue
-            if p_fvg.formed_at in entered_fvg_timestamps:
+            p_entry_price = p_fvg.top if p_fvg.direction == "Bullish" else p_fvg.bottom
+            p_entry_key = f"{p_fvg.formed_at}:{p_fvg.mitigation_count}:{p_entry_price:.4f}"
+            if p_fvg.formed_at in filtered_fvg_timestamps or p_entry_key in entered_fvg_entries:
                 continue
 
             # Check invalidation between p_idx and fvg_idx
@@ -578,7 +581,14 @@ async def run_extreme_backtest(
         else:
             best_ltf = max(candidate_pool, key=lambda f: (f.top, -f.formed_at))
 
-        if best_ltf.formed_at in entered_fvg_timestamps:
+        if not best_ltf or best_ltf.formed_at in filtered_fvg_timestamps:
+            fvg_ptr += 1
+            continue
+
+        is_bullish = best_ltf.direction == "Bullish"
+        entry_price = best_ltf.top if is_bullish else best_ltf.bottom
+        entry_key = f"{best_ltf.formed_at}:{best_ltf.mitigation_count}:{entry_price:.4f}"
+        if entry_key in entered_fvg_entries:
             fvg_ptr += 1
             continue
 
@@ -586,17 +596,15 @@ async def run_extreme_backtest(
         c3_close_ts = best_ltf.close_timestamp
         if session_filter and not is_in_ny_session(c3_close_ts):
             trades_filtered_out += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
+            filtered_fvg_timestamps.add(best_ltf.formed_at)
             fvg_ptr += 1
             continue
         if weekday_filter and not is_weekday(c3_close_ts):
             trades_filtered_out += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
+            filtered_fvg_timestamps.add(best_ltf.formed_at)
             fvg_ptr += 1
             continue
 
-        is_bullish = best_ltf.direction == "Bullish"
-        entry_price = best_ltf.top if is_bullish else best_ltf.bottom
         stop_loss = min(best_ltf.c1.low, best_ltf.c2.low, best_ltf.c3.low) if is_bullish else max(best_ltf.c1.high, best_ltf.c2.high, best_ltf.c3.high)
 
         entry_triggered = False
@@ -605,14 +613,14 @@ async def run_extreme_backtest(
             c_k = candles_ltf[k]
             if is_bullish:
                 if c_k.low <= stop_loss and c_k.high < entry_price:
-                    entered_fvg_timestamps.add(best_ltf.formed_at)
+                    filtered_fvg_timestamps.add(best_ltf.formed_at)
                     break
                 if c_k.low <= entry_price:
                     entry_triggered = True
                     break
             else:
                 if c_k.high >= stop_loss and c_k.low > entry_price:
-                    entered_fvg_timestamps.add(best_ltf.formed_at)
+                    filtered_fvg_timestamps.add(best_ltf.formed_at)
                     break
                 if c_k.high >= entry_price:
                     entry_triggered = True
@@ -624,12 +632,12 @@ async def run_extreme_backtest(
 
             if entry_session_filter and not is_in_ny_session(entry_ts):
                 trades_filtered_out += 1
-                entered_fvg_timestamps.add(best_ltf.formed_at)
+                entered_fvg_entries.add(entry_key)
                 fvg_ptr += 1
                 continue
             if entry_weekday_filter and not is_weekday(entry_ts):
                 trades_filtered_out += 1
-                entered_fvg_timestamps.add(best_ltf.formed_at)
+                entered_fvg_entries.add(entry_key)
                 fvg_ptr += 1
                 continue
 
@@ -645,7 +653,7 @@ async def run_extreme_backtest(
                 ltf_fvg=best_ltf,
             )
             executed_trades.append(trade)
-            entered_fvg_timestamps.add(best_ltf.formed_at)
+            entered_fvg_entries.add(entry_key)
 
             # Advance sim index past trade hold duration
             bars_held = max(1, trade.duration_minutes // (ltf_duration_ms // 60000))
