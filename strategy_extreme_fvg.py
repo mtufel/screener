@@ -865,6 +865,7 @@ async def get_most_recent_touched_anchor_for_symbol(
         candles_4h=candles_4h,
     )
     if not active_fvgs:
+        logger.debug("[ExtremeStrategy] [%s] No active 4H FVGs in cache", symbol)
         return None
 
     # Fetch LTF candles to pinpoint exact touch timestamp if not already provided
@@ -872,13 +873,22 @@ async def get_most_recent_touched_anchor_for_symbol(
         raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
         candles_ltf = [Candle.from_dict(c) for c in raw_ltf] if raw_ltf else None
 
-    return get_most_recent_touched_4h_fvg(
+    anchor = get_most_recent_touched_4h_fvg(
         candles_4h=candles_4h,
         active_fvgs=active_fvgs,
         current_price=current_price,
         candles_ltf=candles_ltf,
         ltf_timeframe=ltf_timeframe,
     )
+    if anchor:
+        logger.info(
+            "[ExtremeStrategy] [%s] 4H ANCHOR TOUCHED: %s FVG [%.4f - %.4f] (Formed: %s, 1st Touch: %s, Price: %.4f)",
+            symbol, anchor.fvg.direction, anchor.fvg.bottom, anchor.fvg.top,
+            anchor.fvg.formed_time_ist, anchor.first_touch_time_ist, current_price
+        )
+    else:
+        logger.debug("[ExtremeStrategy] [%s] Evaluated %d 4H FVGs -> None currently touched", symbol, len(active_fvgs))
+    return anchor
 
 
 # ==============================================================================
@@ -1240,19 +1250,32 @@ async def get_extreme_setup_for_symbol(
         completion_target=completion_target,
     )
     if not unmitigated:
+        logger.debug("[ExtremeStrategy] [%s] 0 unmitigated LTF FVGs found post-touch (threshold: %.3f%%)", symbol, min_gap_pct)
         return None
+
+    logger.info(
+        "[ExtremeStrategy] [%s] Post-touch scan (after %s): Found %d unmitigated %s FVG(s) >= %.3f%% gap",
+        symbol, anchor.first_touch_time_ist, len(unmitigated), anchor.fvg.direction, min_gap_pct
+    )
 
     best_ltf = select_extreme_ltf_fvg(unmitigated, anchor.fvg.direction)
     if not best_ltf:
         return None
 
+    logger.info(
+        "[ExtremeStrategy] [%s] Selected #1 EXTREME LTF FVG: %s [%.4f - %.4f] (Width: %.4f, Gap: %.3f%%, Formed: %s)",
+        symbol, best_ltf.direction, best_ltf.bottom, best_ltf.top, best_ltf.width, best_ltf.gap_pct, best_ltf.formed_time_ist
+    )
+
     if session_filter and not is_in_ny_session(best_ltf.close_timestamp):
+        logger.info("[ExtremeStrategy] [%s] Setup rejected by NY Session filter (formed at %s)", symbol, best_ltf.formed_time_ist)
         return None
 
     if weekday_filter and not is_weekday(best_ltf.close_timestamp):
+        logger.info("[ExtremeStrategy] [%s] Setup rejected by Weekday filter (formed at %s)", symbol, best_ltf.formed_time_ist)
         return None
 
-    return build_extreme_trade_setup(
+    setup = build_extreme_trade_setup(
         symbol=symbol,
         anchor=anchor,
         ltf_fvg=best_ltf,
@@ -1260,4 +1283,10 @@ async def get_extreme_setup_for_symbol(
         completion_target=completion_target,
         all_unmitigated_fvgs=unmitigated,
     )
+    logger.info(
+        "[ExtremeStrategy] [%s] TRADE SETUP READY: %s | Entry: %.4f | SL: %.4f | 1R: %.4f | 2R: %.4f | 3R: %.4f (Risk: %.2f%%)",
+        setup.symbol, setup.direction, setup.entry_price, setup.stop_loss,
+        setup.tp_1r, setup.tp_2r, setup.tp_3r, setup.risk_pct
+    )
+    return setup
 

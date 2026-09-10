@@ -281,7 +281,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     from extreme_trade_tracker import extreme_trade_tracker
 
     setups_out = []
-    provider = get_market_data_provider(state.get("data_provider"))
+    provider_name = state.get("data_provider", "binance")
+    provider = get_market_data_provider(provider_name)
+    logger.info(
+        "[ScreenerCycle] Starting Extreme scan cycle for %d symbol(s): %s (LTF: %s, Target: %s, Provider: %s)",
+        len(coin_list), coin_list, ltf, target, provider.name
+    )
     mids = await provider.get_all_mids()
 
     for sym in coin_list:
@@ -526,6 +531,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     state["extreme_pending_count"] = pend_count
     state["extreme_last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
     state["extreme_total_cycles"] += 1
+
+    elapsed_sec = (datetime.now(IST) - start_time_ist).total_seconds()
+    logger.info(
+        "[ScreenerCycle] Finished cycle in %.2fs -> Total Setups: %d (Active: %d, Pending Retrace: %d)",
+        elapsed_sec, len(setups_out), act_count, pend_count
+    )
 
     return setups_out
 

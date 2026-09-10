@@ -94,23 +94,36 @@ class CandleStore:
             merged = merged[-self.max_capacity:]
         self._candles[key] = merged
         self._last_sync[key] = time.time()
+        
+        latest_c = merged[-1] if merged else {}
+        latest_ts_str = datetime.fromtimestamp(latest_c.get("t", 0) / 1000.0, tz=IST).strftime("%Y-%m-%d %I:%M:%S %p IST") if "t" in latest_c else "N/A"
+        logger.info(
+            "[CandleStore] [%s:%s:%s] Merged %d incoming candle(s) -> Store holds %d bars (Latest Bar: %s, Close: %.4f)",
+            provider_name.upper(), symbol.upper(), timeframe, len(new_candles), len(merged), latest_ts_str, float(latest_c.get("c", 0.0))
+        )
         return merged
 
     def get_cached_mids(self, provider_name: str) -> Optional[Dict[str, float]]:
         entry = self._mids_cache.get(provider_name.strip().lower())
         if entry and time.time() < entry[1]:
+            logger.debug("[CandleStore] [MIDS CACHE HIT] %s -> Serving %d mid prices from memory", provider_name.upper(), len(entry[0]))
             return dict(entry[0])
         return None
 
     def set_cached_mids(self, provider_name: str, mids: Dict[str, float]):
         self._mids_cache[provider_name.strip().lower()] = (dict(mids), time.time() + self.mids_ttl_seconds)
+        logger.info("[CandleStore] [MIDS CACHE UPDATED] %s -> Cached %d mid prices (TTL: %.1fs)", provider_name.upper(), len(mids), self.mids_ttl_seconds)
 
     def set_rate_limited(self, provider_name: str, cooldown_seconds: float = 60.0):
         target = time.time() + cooldown_seconds
         p = provider_name.strip().lower()
         if target > self._rate_limit_cooldown.get(p, 0.0):
             self._rate_limit_cooldown[p] = target
-            logger.warning("[RateLimit] %s entered cooldown for %.1f seconds until %s", provider_name, cooldown_seconds, datetime.fromtimestamp(target, tz=IST).strftime("%I:%M:%S %p IST"))
+            cooldown_ist = datetime.fromtimestamp(target, tz=IST).strftime("%I:%M:%S %p IST")
+            logger.warning(
+                "[CandleStore] [RATE LIMIT ACTIVE] %s entered rate-limit cooldown for %.1f seconds until %s",
+                provider_name.upper(), cooldown_seconds, cooldown_ist
+            )
 
     def is_rate_limited(self, provider_name: str) -> bool:
         return time.time() < self._rate_limit_cooldown.get(provider_name.strip().lower(), 0.0)
@@ -124,11 +137,13 @@ class CandleStore:
                 self._last_sync.pop(k, None)
             self._mids_cache.pop(p, None)
             self._rate_limit_cooldown.pop(p, None)
+            logger.info("[CandleStore] Cleared in-memory cache for provider %s", provider_name)
         else:
             self._candles.clear()
             self._last_sync.clear()
             self._mids_cache.clear()
             self._rate_limit_cooldown.clear()
+            logger.info("[CandleStore] Cleared all in-memory candle and midpoint stores")
 
 
 # Global Singleton In-Memory Candle Store

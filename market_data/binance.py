@@ -148,13 +148,15 @@ class BinanceProvider(BaseMarketDataProvider):
         # 1. Instant Cache Hit Check
         cached = self._store.get_candles(self.name, symbol, timeframe, n=n)
         if cached and len(cached) >= min(n, 50) and self._store.is_fresh(self.name, symbol, timeframe):
+            logger.info("[BinanceProvider] [CACHE HIT] %s %s -> Serving %d bars from CandleStore memory (0 network calls)", symbol, timeframe, len(cached))
             return cached
 
         # 2. Rate-Limit Guard
         if self._store.is_rate_limited(self.name):
             if cached:
+                logger.warning("[BinanceProvider] [RATE LIMITED] Serving %d cached bars for %s %s", len(cached), symbol, timeframe)
                 return cached
-            logger.warning("[RateLimit] %s rate limited, returning empty candles for %s %s", self.name, symbol, timeframe)
+            logger.warning("[BinanceProvider] [RATE LIMITED] Rate limited and no cache available for %s %s", symbol, timeframe)
             return []
 
         binance_sym = self.resolve_symbol(symbol)
@@ -165,6 +167,11 @@ class BinanceProvider(BaseMarketDataProvider):
         # 3. Delta vs Bootstrap Query Sizing
         has_bootstrapped = self._store.has_sufficient_candles(self.name, symbol, timeframe, min_count=min(n, 50))
         limit = 5 if has_bootstrapped else min(1000, max(50, n))
+
+        if has_bootstrapped:
+            logger.info("[BinanceProvider] [DELTA FETCH] %s (%s) %s -> Querying limit=5 latest delta candles via REST", symbol, binance_sym, timeframe)
+        else:
+            logger.info("[BinanceProvider] [BOOTSTRAP FETCH] %s (%s) %s -> Bootstrapping history with limit=%d candles via REST", symbol, binance_sym, timeframe, limit)
 
         params = {
             "symbol": binance_sym,
@@ -200,10 +207,10 @@ class BinanceProvider(BaseMarketDataProvider):
                     return self._store.get_candles(self.name, symbol, timeframe, n=n) or candles[-n:]
             elif resp.status_code in (418, 429):
                 self._store.set_rate_limited(self.name, 60.0)
-                logger.warning("Binance klines hit rate limit (HTTP %d) for %s (%s): %s", resp.status_code, symbol, timeframe, resp.text[:200])
+                logger.warning("[BinanceProvider] [HTTP %d] Rate limit hit for %s (%s): %s", resp.status_code, symbol, timeframe, resp.text[:200])
                 return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
             elif resp.status_code == 400 and self.use_futures:
-                # If symbol not found on Futures (e.g. PAXG on spot), fallback to spot
+                logger.info("[BinanceProvider] Symbol %s not found on Futures, falling back to Binance Spot klines", binance_sym)
                 spot_url = f"https://api.binance.com/api/v3/klines"
                 resp_spot = await client.get(spot_url, params=params)
                 if resp_spot.status_code == 200:
@@ -231,10 +238,10 @@ class BinanceProvider(BaseMarketDataProvider):
                     return self._store.get_candles(self.name, symbol, timeframe, n=n) or candles[-n:]
                 elif resp_spot.status_code in (418, 429):
                     self._store.set_rate_limited(self.name, 60.0)
-                    logger.warning("Binance spot klines hit rate limit (HTTP %d) for %s (%s)", resp_spot.status_code, symbol, timeframe)
+                    logger.warning("[BinanceProvider] Binance spot klines hit rate limit (HTTP %d) for %s (%s)", resp_spot.status_code, symbol, timeframe)
                     return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
         except Exception as exc:
-            logger.warning("Binance get_last_n_candles failed for %s (%s): %s", symbol, timeframe, exc)
+            logger.warning("[BinanceProvider] get_last_n_candles failed for %s (%s): %s", symbol, timeframe, exc)
 
         return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
 
