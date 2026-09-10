@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from dotenv import load_dotenv
+from market_data_provider import market_data_provider, BaseMarketDataProvider
 from hyperliquid_client import HyperliquidClient, hyperliquid_client
 
 load_dotenv()
@@ -577,7 +578,7 @@ htf_fvg_cache = HTFFVGCache()
 
 async def get_active_4h_fvgs_for_symbol(
     symbol: str,
-    client: Optional[HyperliquidClient] = None,
+    client: Optional[Any] = None,
     use_close_invalidation: bool = False,
     force_bootstrap: bool = False,
 ) -> List[FVG]:
@@ -589,7 +590,7 @@ async def get_active_4h_fvgs_for_symbol(
     if not force_bootstrap and not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
         await htf_fvg_cache.load_from_redis(symbol, use_close_invalidation=use_close_invalidation)
 
-    cli = client or hyperliquid_client
+    cli = client or market_data_provider
     raw = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
     if not raw:
         return []
@@ -829,14 +830,14 @@ def get_most_recent_touched_4h_fvg(
 async def get_most_recent_touched_anchor_for_symbol(
     symbol: str,
     ltf_timeframe: str = "5m",
-    client: Optional[HyperliquidClient] = None,
+    client: Optional[Any] = None,
     use_close_invalidation: bool = False,
 ) -> Optional[TouchedAnchor]:
     """
     Fetches live 4H and LTF candles for symbol and returns the single
     most recent touched 4H FVG anchor.
     """
-    cli = client or hyperliquid_client
+    cli = client or market_data_provider
     raw_4h = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
     if not raw_4h:
         return None
@@ -1188,7 +1189,7 @@ async def get_extreme_setup_for_symbol(
     4. Applies optional formation session/weekday filters on candidate FVG completion time.
     5. Computes Entry, SL, and 1R/2R/3R targets.
     """
-    cli = client or hyperliquid_client
+    cli = client or market_data_provider
     anchor = await get_most_recent_touched_anchor_for_symbol(
         symbol=symbol,
         ltf_timeframe=ltf_timeframe,

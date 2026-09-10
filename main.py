@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from hyperliquid_client import hyperliquid_client
 import strategy
@@ -26,6 +26,7 @@ from strategy import SetupResult, run_screener, get_last_n_candles, USE_CLOSE_BA
 from telegram_client import broadcast_setups_stateful, broadcast_trade_updates, send_telegram_alert
 from trade_tracker import trade_tracker
 from redis_client import redis_client
+from market_data_provider import market_data_provider, get_market_data_provider, close_all_providers
 
 load_dotenv()
 
@@ -106,6 +107,7 @@ state: Dict[str, Any] = {
     "extreme_total_cycles": 0,
     "extreme_background_task": None,
     "extreme_notified_states": {},
+    "data_provider": os.getenv("DATA_PROVIDER", "binance").strip().lower(),
 }
 
 
@@ -139,14 +141,10 @@ async def execute_screener_cycle(
     )
 
     try:
-        universe = await hyperliquid_client.get_universe()
+        universe = await market_data_provider.get_universe_coins()
         whitelist_raw = os.getenv("COINS_WHITELIST", state.get("coins_whitelist", COINS_WHITELIST)).strip()
         if whitelist_raw and whitelist_raw.upper() != "ALL":
             allowed = {c.strip().upper() for c in whitelist_raw.split(",") if c.strip()}
-            from hyperliquid_client import SYMBOL_ALIASES
-            for raw_sym in list(allowed):
-                if raw_sym in SYMBOL_ALIASES:
-                    allowed.add(SYMBOL_ALIASES[raw_sym])
             active_count = len([c for c in universe if c.upper() in allowed])
         else:
             active_count = len(universe)
@@ -159,7 +157,7 @@ async def execute_screener_cycle(
         state["max_htf_retrace_candles"] = retrace_win
         state["session_filter_enabled"] = sess_enabled
 
-        all_mids = await hyperliquid_client.get_all_mids()
+        all_mids = await market_data_provider.get_all_mids()
 
         # 1. Check open active trades for TP/SL hits
         tp_sl_updates = trade_tracker.check_open_trades(all_mids)
@@ -217,7 +215,8 @@ async def trade_monitor_worker():
             await asyncio.sleep(30)
             if not state["is_running"]:
                 break
-            all_mids = await hyperliquid_client.get_all_mids()
+            provider = get_market_data_provider(state.get("data_provider"))
+            all_mids = await provider.get_all_mids()
             if all_mids:
                 updates = trade_tracker.check_open_trades(all_mids)
                 if updates:
@@ -282,10 +281,11 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     from extreme_trade_tracker import extreme_trade_tracker
 
     setups_out = []
-    mids = await hyperliquid_client.get_all_mids()
+    provider = get_market_data_provider(state.get("data_provider"))
+    mids = await provider.get_all_mids()
 
     for sym in coin_list:
-        raw_sym = SYMBOL_ALIASES.get(sym, sym)
+        raw_sym = provider.resolve_symbol(sym)
         curr_px = float(mids.get(raw_sym, mids.get(sym, 0.0)))
 
         # 1. LEDGER CHECK: Is there an existing open TRADE_ACTIVE position?
@@ -328,8 +328,9 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         # 2. If no active trade in ledger, scan for new setups / pending retrace
         try:
             setup = await get_extreme_setup_for_symbol(
-                symbol=raw_sym,
+                symbol=sym,
                 ltf_timeframe=ltf,
+                client=provider,
                 use_close_invalidation=use_close,
                 min_gap_pct=min_gap,
                 completion_target=target,
@@ -338,7 +339,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             )
             if setup:
                 if curr_px == 0.0:
-                    curr_px = float(mids.get(raw_sym, setup.entry_price))
+                    curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
                 setup_dict = {
                     "symbol": sym,
@@ -581,6 +582,8 @@ async def lifespan(app: FastAPI):
                     state["extreme_entry_weekday_filter"] = bool(saved_cfg["entry_weekday_filter_enabled"])
                 if "coins_whitelist" in saved_cfg:
                     state["coins_whitelist"] = str(saved_cfg["coins_whitelist"])
+                if "data_provider" in saved_cfg:
+                    state["data_provider"] = str(saved_cfg["data_provider"]).strip().lower()
                 logger.info("Restored runtime configuration from Redis ('%s').", cfg_key)
     except Exception as exc:
         logger.warning("Failed to restore initial state from Redis: %s", exc)
@@ -625,6 +628,7 @@ async def lifespan(app: FastAPI):
     if state.get("extreme_background_task"):
         state["extreme_background_task"].cancel()
 
+    await close_all_providers()
     await hyperliquid_client.close()
     await redis_client.close()
     logger.info("Application shutdown complete.")
@@ -1168,10 +1172,11 @@ async def api_extreme_scan(
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
 
     setups_out = []
-    mids = await hyperliquid_client.get_all_mids()
+    provider = get_market_data_provider(state.get("data_provider"))
+    mids = await provider.get_all_mids()
 
     for sym in coin_list:
-        raw_sym = SYMBOL_ALIASES.get(sym, sym)
+        raw_sym = provider.resolve_symbol(sym)
         curr_px = float(mids.get(raw_sym, mids.get(sym, 0.0)))
 
         # 1. Check ledger for active trade (IMMUTABLE entry price, SL, targets)
@@ -1213,8 +1218,9 @@ async def api_extreme_scan(
         # 2. If no active trade, scan for new setups
         try:
             setup = await get_extreme_setup_for_symbol(
-                symbol=raw_sym,
+                symbol=sym,
                 ltf_timeframe=ltf_to_use,
+                client=provider,
                 use_close_invalidation=use_close,
                 min_gap_pct=min_gap_to_use,
                 completion_target=target_to_use,
@@ -1223,7 +1229,7 @@ async def api_extreme_scan(
             )
             if setup:
                 if curr_px == 0.0:
-                    curr_px = float(mids.get(raw_sym, setup.entry_price))
+                    curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
                 setups_out.append({
                     "symbol": sym,
@@ -1382,6 +1388,7 @@ async def api_extreme_status():
         "entry_session_filter_enabled": state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED),
         "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
+        "data_provider": state.get("data_provider", "binance"),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
         "active_count": state.get("extreme_active_count", 0),
         "pending_count": state.get("extreme_pending_count", 0),
@@ -1429,6 +1436,7 @@ async def api_extreme_config(
     entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill NY session filter"),
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter"),
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
+    provider: Optional[str] = Query(default=None, pattern="^(binance|binance_futures|binance_spot|oanda|hyperliquid)$", description="Market data provider"),
 ):
     if interval_seconds is not None:
         state["extreme_interval_seconds"] = interval_seconds
@@ -1451,6 +1459,9 @@ async def api_extreme_config(
         state["extreme_entry_weekday_filter"] = entry_weekday_filter
     if symbols is not None and symbols.strip():
         state["coins_whitelist"] = symbols.strip().upper()
+    if provider is not None and provider.strip():
+        state["data_provider"] = provider.strip().lower()
+        logger.info("Switched active data provider to '%s'", state["data_provider"])
 
     cfg_payload = {
         "interval_seconds": state["extreme_interval_seconds"],
@@ -1463,6 +1474,7 @@ async def api_extreme_config(
         "entry_session_filter_enabled": state["extreme_entry_session_filter"],
         "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
         "coins_whitelist": state["coins_whitelist"],
+        "data_provider": state.get("data_provider", "binance"),
     }
 
     # Persist updated configuration to Redis
@@ -1496,19 +1508,19 @@ async def api_extreme_chart(
     ltf_top: float = Query(...),
     ltf_formed_ts: Optional[int] = Query(default=0),
     htf_first_touch_ist: Optional[str] = Query(default=None),
-    state: str = Query(default="PENDING_RETRACE"),
+    setup_state: str = Query(default="PENDING_RETRACE", alias="state"),
     floating_r: float = Query(default=0.0),
     entry_ts: Optional[int] = Query(default=None),
     exit_ts: Optional[int] = Query(default=None),
 ):
     from chart_generator import generate_extreme_setup_chart
-    from hyperliquid_client import SYMBOL_ALIASES, hl_client
     from strategy import Candle
     import time
 
-    raw_sym = SYMBOL_ALIASES.get(symbol.strip().upper(), symbol.strip().upper())
+    provider = get_market_data_provider(state.get("data_provider"))
+    clean_sym = symbol.strip().upper()
     c_dur = 15 * 60 * 1000 if ltf == "15m" else (5 * 60 * 1000 if ltf == "5m" else (60 * 60 * 1000 if ltf == "1h" else 60 * 1000))
-    is_historical = str(state).startswith("HISTORICAL_") or (exit_ts is not None and exit_ts > 0)
+    is_historical = str(setup_state).startswith("HISTORICAL_") or (exit_ts is not None and exit_ts > 0)
     now_ts = int(time.time() * 1000)
 
     candles = []
@@ -1523,8 +1535,8 @@ async def api_extreme_chart(
             t_start = entry_ts - 8 * c_dur
 
         try:
-            raw_candles = await hl_client.get_candle_snapshot(
-                coin=raw_sym,
+            raw_candles = await provider.get_historical_candles_range(
+                coin=clean_sym,
                 interval=ltf,
                 start_time_ms=t_start,
                 end_time_ms=t_end,
@@ -1532,7 +1544,7 @@ async def api_extreme_chart(
             if raw_candles:
                 candles = [Candle.from_dict(c) for c in raw_candles]
         except Exception as exc:
-            logger.debug("Historical snapshot fetch error for %s: %s", raw_sym, exc)
+            logger.debug("Historical snapshot fetch error for %s: %s", clean_sym, exc)
 
     elif entry_ts and entry_ts > 0:
         # For active open trades: fetch from entry/formation time (up to 200 candles) to now
@@ -1541,8 +1553,8 @@ async def api_extreme_chart(
         t_end = now_ts + (2 * c_dur)
 
         try:
-            raw_candles = await hl_client.get_candle_snapshot(
-                coin=raw_sym,
+            raw_candles = await provider.get_historical_candles_range(
+                coin=clean_sym,
                 interval=ltf,
                 start_time_ms=t_start,
                 end_time_ms=t_end,
@@ -1550,10 +1562,12 @@ async def api_extreme_chart(
             if raw_candles:
                 candles = [Candle.from_dict(c) for c in raw_candles]
         except Exception as exc:
-            logger.debug("Active snapshot fetch error for %s: %s", raw_sym, exc)
+            logger.debug("Active snapshot fetch error for %s: %s", clean_sym, exc)
 
     if not candles:
-        candles = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=60)
+        raw_last = await provider.get_last_n_candles(symbol=clean_sym, timeframe=ltf, n=60)
+        if raw_last:
+            candles = [Candle.from_dict(c) for c in raw_last]
 
     if not candles:
         now_ts = int(time.time() * 1000)
@@ -1584,7 +1598,7 @@ async def api_extreme_chart(
         tp_1r=tp_1r,
         tp_2r=tp_2r,
         tp_3r=tp_3r,
-        state=state,
+        state=setup_state,
         floating_r=floating_r,
         ltf_timeframe=ltf,
         entry_time_ts=entry_ts,
