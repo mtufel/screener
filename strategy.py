@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Literal, Optional
 
 from dotenv import load_dotenv
+from market_data_provider import market_data_provider, BaseMarketDataProvider
 from hyperliquid_client import HyperliquidClient, hyperliquid_client
 
 load_dotenv()
@@ -434,10 +435,10 @@ async def get_last_n_candles(
     symbol: str,
     timeframe: str,
     n: int = LOOKBACK_CANDLES,
-    client: Optional[HyperliquidClient] = None,
+    client: Optional[Any] = None,
 ) -> List[Candle]:
     """Fetches finished candles for a symbol and timeframe."""
-    cli = client or hyperliquid_client
+    cli = client or market_data_provider
     raw = await cli.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n + 1)
     if not raw:
         return []

@@ -221,9 +221,10 @@ async def test_get_extreme_setup_for_symbol_end_to_end(monkeypatch):
     # zone [2418..2429], entry 2429, SL min(2414, 2416, 2429) = 2414 -> risk 15
 
     dummy = _DummyHyperliquidClient([h1, h2, h3, h4], [l1, l2, l3])
+    monkeypatch.setattr("strategy_extreme_fvg.market_data_provider", dummy)
     monkeypatch.setattr("strategy_extreme_fvg.hyperliquid_client", dummy)
 
-    setup = await get_extreme_setup_for_symbol("E2E", ltf_timeframe="5m")
+    setup = await get_extreme_setup_for_symbol("E2E", ltf_timeframe="5m", client=dummy)
 
     assert setup is not None
     assert setup.direction == "Bullish"
