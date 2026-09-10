@@ -130,3 +130,7 @@ openspec list --specs
 # Propose a new change
 openspec change
 ```
+
+### 4. Development Workflow
+- **Every feature must use OpenSpec**: propose → design → tasks → apply → archive.
+- **All dev work done in new branches out of `master`**: create a branch per change (e.g. `feat/<change-slug>`), merge back to `master` via PR.
