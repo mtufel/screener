@@ -581,21 +581,27 @@ async def get_active_4h_fvgs_for_symbol(
     client: Optional[Any] = None,
     use_close_invalidation: bool = False,
     force_bootstrap: bool = False,
+    candles_4h: Optional[List[Candle]] = None,
 ) -> List[FVG]:
     """
-    Fetches live 4H candles and returns active non-invalidated 4H FVGs
-    using the incremental cache with Redis persistence.
+    Fetches live 4H candles (or uses provided candles_4h) and returns active
+    non-invalidated 4H FVGs using the incremental cache with Redis persistence.
     """
     # 1. Attempt restore from Redis if not currently in memory and not forcing a bootstrap
     if not force_bootstrap and not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
         await htf_fvg_cache.load_from_redis(symbol, use_close_invalidation=use_close_invalidation)
 
-    cli = client or market_data_provider
-    raw = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
-    if not raw:
+    candles = candles_4h
+    if candles is None:
+        cli = client or market_data_provider
+        raw = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
+        if not raw:
+            return []
+        candles = [Candle.from_dict(c) for c in raw]
+
+    if not candles:
         return []
 
-    candles = [Candle.from_dict(c) for c in raw]
     current_price = candles[-1].close if candles else 0.0
 
     if force_bootstrap or not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
@@ -832,31 +838,39 @@ async def get_most_recent_touched_anchor_for_symbol(
     ltf_timeframe: str = "5m",
     client: Optional[Any] = None,
     use_close_invalidation: bool = False,
+    candles_4h: Optional[List[Candle]] = None,
+    candles_ltf: Optional[List[Candle]] = None,
 ) -> Optional[TouchedAnchor]:
     """
     Fetches live 4H and LTF candles for symbol and returns the single
-    most recent touched 4H FVG anchor.
+    most recent touched 4H FVG anchor. Reuses provided candle series to eliminate redundant API queries.
     """
     cli = client or market_data_provider
-    raw_4h = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
-    if not raw_4h:
+    if candles_4h is None:
+        raw_4h = await cli.get_last_n_candles(symbol=symbol, timeframe=HTF_TIMEFRAME, n=200)
+        if not raw_4h:
+            return None
+        candles_4h = [Candle.from_dict(c) for c in raw_4h]
+
+    if not candles_4h:
         return None
 
-    candles_4h = [Candle.from_dict(c) for c in raw_4h]
-    current_price = candles_4h[-1].close if candles_4h else 0.0
+    current_price = candles_4h[-1].close
 
-    # Get active non-invalidated 4H FVGs via cache
+    # Get active non-invalidated 4H FVGs via cache, passing already fetched 4H candles
     active_fvgs = await get_active_4h_fvgs_for_symbol(
         symbol=symbol,
         client=cli,
         use_close_invalidation=use_close_invalidation,
+        candles_4h=candles_4h,
     )
     if not active_fvgs:
         return None
 
-    # Fetch LTF candles to pinpoint exact touch timestamp
-    raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
-    candles_ltf = [Candle.from_dict(c) for c in raw_ltf] if raw_ltf else None
+    # Fetch LTF candles to pinpoint exact touch timestamp if not already provided
+    if candles_ltf is None:
+        raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
+        candles_ltf = [Candle.from_dict(c) for c in raw_ltf] if raw_ltf else None
 
     return get_most_recent_touched_4h_fvg(
         candles_4h=candles_4h,
@@ -1174,37 +1188,47 @@ def build_extreme_trade_setup(
 async def get_extreme_setup_for_symbol(
     symbol: str,
     ltf_timeframe: str = "5m",
-    client: Optional[HyperliquidClient] = None,
+    client: Optional[Any] = None,
     use_close_invalidation: bool = False,
     min_gap_pct: float = 0.05,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
     session_filter: bool = False,
     weekday_filter: bool = False,
+    candles_4h: Optional[List[Candle]] = None,
+    candles_ltf: Optional[List[Candle]] = None,
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:
-    1. Finds the most recent touched 4H FVG anchor.
+    1. Finds the most recent touched 4H FVG anchor (reusing candle data).
     2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter and state machine).
     3. Selects the #1 Extreme FVG (lowest for Bullish, highest for Bearish).
     4. Applies optional formation session/weekday filters on candidate FVG completion time.
     5. Computes Entry, SL, and 1R/2R/3R targets.
     """
     cli = client or market_data_provider
+
+    # Fetch LTF candles once if not provided
+    if candles_ltf is None:
+        raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
+        if not raw_ltf:
+            return None
+        candles_ltf = [Candle.from_dict(c) for c in raw_ltf]
+
+    if not candles_ltf:
+        return None
+
     anchor = await get_most_recent_touched_anchor_for_symbol(
         symbol=symbol,
         ltf_timeframe=ltf_timeframe,
         client=cli,
         use_close_invalidation=use_close_invalidation,
+        candles_4h=candles_4h,
+        candles_ltf=candles_ltf,
     )
     if not anchor:
         return None
 
-    raw_ltf = await cli.get_last_n_candles(symbol=symbol, timeframe=ltf_timeframe, n=300)
-    if not raw_ltf:
-        return None
-
-    candles_ltf = [Candle.from_dict(c) for c in raw_ltf]
-    current_price = candles_ltf[-1].close if candles_ltf else 0.0
+    current_price = candles_ltf[-1].close
 
     unmitigated = find_unmitigated_ltf_fvgs(
         candles_ltf=candles_ltf,

@@ -36,6 +36,111 @@ TIMEFRAME_MS: Dict[str, int] = {
 }
 
 
+class CandleStore:
+    """
+    Thread-safe In-Memory Local Candle & Midpoint Store with Rolling History and Delta Updates.
+    
+    Prevents redundant REST queries to exchange endpoints by:
+    1. Maintaining a rolling window (up to max_capacity bars) of validated candles per (provider, symbol, timeframe).
+    2. Serving repeated requests within TTL instantly from memory (O(1) lookup, <0.01ms latency).
+    3. Performing lightweight delta fetches (limit=5) once the initial history is bootstrapped.
+    4. Caching bulk ticker midpoints with short TTL.
+    5. Managing rate-limit cooldowns (HTTP 418/429) across providers to prevent API flooding.
+    """
+
+    def __init__(
+        self,
+        max_capacity: int = 500,
+        default_ttl_seconds: float = 5.0,
+        mids_ttl_seconds: float = 3.0,
+    ):
+        self.max_capacity = max_capacity
+        self.default_ttl_seconds = float(os.getenv("MARKET_DATA_CACHE_TTL_SECONDS", default_ttl_seconds))
+        self.mids_ttl_seconds = float(os.getenv("MARKET_DATA_MIDS_CACHE_TTL_SECONDS", mids_ttl_seconds))
+
+        # Maps f"{provider}:{symbol}:{timeframe}" -> List[Dict[str, Any]] (sorted by 't' ascending)
+        self._candles: Dict[str, List[Dict[str, Any]]] = {}
+        # Maps f"{provider}:{symbol}:{timeframe}" -> float (timestamp of last successful sync)
+        self._last_sync: Dict[str, float] = {}
+        # Maps provider -> (Dict[symbol, float], expire_timestamp_float)
+        self._mids_cache: Dict[str, Tuple[Dict[str, float], float]] = {}
+        # Maps provider -> cooldown_until_float
+        self._rate_limit_cooldown: Dict[str, float] = {}
+
+    def _key(self, provider_name: str, symbol: str, timeframe: str) -> str:
+        return f"{provider_name.strip().lower()}:{symbol.strip().upper()}:{timeframe.strip().lower()}"
+
+    def is_fresh(self, provider_name: str, symbol: str, timeframe: str, max_age_seconds: Optional[float] = None) -> bool:
+        key = self._key(provider_name, symbol, timeframe)
+        max_age = max_age_seconds if max_age_seconds is not None else self.default_ttl_seconds
+        return (time.time() - self._last_sync.get(key, 0.0)) < max_age
+
+    def has_sufficient_candles(self, provider_name: str, symbol: str, timeframe: str, min_count: int = 50) -> bool:
+        key = self._key(provider_name, symbol, timeframe)
+        return len(self._candles.get(key, [])) >= min_count
+
+    def get_candles(self, provider_name: str, symbol: str, timeframe: str, n: int = 200) -> Optional[List[Dict[str, Any]]]:
+        key = self._key(provider_name, symbol, timeframe)
+        series = self._candles.get(key)
+        if not series:
+            return None
+        return list(series[-n:]) if n > 0 else list(series)
+
+    def merge_candles(self, provider_name: str, symbol: str, timeframe: str, new_candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not new_candles:
+            return self.get_candles(provider_name, symbol, timeframe) or []
+        key = self._key(provider_name, symbol, timeframe)
+        existing = self._candles.get(key, [])
+        candle_map = {c["t"]: c for c in existing if "t" in c}
+        for c in new_candles:
+            if "t" in c:
+                candle_map[c["t"]] = c
+        merged = sorted(candle_map.values(), key=lambda c: c.get("t", 0))
+        if len(merged) > self.max_capacity:
+            merged = merged[-self.max_capacity:]
+        self._candles[key] = merged
+        self._last_sync[key] = time.time()
+        return merged
+
+    def get_cached_mids(self, provider_name: str) -> Optional[Dict[str, float]]:
+        entry = self._mids_cache.get(provider_name.strip().lower())
+        if entry and time.time() < entry[1]:
+            return dict(entry[0])
+        return None
+
+    def set_cached_mids(self, provider_name: str, mids: Dict[str, float]):
+        self._mids_cache[provider_name.strip().lower()] = (dict(mids), time.time() + self.mids_ttl_seconds)
+
+    def set_rate_limited(self, provider_name: str, cooldown_seconds: float = 60.0):
+        target = time.time() + cooldown_seconds
+        p = provider_name.strip().lower()
+        if target > self._rate_limit_cooldown.get(p, 0.0):
+            self._rate_limit_cooldown[p] = target
+            logger.warning("[RateLimit] %s entered cooldown for %.1f seconds until %s", provider_name, cooldown_seconds, datetime.fromtimestamp(target, tz=IST).strftime("%I:%M:%S %p IST"))
+
+    def is_rate_limited(self, provider_name: str) -> bool:
+        return time.time() < self._rate_limit_cooldown.get(provider_name.strip().lower(), 0.0)
+
+    def clear(self, provider_name: Optional[str] = None):
+        if provider_name:
+            p = provider_name.strip().lower()
+            keys_to_del = [k for k in self._candles if k.startswith(f"{p}:")]
+            for k in keys_to_del:
+                self._candles.pop(k, None)
+                self._last_sync.pop(k, None)
+            self._mids_cache.pop(p, None)
+            self._rate_limit_cooldown.pop(p, None)
+        else:
+            self._candles.clear()
+            self._last_sync.clear()
+            self._mids_cache.clear()
+            self._rate_limit_cooldown.clear()
+
+
+# Global Singleton In-Memory Candle Store
+candle_store = CandleStore()
+
+
 class BaseMarketDataProvider(ABC):
     """Abstract Base Class for all market data providers."""
 
@@ -166,7 +271,15 @@ class BinanceProvider(BaseMarketDataProvider):
         return s
 
     async def get_all_mids(self) -> Dict[str, float]:
-        """Fetches all ticker prices in a single bulk request."""
+        """Fetches all ticker prices in a single bulk request with local caching and rate-limit guard."""
+        cached = candle_store.get_cached_mids(self.name)
+        if cached is not None:
+            return cached
+
+        if candle_store.is_rate_limited(self.name):
+            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown", self.name)
+            return {}
+
         client = self._get_http()
         endpoint = "/fapi/v1/ticker/price" if self.use_futures else "/api/v3/ticker/price"
         url = f"{self.api_url}{endpoint}"
@@ -191,7 +304,11 @@ class BinanceProvider(BaseMarketDataProvider):
                                     mids["SILVER"] = px
                         except (ValueError, TypeError):
                             continue
+                candle_store.set_cached_mids(self.name, mids)
                 return mids
+            elif resp.status_code in (418, 429):
+                candle_store.set_rate_limited(self.name, 60.0)
+                logger.warning("Binance ticker/price hit rate limit (HTTP %d): %s", resp.status_code, resp.text[:200])
             else:
                 logger.warning("Binance ticker/price returned status %d: %s", resp.status_code, resp.text[:200])
         except Exception as exc:
@@ -204,13 +321,28 @@ class BinanceProvider(BaseMarketDataProvider):
         timeframe: str = "5m",
         n: int = 200,
     ) -> List[Dict[str, Any]]:
-        """Fetches latest N candles for symbol and timeframe."""
+        """Fetches latest N candles for symbol and timeframe with delta updates and in-memory store."""
+        # 1. Instant Cache Hit Check
+        cached = candle_store.get_candles(self.name, symbol, timeframe, n=n)
+        if cached and len(cached) >= min(n, 50) and candle_store.is_fresh(self.name, symbol, timeframe):
+            return cached
+
+        # 2. Rate-Limit Guard
+        if candle_store.is_rate_limited(self.name):
+            if cached:
+                return cached
+            logger.warning("[RateLimit] %s rate limited, returning empty candles for %s %s", self.name, symbol, timeframe)
+            return []
+
         binance_sym = self.resolve_symbol(symbol)
         client = self._get_http()
         endpoint = "/fapi/v1/klines" if self.use_futures else "/api/v3/klines"
         url = f"{self.api_url}{endpoint}"
 
-        limit = min(1000, max(1, n))
+        # 3. Delta vs Bootstrap Query Sizing
+        has_bootstrapped = candle_store.has_sufficient_candles(self.name, symbol, timeframe, min_count=min(n, 50))
+        limit = 5 if has_bootstrapped else min(1000, max(50, n))
+
         params = {
             "symbol": binance_sym,
             "interval": timeframe,
@@ -241,7 +373,12 @@ class BinanceProvider(BaseMarketDataProvider):
                             "v": float(row[5]),
                             "n": trades_count,
                         })
-                    return candles
+                    candle_store.merge_candles(self.name, symbol, timeframe, candles)
+                    return candle_store.get_candles(self.name, symbol, timeframe, n=n) or candles[-n:]
+            elif resp.status_code in (418, 429):
+                candle_store.set_rate_limited(self.name, 60.0)
+                logger.warning("Binance klines hit rate limit (HTTP %d) for %s (%s): %s", resp.status_code, symbol, timeframe, resp.text[:200])
+                return candle_store.get_candles(self.name, symbol, timeframe, n=n) or []
             elif resp.status_code == 400 and self.use_futures:
                 # If symbol not found on Futures (e.g. PAXG on spot), fallback to spot
                 spot_url = f"https://api.binance.com/api/v3/klines"
@@ -267,10 +404,16 @@ class BinanceProvider(BaseMarketDataProvider):
                             "v": float(row[5]),
                             "n": trades_count,
                         })
-                    return candles
+                    candle_store.merge_candles(self.name, symbol, timeframe, candles)
+                    return candle_store.get_candles(self.name, symbol, timeframe, n=n) or candles[-n:]
+                elif resp_spot.status_code in (418, 429):
+                    candle_store.set_rate_limited(self.name, 60.0)
+                    logger.warning("Binance spot klines hit rate limit (HTTP %d) for %s (%s)", resp_spot.status_code, symbol, timeframe)
+                    return candle_store.get_candles(self.name, symbol, timeframe, n=n) or []
         except Exception as exc:
             logger.warning("Binance get_last_n_candles failed for %s (%s): %s", symbol, timeframe, exc)
-        return []
+
+        return candle_store.get_candles(self.name, symbol, timeframe, n=n) or []
 
     async def get_historical_candles_range(
         self,
@@ -520,9 +663,17 @@ class OandaProvider(BaseMarketDataProvider):
         return s
 
     async def get_all_mids(self) -> Dict[str, float]:
-        """Fetches pricing for known OANDA commodities and major forex/crypto pairs."""
+        """Fetches pricing for known OANDA commodities and major forex/crypto pairs with caching."""
+        cached = candle_store.get_cached_mids(self.name)
+        if cached is not None:
+            return cached
+
         if not self.is_configured():
             logger.debug("OANDA API key not configured. get_all_mids returning empty dict.")
+            return {}
+
+        if candle_store.is_rate_limited(self.name):
+            logger.warning("[RateLimit] Serving empty mids for %s due to rate limit cooldown", self.name)
             return {}
 
         instruments = [
@@ -549,7 +700,10 @@ class OandaProvider(BaseMarketDataProvider):
                             base = self.normalize_symbol_to_base(inst)
                             mids[base] = mid_px
                             mids[inst] = mid_px
+                    candle_store.set_cached_mids(self.name, mids)
                     return mids
+                elif resp.status_code in (418, 429):
+                    candle_store.set_rate_limited(self.name, 60.0)
             except Exception as exc:
                 logger.warning("OANDA pricing request failed: %s", exc)
 
@@ -564,6 +718,8 @@ class OandaProvider(BaseMarketDataProvider):
                     mids[inst] = c_list[-1]["c"]
             except Exception:
                 pass
+        if mids:
+            candle_store.set_cached_mids(self.name, mids)
         return mids
 
     async def get_last_n_candles(
@@ -572,9 +728,18 @@ class OandaProvider(BaseMarketDataProvider):
         timeframe: str = "5m",
         n: int = 200,
     ) -> List[Dict[str, Any]]:
-        """Fetches last N candles from OANDA v20 REST API."""
+        """Fetches last N candles from OANDA v20 REST API with delta updates and in-memory store."""
+        cached = candle_store.get_candles(self.name, symbol, timeframe, n=n)
+        if cached and len(cached) >= min(n, 50) and candle_store.is_fresh(self.name, symbol, timeframe):
+            return cached
+
         if not self.is_configured():
             logger.debug("OANDA API key not configured. Skipping candle fetch for %s.", symbol)
+            return []
+
+        if candle_store.is_rate_limited(self.name):
+            if cached:
+                return cached
             return []
 
         instrument = self.resolve_symbol(symbol)
@@ -582,9 +747,12 @@ class OandaProvider(BaseMarketDataProvider):
         client = self._get_http()
         url = f"{self.base_url}/instruments/{instrument}/candles"
 
+        has_bootstrapped = candle_store.has_sufficient_candles(self.name, symbol, timeframe, min_count=min(n, 50))
+        count = 5 if has_bootstrapped else min(5000, max(50, n))
+
         params = {
             "granularity": granularity,
-            "count": min(5000, max(1, n)),
+            "count": count,
             "price": "M",  # Midpoint candles
         }
 
@@ -615,13 +783,18 @@ class OandaProvider(BaseMarketDataProvider):
                         "c": float(mid.get("c", 0.0)),
                         "v": float(row.get("volume", 0.0)),
                     })
-                return candles
+                candle_store.merge_candles(self.name, symbol, timeframe, candles)
+                return candle_store.get_candles(self.name, symbol, timeframe, n=n) or candles[-n:]
+            elif resp.status_code in (418, 429):
+                candle_store.set_rate_limited(self.name, 60.0)
+                logger.warning("OANDA candles hit rate limit (HTTP %d) for %s", resp.status_code, instrument)
+                return candle_store.get_candles(self.name, symbol, timeframe, n=n) or []
             else:
                 logger.warning("OANDA candles for %s returned HTTP %d: %s", instrument, resp.status_code, resp.text[:200])
         except Exception as exc:
             logger.warning("Failed to fetch OANDA candles for %s: %s", instrument, exc)
 
-        return []
+        return candle_store.get_candles(self.name, symbol, timeframe, n=n) or []
 
     async def get_historical_candles_range(
         self,
@@ -695,7 +868,7 @@ class OandaProvider(BaseMarketDataProvider):
 # 3. HYPERLIQUID PROVIDER (Adapter wrapping existing HyperliquidClient)
 # ==============================================================================
 class HyperliquidProvider(BaseMarketDataProvider):
-    """Adapter wrapping HyperliquidClient into BaseMarketDataProvider interface."""
+    """Adapter wrapping HyperliquidClient into BaseMarketDataProvider interface with CandleStore caching."""
 
     def __init__(self, client: Optional[HyperliquidClient] = None):
         self._client = client or hyperliquid_client
@@ -709,7 +882,13 @@ class HyperliquidProvider(BaseMarketDataProvider):
         return resolve_symbol(raw_symbol)
 
     async def get_all_mids(self) -> Dict[str, float]:
-        return await self._client.get_all_mids()
+        cached = candle_store.get_cached_mids(self.name)
+        if cached is not None:
+            return cached
+        mids = await self._client.get_all_mids()
+        if mids:
+            candle_store.set_cached_mids(self.name, mids)
+        return mids
 
     async def get_last_n_candles(
         self,
@@ -717,7 +896,17 @@ class HyperliquidProvider(BaseMarketDataProvider):
         timeframe: str = "5m",
         n: int = 200,
     ) -> List[Dict[str, Any]]:
-        return await self._client.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
+        cached = candle_store.get_candles(self.name, symbol, timeframe, n=n)
+        if cached and len(cached) >= min(n, 50) and candle_store.is_fresh(self.name, symbol, timeframe):
+            return cached
+
+        has_bootstrapped = candle_store.has_sufficient_candles(self.name, symbol, timeframe, min_count=min(n, 50))
+        fetch_n = 5 if has_bootstrapped else max(50, n)
+        candles = await self._client.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=fetch_n)
+        if candles:
+            candle_store.merge_candles(self.name, symbol, timeframe, candles)
+            return candle_store.get_candles(self.name, symbol, timeframe, n=n) or candles[-n:]
+        return candle_store.get_candles(self.name, symbol, timeframe, n=n) or []
 
     async def get_historical_candles_range(
         self,
