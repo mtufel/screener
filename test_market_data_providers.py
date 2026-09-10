@@ -51,8 +51,11 @@ def test_binance_provider_symbol_normalization():
     assert p_futures.resolve_symbol("solusdt") == "SOLUSDT"
 
     # Commodity and alias mapping
-    assert p_futures.resolve_symbol("GOLD") == "PAXGUSDT"
+    assert p_futures.resolve_symbol("GOLD") == "XAUUSDT"
+    assert p_futures.resolve_symbol("XAU") == "XAUUSDT"
+    assert p_futures.resolve_symbol("PAXG") == "PAXGUSDT"
     assert p_futures.resolve_symbol("SILVER") == "XAGUSDT"
+    assert p_futures.resolve_symbol("XAG") == "XAGUSDT"
     assert p_futures.resolve_symbol("kPEPE") == "1000PEPEUSDT"
     assert p_futures.resolve_symbol("SHIB") == "1000SHIBUSDT"
 

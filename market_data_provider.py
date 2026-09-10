@@ -133,9 +133,11 @@ class BinanceProvider(BaseMarketDataProvider):
             sym = sym[:-3]
 
         aliases = {
-            "XAU": "PAXG",
-            "GOLD": "PAXG",
-            "XAUUSD": "PAXG",
+            "XAU": "XAU",
+            "GOLD": "XAU",
+            "XAUUSD": "XAU",
+            "XAUT": "XAUT",
+            "PAXG": "PAXG",
             "XAG": "XAG",
             "SILVER": "XAG",
             "XAGUSD": "XAG",
@@ -153,7 +155,7 @@ class BinanceProvider(BaseMarketDataProvider):
         return f"{clean}USDT"
 
     def normalize_symbol_to_base(self, binance_symbol: str) -> str:
-        """Converts BTCUSDT -> BTC, PAXGUSDT -> PAXG."""
+        """Converts BTCUSDT -> BTC, XAUUSDT -> XAU, PAXGUSDT -> PAXG."""
         s = binance_symbol.upper()
         if s.endswith("USDT"):
             return s[:-4]
@@ -183,6 +185,10 @@ class BinanceProvider(BaseMarketDataProvider):
                             if px > 0:
                                 mids[base] = px
                                 mids[sym] = px
+                                if base == "XAU":
+                                    mids["GOLD"] = px
+                                elif base == "XAG":
+                                    mids["SILVER"] = px
                         except (ValueError, TypeError):
                             continue
                 return mids
