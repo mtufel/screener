@@ -270,9 +270,19 @@ def test_resolved_states_are_discarded_from_discovery():
     c5 = mk_c(T0 + 4 * FIVE_MIN_MS, 103.0, 103.5, 99.0, 99.5)
     assert _run([c1, c2, c3, c4, c5], now=T0 + 5 * FIVE_MIN_MS) == []
 
-    # Fill then complete (2R: 103.0 + 2 * 3.5 = 110.0)
+    # Fill 100% then complete (low reaches bottom 101.0 -> fully mitigated)
+    c5_full = mk_c(T0 + 4 * FIVE_MIN_MS, 103.0, 110.5, 101.0, 109.0)
+    assert _run([c1, c2, c3, c4, c5_full], now=T0 + 5 * FIVE_MIN_MS) == []
+
+    # Partial fill then complete (2R: 103.0 + 2 * 3.5 = 110.0, low reaches 102.0)
+    # Residual gap [101.0, 102.0] is retained in PENDING_RETRACE with shrunk top=102.0
     c5b = mk_c(T0 + 4 * FIVE_MIN_MS, 103.0, 110.5, 102.0, 109.0)
-    assert _run([c1, c2, c3, c4, c5b], now=T0 + 5 * FIVE_MIN_MS) == []
+    residual = _run([c1, c2, c3, c4, c5b], now=T0 + 5 * FIVE_MIN_MS)
+    assert len(residual) == 1
+    assert residual[0].top == 102.0
+    assert residual[0].bottom == 101.0
+    assert residual[0].mitigation_count == 1
+    assert residual[0].lifecycle_state == "PENDING_RETRACE"
 
 
 def test_direction_filter_only_matching_fvgs_discovered():

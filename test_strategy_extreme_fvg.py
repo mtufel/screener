@@ -621,9 +621,23 @@ def test_trade_discarded_if_tp_hit():
     c4 = make_candle(1000 + 3 * M15, 120, 121, 102, 108)
     # c5 explodes to high=125 (hits TP1 120)
     c5 = make_candle(1000 + 4 * M15, 108, 125, 107, 124)
-
     now_ms = 1000 + 5 * M15
-    unmitigated = find_unmitigated_ltf_fvgs(
+
+    # Full mitigation: c4 dips through bottom (low=100 <= 100)
+    c4_full = make_candle(1000 + 3 * M15, 120, 121, 100, 108)
+    unmitigated_full = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4_full, c5],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=124.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+        completion_target="1R",
+    )
+    assert len(unmitigated_full) == 0  # Discarded because gap fully filled
+
+    # Partial mitigation: c4 dips to 102 (within [100, 105]), shrinks to [100, 102]
+    unmitigated_partial = find_unmitigated_ltf_fvgs(
         candles_ltf=[c1, c2, c3, c4, c5],
         after_timestamp=touch_ts,
         direction="Bullish",
@@ -632,8 +646,11 @@ def test_trade_discarded_if_tp_hit():
         ltf_timeframe="15m",
         completion_target="1R",
     )
-
-    assert len(unmitigated) == 0  # Discarded because target reached
+    assert len(unmitigated_partial) == 1
+    assert unmitigated_partial[0].top == 102
+    assert unmitigated_partial[0].bottom == 100
+    assert unmitigated_partial[0].mitigation_count == 1
+    assert unmitigated_partial[0].lifecycle_state == "PENDING_RETRACE"
 
 
 def test_unentered_fvg_stays_pending():

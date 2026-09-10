@@ -92,6 +92,16 @@ class FVG:
     lifecycle_state: str = "PENDING_RETRACE"
     entry_timestamp: Optional[int] = None
     floating_r: float = 0.0
+    original_top: Optional[float] = None
+    original_bottom: Optional[float] = None
+    mitigation_count: int = 0
+    deepest_wick_penetration: Optional[float] = None
+
+    def __post_init__(self):
+        if self.original_top is None:
+            self.original_top = self.top
+        if self.original_bottom is None:
+            self.original_bottom = self.bottom
 
     @property
     def width(self) -> float:
@@ -548,6 +558,10 @@ def fvg_to_dict(fvg: FVG) -> Dict[str, Any]:
         "lifecycle_state": fvg.lifecycle_state,
         "entry_timestamp": fvg.entry_timestamp,
         "floating_r": fvg.floating_r,
+        "original_top": fvg.original_top,
+        "original_bottom": fvg.original_bottom,
+        "mitigation_count": fvg.mitigation_count,
+        "deepest_wick_penetration": fvg.deepest_wick_penetration,
     }
 
 
@@ -569,7 +583,50 @@ def fvg_from_dict(d: Dict[str, Any]) -> FVG:
         lifecycle_state=d.get("lifecycle_state", "PENDING_RETRACE"),
         entry_timestamp=d.get("entry_timestamp"),
         floating_r=float(d.get("floating_r", 0.0)),
+        original_top=float(d.get("original_top", d["top"])),
+        original_bottom=float(d.get("original_bottom", d["bottom"])),
+        mitigation_count=int(d.get("mitigation_count", 0)),
+        deepest_wick_penetration=float(d["deepest_wick_penetration"]) if d.get("deepest_wick_penetration") is not None else None,
     )
+
+
+def shrink_fvg_on_mitigation(
+    fvg: FVG,
+    lowest_wick: Optional[float] = None,
+    highest_wick: Optional[float] = None,
+    min_gap_pct: float = 0.05,
+) -> Optional[FVG]:
+    """
+    Dynamically reduces the FVG boundary based on deepest adverse wick penetration.
+    - Bullish: top shrinks down to lowest_wick.
+    - Bearish: bottom rises up to highest_wick.
+    Returns the updated FVG if the residual gap meets min_gap_pct; otherwise returns None.
+    """
+    if fvg.direction == "Bullish":
+        if lowest_wick is None:
+            return fvg
+        if lowest_wick <= fvg.bottom:
+            # 100% mitigated / breached through bottom
+            return None
+        if lowest_wick < fvg.top:
+            fvg.top = lowest_wick
+            fvg.mitigation_count += 1
+            fvg.deepest_wick_penetration = lowest_wick
+    else:  # Bearish
+        if highest_wick is None:
+            return fvg
+        if highest_wick >= fvg.top:
+            # 100% mitigated / breached through top
+            return None
+        if highest_wick > fvg.bottom:
+            fvg.bottom = highest_wick
+            fvg.mitigation_count += 1
+            fvg.deepest_wick_penetration = highest_wick
+
+    if min_gap_pct > 0 and fvg.gap_pct < min_gap_pct:
+        return None
+
+    return fvg
 
 
 # Global Singleton Cache Instance
@@ -935,40 +992,44 @@ def evaluate_ltf_setup_lifecycle(
     subsequent_candles: List[Candle],
     current_price: float = 0.0,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
+    min_gap_pct: float = 0.05,
 ) -> Tuple[str, Optional[int], float]:
     """
     Evaluates the lifecycle state of a candidate LTF FVG from formation across subsequent candles up to current_price.
-    Returns: (state, entry_timestamp, floating_r)
-    - PENDING_RETRACE: Price has not touched entry yet.
-    - TRADE_ACTIVE: Price touched entry, but neither SL nor completion_target has been hit.
-    - STOPPED_OUT: Price hit SL after entry.
-    - COMPLETED: Price hit completion_target (TP) after entry.
-    - INVALIDATED: Price blew through SL before ever touching entry.
+    Supports partial mitigation & boundary shrinking:
+    - If a trade hits TP, the FVG shrinks by the deepest adverse wick reached during the trade.
+    - If the residual gap satisfies min_gap_pct, it transitions back to PENDING_RETRACE and continues evaluating
+      subsequent candles for potential re-entries.
+    - If a candle wicks through the full FVG / SL, it transitions to STOPPED_OUT (full invalidation).
+    - If the residual gap is smaller than min_gap_pct, it transitions to COMPLETED.
     """
     direction = ltf_fvg.direction
     c1, c2, c3 = ltf_fvg.c1, ltf_fvg.c2, ltf_fvg.c3
 
+    # Reset to original boundary state before chronological evaluation
+    ltf_fvg.top = ltf_fvg.original_top
+    ltf_fvg.bottom = ltf_fvg.original_bottom
+    ltf_fvg.mitigation_count = 0
+    ltf_fvg.deepest_wick_penetration = None
+
+    # Structural Stop Loss is fixed to the original 3-candle sequence
     if direction == "Bullish":
-        entry_price = ltf_fvg.top
         stop_loss = min(c1.low, c2.low, c3.low)
-        risk_r = max(0.0, entry_price - stop_loss)
-        mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
-        tp_target = entry_price + mult * risk_r
     else:
-        entry_price = ltf_fvg.bottom
         stop_loss = max(c1.high, c2.high, c3.high)
-        risk_r = max(0.0, stop_loss - entry_price)
-        mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
-        tp_target = entry_price - mult * risk_r
 
-    if risk_r <= 0:
-        return ("INVALIDATED", None, 0.0)
-
+    mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
     state = "PENDING_RETRACE"
     entry_ts: Optional[int] = None
+    deepest_wick: Optional[float] = None
 
     for c in subsequent_candles:
         if state == "PENDING_RETRACE":
+            entry_price = ltf_fvg.top if direction == "Bullish" else ltf_fvg.bottom
+            risk_r = (entry_price - stop_loss) if direction == "Bullish" else (stop_loss - entry_price)
+            if risk_r <= 0:
+                return ("INVALIDATED", None, 0.0)
+
             # If candle breached SL before touching entry
             if direction == "Bullish":
                 if c.low <= stop_loss and c.high < entry_price:
@@ -976,28 +1037,75 @@ def evaluate_ltf_setup_lifecycle(
                 if c.low <= entry_price:
                     state = "TRADE_ACTIVE"
                     entry_ts = c.timestamp
+                    deepest_wick = c.low
             else:
                 if c.high >= stop_loss and c.low > entry_price:
                     return ("INVALIDATED", None, 0.0)
                 if c.high >= entry_price:
                     state = "TRADE_ACTIVE"
                     entry_ts = c.timestamp
+                    deepest_wick = c.high
 
         if state == "TRADE_ACTIVE":
-            # Check SL
-            if direction == "Bullish" and c.low <= stop_loss:
-                return ("STOPPED_OUT", entry_ts, -1.0)
-            elif direction == "Bearish" and c.high >= stop_loss:
-                return ("STOPPED_OUT", entry_ts, -1.0)
+            entry_price = ltf_fvg.top if direction == "Bullish" else ltf_fvg.bottom
+            risk_r = (entry_price - stop_loss) if direction == "Bullish" else (stop_loss - entry_price)
+            tp_target = (entry_price + mult * risk_r) if direction == "Bullish" else (entry_price - mult * risk_r)
 
-            # Check TP
-            if direction == "Bullish" and c.high >= tp_target:
-                return ("COMPLETED", entry_ts, mult)
-            elif direction == "Bearish" and c.low <= tp_target:
-                return ("COMPLETED", entry_ts, mult)
+            if direction == "Bullish":
+                deepest_wick = min(deepest_wick if deepest_wick is not None else c.low, c.low)
+                # 1. Check SL
+                if c.low <= stop_loss:
+                    return ("STOPPED_OUT", entry_ts, -1.0)
+                # 2. Check TP
+                if c.high >= tp_target:
+                    # Partial mitigation evaluation
+                    new_top = deepest_wick
+                    if new_top <= ltf_fvg.bottom:
+                        return ("COMPLETED", entry_ts, mult)
 
-    # Check live price
-    if current_price > 0:
+                    # Shrink FVG
+                    ltf_fvg.top = new_top
+                    ltf_fvg.mitigation_count += 1
+                    ltf_fvg.deepest_wick_penetration = deepest_wick
+
+                    if min_gap_pct > 0 and ltf_fvg.gap_pct < min_gap_pct:
+                        return ("COMPLETED", entry_ts, mult)
+
+                    # Residual gap is valid! Reset to PENDING_RETRACE for remaining candles
+                    state = "PENDING_RETRACE"
+                    entry_ts = None
+                    deepest_wick = None
+            else:  # Bearish
+                deepest_wick = max(deepest_wick if deepest_wick is not None else c.high, c.high)
+                # 1. Check SL
+                if c.high >= stop_loss:
+                    return ("STOPPED_OUT", entry_ts, -1.0)
+                # 2. Check TP
+                if c.low <= tp_target:
+                    # Partial mitigation evaluation
+                    new_bottom = deepest_wick
+                    if new_bottom >= ltf_fvg.top:
+                        return ("COMPLETED", entry_ts, mult)
+
+                    # Shrink FVG
+                    ltf_fvg.bottom = new_bottom
+                    ltf_fvg.mitigation_count += 1
+                    ltf_fvg.deepest_wick_penetration = deepest_wick
+
+                    if min_gap_pct > 0 and ltf_fvg.gap_pct < min_gap_pct:
+                        return ("COMPLETED", entry_ts, mult)
+
+                    # Residual gap is valid! Reset to PENDING_RETRACE for remaining candles
+                    state = "PENDING_RETRACE"
+                    entry_ts = None
+                    deepest_wick = None
+
+    # Check live current price against current state of (possibly shrunk) FVG
+    entry_price = ltf_fvg.top if direction == "Bullish" else ltf_fvg.bottom
+    risk_r = (entry_price - stop_loss) if direction == "Bullish" else (stop_loss - entry_price)
+    tp_target = (entry_price + mult * risk_r) if direction == "Bullish" else (entry_price - mult * risk_r)
+
+    if current_price > 0 and risk_r > 0:
         if state == "PENDING_RETRACE":
             if direction == "Bullish":
                 if current_price <= stop_loss:
@@ -1024,7 +1132,6 @@ def evaluate_ltf_setup_lifecycle(
                 elif current_price <= tp_target:
                     return ("COMPLETED", entry_ts, mult)
 
-    # Calculate floating R if active
     floating_r = 0.0
     if state == "TRADE_ACTIVE" and current_price > 0 and risk_r > 0:
         if direction == "Bullish":
@@ -1050,6 +1157,7 @@ def find_unmitigated_ltf_fvgs(
     and runs the Trade State Machine:
     - Retains PENDING_RETRACE (waiting for entry)
     - Retains TRADE_ACTIVE (touched entry, floating between Entry and TP/SL)
+    - Automatically shrinks partially filled FVGs upon TP completion and allows residual re-entries.
     - Discards STOPPED_OUT, COMPLETED, and INVALIDATED.
     """
     duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
@@ -1099,17 +1207,18 @@ def find_unmitigated_ltf_fvgs(
         if cand is None:
             continue
 
-        # Check minimum gap size filter
+        # Check initial minimum gap size filter
         if min_gap_pct > 0 and cand.gap_pct < min_gap_pct:
             continue
 
-        # Evaluate trade state machine across subsequent candles
+        # Evaluate trade state machine across subsequent candles with partial mitigation
         subsequent = closed_ltf[i + 3:]
         state, entry_ts, floating_r = evaluate_ltf_setup_lifecycle(
             ltf_fvg=cand,
             subsequent_candles=subsequent,
             current_price=current_price,
             completion_target=completion_target,
+            min_gap_pct=min_gap_pct,
         )
 
         # Only retain setups that are PENDING_RETRACE or TRADE_ACTIVE
