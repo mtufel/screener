@@ -17,7 +17,8 @@ import time
 from typing import Any, Dict, List, Literal, Optional
 
 from dotenv import load_dotenv
-from hyperliquid_client import HyperliquidClient, hyperliquid_client
+from hyperliquid_client import HyperliquidClient
+from market_data_provider import get_market_data_provider, market_data_provider
 from strategy import (
     Candle,
     FVG,
@@ -341,7 +342,7 @@ async def run_historical_backtest(
     Supports either a relative lookback (in days) or exact custom date range (start_date to end_date).
     Supports single_position mode (one trade at a time until exit) vs concurrent positions mode.
     """
-    cli = client or hyperliquid_client
+    cli = client or market_data_provider
     ltf = ltf_timeframe if ltf_timeframe in ["1m", "5m", "15m", "1h"] else "5m"
     h_mode = htf_mode if htf_mode in ["ANY_VALID", "MOST_RECENT"] else "ANY_VALID"
 
@@ -366,18 +367,32 @@ async def run_historical_backtest(
     end_date_str = datetime.fromtimestamp(end_time_ms / 1000.0, tz=IST).strftime("%d-%b-%Y")
 
     # 1. Fetch historical 4H and LTF candles
-    raw_4h = await cli.get_candle_snapshot(
-        coin=symbol,
-        interval=HTF_TIMEFRAME,
-        start_time_ms=start_time_ms - (14 * 24 * 3600 * 1000),  # 14-day buffer for 4H history
-        end_time_ms=end_time_ms,
-    )
-    raw_ltf = await cli.get_candle_snapshot(
-        coin=symbol,
-        interval=ltf,
-        start_time_ms=start_time_ms,
-        end_time_ms=end_time_ms,
-    )
+    if hasattr(cli, "get_historical_candles_range"):
+        raw_4h = await cli.get_historical_candles_range(
+            coin=symbol,
+            interval=HTF_TIMEFRAME,
+            start_time_ms=start_time_ms - (14 * 24 * 3600 * 1000),  # 14-day buffer for 4H history
+            end_time_ms=end_time_ms,
+        )
+        raw_ltf = await cli.get_historical_candles_range(
+            coin=symbol,
+            interval=ltf,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+    else:
+        raw_4h = await cli.get_candle_snapshot(
+            coin=symbol,
+            interval=HTF_TIMEFRAME,
+            start_time_ms=start_time_ms - (14 * 24 * 3600 * 1000),
+            end_time_ms=end_time_ms,
+        )
+        raw_ltf = await cli.get_candle_snapshot(
+            coin=symbol,
+            interval=ltf,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
 
     if len(raw_4h) < 5 or len(raw_ltf) < 10:
         logger.warning("Insufficient historical candle data for %s (%s) backtest.", symbol, ltf)

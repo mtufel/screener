@@ -108,6 +108,7 @@ state: Dict[str, Any] = {
     "extreme_background_task": None,
     "extreme_notified_states": {},
     "data_provider": os.getenv("DATA_PROVIDER", "binance").strip().lower(),
+    "fallback_data_provider": os.getenv("FALLBACK_DATA_PROVIDER", "hyperliquid").strip().lower(),
 }
 
 
@@ -281,7 +282,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     from extreme_trade_tracker import extreme_trade_tracker
 
     setups_out = []
-    provider = get_market_data_provider(state.get("data_provider"))
+    provider_name = state.get("data_provider", "binance")
+    provider = get_market_data_provider(provider_name)
+    logger.info(
+        "[ScreenerCycle] Starting Extreme scan cycle for %d symbol(s): %s (LTF: %s, Target: %s, Provider: %s)",
+        len(coin_list), coin_list, ltf, target, provider.name
+    )
     mids = await provider.get_all_mids()
 
     for sym in coin_list:
@@ -526,6 +532,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     state["extreme_pending_count"] = pend_count
     state["extreme_last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
     state["extreme_total_cycles"] += 1
+
+    elapsed_sec = (datetime.now(IST) - start_time_ist).total_seconds()
+    logger.info(
+        "[ScreenerCycle] Finished cycle in %.2fs -> Total Setups: %d (Active: %d, Pending Retrace: %d)",
+        elapsed_sec, len(setups_out), act_count, pend_count
+    )
 
     return setups_out
 
@@ -1121,6 +1133,7 @@ async def backtest_endpoint(
     )
 
     try:
+        provider = get_market_data_provider(state.get("data_provider"))
         summary = await run_historical_backtest(
             symbol=clean_symbol,
             days=days,
@@ -1133,6 +1146,7 @@ async def backtest_endpoint(
             use_close_invalidation=use_close_invalidation,
             max_htf_retrace_candles=max_htf_retrace_candles,
             min_candle_gap=min_candle_gap,
+            client=provider,
         )
         return JSONResponse(content={"status": "success", "data": summary.to_dict()})
     except Exception as exc:
@@ -1321,6 +1335,7 @@ async def api_extreme_backtest(
             else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
 
+        provider = get_market_data_provider(state.get("data_provider"))
         report = await run_extreme_backtest(
             symbol=symbol.strip().upper(),
             days=days,
@@ -1331,6 +1346,7 @@ async def api_extreme_backtest(
             weekday_filter=wkday_filter,
             entry_session_filter=entry_sess_filter,
             entry_weekday_filter=entry_wkday_filter,
+            client=provider,
         )
         return JSONResponse(content={
             "status": "success",
@@ -1389,6 +1405,7 @@ async def api_extreme_status():
         "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "data_provider": state.get("data_provider", "binance"),
+        "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
         "active_count": state.get("extreme_active_count", 0),
         "pending_count": state.get("extreme_pending_count", 0),
@@ -1437,6 +1454,7 @@ async def api_extreme_config(
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter"),
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
     provider: Optional[str] = Query(default=None, pattern="^(binance|binance_futures|binance_spot|oanda|hyperliquid)$", description="Market data provider"),
+    fallback_provider: Optional[str] = Query(default=None, pattern="^(hyperliquid|binance|binance_futures|binance_spot|oanda|none)$", description="Fallback market data provider"),
 ):
     if interval_seconds is not None:
         state["extreme_interval_seconds"] = interval_seconds
@@ -1462,6 +1480,9 @@ async def api_extreme_config(
     if provider is not None and provider.strip():
         state["data_provider"] = provider.strip().lower()
         logger.info("Switched active data provider to '%s'", state["data_provider"])
+    if fallback_provider is not None and fallback_provider.strip():
+        state["fallback_data_provider"] = fallback_provider.strip().lower()
+        logger.info("Switched active fallback data provider to '%s'", state["fallback_data_provider"])
 
     cfg_payload = {
         "interval_seconds": state["extreme_interval_seconds"],
@@ -1475,6 +1496,7 @@ async def api_extreme_config(
         "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
         "coins_whitelist": state["coins_whitelist"],
         "data_provider": state.get("data_provider", "binance"),
+        "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
     }
 
     # Persist updated configuration to Redis

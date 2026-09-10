@@ -192,6 +192,7 @@ class HyperliquidClient:
                     return response.json()
 
                 except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+                    status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                     req_info = payload.get("req", {})
                     req_summary = f"coin={req_info.get('coin')}, interval={req_info.get('interval')}" if req_info else ""
                     logger.warning(
@@ -510,6 +511,21 @@ class HyperliquidClient:
 
         sorted_candles = sorted(raw_candles, key=lambda c: c.get("t", 0))
         return sorted_candles[-n:]
+
+    async def get_historical_candles_range(
+        self,
+        coin: str,
+        interval: str,
+        start_time_ms: int,
+        end_time_ms: int,
+    ) -> List[Dict[str, Any]]:
+        """Deep historical kline fetching range adapter matching BaseMarketDataProvider signature."""
+        return await self.get_candle_snapshot(
+            coin=coin,
+            interval=interval,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
 
 
 # Singleton instance
