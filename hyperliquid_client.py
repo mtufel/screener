@@ -512,6 +512,21 @@ class HyperliquidClient:
         sorted_candles = sorted(raw_candles, key=lambda c: c.get("t", 0))
         return sorted_candles[-n:]
 
+    async def get_historical_candles_range(
+        self,
+        coin: str,
+        interval: str,
+        start_time_ms: int,
+        end_time_ms: int,
+    ) -> List[Dict[str, Any]]:
+        """Deep historical kline fetching range adapter matching BaseMarketDataProvider signature."""
+        return await self.get_candle_snapshot(
+            coin=coin,
+            interval=interval,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+
 
 # Singleton instance
 hyperliquid_client = HyperliquidClient()

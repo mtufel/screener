@@ -12,6 +12,7 @@ Simulates the multi-timeframe strategy across historical market data:
 
 import argparse
 import asyncio
+import bisect
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 import logging
@@ -386,92 +387,223 @@ async def run_extreme_backtest(
     candles_ltf = [Candle.from_dict(c) for c in sorted(raw_ltf, key=lambda x: x.get("t", 0))]
 
     ltf_duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
-    entered_fvg_timestamps = set()
+    ltf_timestamps = [c.timestamp for c in candles_ltf]
+    ltf_close_timestamps = [c.timestamp + ltf_duration_ms for c in candles_ltf]
+    htf_close_timestamps = [c.timestamp + HTF_CANDLE_DURATION_MS for c in candles_4h]
+
+    # Pre-detect all LTF 3-candle FVGs matching min_gap_pct in a single linear pass
+    ltf_fvgs: List[Tuple[int, FVG]] = []  # (candle_3_index, FVG)
+    for idx in range(len(candles_ltf) - 2):
+        c1 = candles_ltf[idx]
+        c2 = candles_ltf[idx + 1]
+        c3 = candles_ltf[idx + 2]
+
+        if c3.low > c1.high:
+            gap = (c3.low - c1.high) / c1.high * 100.0
+            if gap >= min_gap_pct:
+                ltf_fvgs.append((
+                    idx + 2,
+                    FVG(
+                        direction="Bullish",
+                        top=c3.low,
+                        bottom=c1.high,
+                        c1=c1,
+                        c2=c2,
+                        c3=c3,
+                        formed_at=c3.timestamp,
+                        timeframe=ltf_timeframe,
+                    )
+                ))
+        elif c3.high < c1.low:
+            gap = (c1.low - c3.high) / c1.low * 100.0
+            if gap >= min_gap_pct:
+                ltf_fvgs.append((
+                    idx + 2,
+                    FVG(
+                        direction="Bearish",
+                        top=c1.low,
+                        bottom=c3.high,
+                        c1=c1,
+                        c2=c2,
+                        c3=c3,
+                        formed_at=c3.timestamp,
+                        timeframe=ltf_timeframe,
+                    )
+                ))
+
     executed_trades: List[ExtremeHistoricalTrade] = []
     trades_filtered_out = 0
+    entered_fvg_timestamps = set()
 
-    # Step forward through LTF candles (skipping initial 10 for warm-up)
-    i = 10
-    while i < len(candles_ltf) - 5:
-        curr_ltf = candles_ltf[i]
-        curr_time = curr_ltf.timestamp + ltf_duration_ms
+    # Pre-index 4H FVG first touches to eliminate redundant candle scans
+    first_touch_map: Dict[int, Optional[Tuple[int, str]]] = {}
+
+    def get_4h_first_touch(fvg: FVG) -> Optional[Tuple[int, str]]:
+        if fvg.formed_at in first_touch_map:
+            return first_touch_map[fvg.formed_at]
+        fvg_close_ts = fvg.close_timestamp
+        start_s = bisect.bisect_left(ltf_timestamps, fvg_close_ts)
+        res = None
+        for c in candles_ltf[start_s:]:
+            if fvg.direction == "Bullish":
+                if c.low <= fvg.top and c.high >= fvg.bottom:
+                    res = (c.timestamp, ltf_timeframe)
+                    break
+            else:
+                if c.high >= fvg.bottom and c.low <= fvg.top:
+                    res = (c.timestamp, ltf_timeframe)
+                    break
+        first_touch_map[fvg.formed_at] = res
+        return res
+
+    # Cache for base 4H FVGs per closed 4H candle count
+    active_4h_cache: Dict[int, List[FVG]] = {}
+
+    # Iterate strictly over LTF FVG formation events
+    fvg_ptr = 0
+    n_fvgs = len(ltf_fvgs)
+    n_ltf = len(candles_ltf)
+    curr_sim_idx = 2
+
+    while fvg_ptr < n_fvgs:
+        fvg_idx, current_fvg = ltf_fvgs[fvg_ptr]
+        if fvg_idx < curr_sim_idx:
+            fvg_ptr += 1
+            continue
+
+        curr_time = ltf_close_timestamps[fvg_idx]
+        curr_ltf = candles_ltf[fvg_idx]
 
         # 4H candles closed strictly before curr_time
-        closed_4h = [c for c in candles_4h if (c.timestamp + HTF_CANDLE_DURATION_MS) <= curr_time]
-        if len(closed_4h) < 3:
-            i += 1
+        num_4h = bisect.bisect_right(htf_close_timestamps, curr_time)
+        if num_4h < 3:
+            fvg_ptr += 1
             continue
 
-        # Active 4H FVGs
-        active_4h = compute_all_active_4h_fvgs(
-            candles_4h=closed_4h,
-            current_time_ms=curr_time,
-            use_close_invalidation=use_close_invalidation,
-            enforce_closed_filter=True,
-        )
+        if num_4h not in active_4h_cache:
+            closed_4h = candles_4h[:num_4h]
+            active_4h_cache[num_4h] = compute_all_active_4h_fvgs(
+                candles_4h=closed_4h,
+                current_time_ms=htf_close_timestamps[num_4h - 1],
+                use_close_invalidation=use_close_invalidation,
+                enforce_closed_filter=True,
+            )
+        base_4h = active_4h_cache[num_4h]
+        active_4h = [
+            f for f in base_4h
+            if not ((f.direction == "Bullish" and curr_ltf.close < f.bottom) or (f.direction == "Bearish" and curr_ltf.close > f.top))
+        ]
         if not active_4h:
-            i += 1
+            fvg_ptr += 1
             continue
 
-        # Available closed LTF candles up to curr_time
-        closed_ltf = candles_ltf[:i + 1]
+        # Find touched anchors
+        touched_anchors: List[TouchedAnchor] = []
+        for fvg in active_4h:
+            ft_info = get_4h_first_touch(fvg)
+            if not ft_info or ft_info[0] > curr_ltf.timestamp:
+                continue
 
-        # Isolate touched 4H anchor
-        anchor = get_most_recent_touched_4h_fvg(
-            candles_4h=closed_4h,
-            active_fvgs=active_4h,
-            current_price=curr_ltf.close,
-            candles_ltf=closed_ltf,
-            ltf_timeframe=ltf_timeframe,
+            first_ts, first_tf = ft_info
+            start_rec = bisect.bisect_left(ltf_timestamps, first_ts)
+            rec_ts = first_ts
+            is_inside = False
+            for c in reversed(candles_ltf[start_rec:fvg_idx + 1]):
+                if fvg.direction == "Bullish":
+                    if c.low <= fvg.top and c.high >= fvg.bottom:
+                        rec_ts = c.timestamp
+                        is_inside = (curr_ltf.close >= fvg.bottom and curr_ltf.close <= fvg.top)
+                        break
+                else:
+                    if c.high >= fvg.bottom and c.low <= fvg.top:
+                        rec_ts = c.timestamp
+                        is_inside = (curr_ltf.close >= fvg.bottom and curr_ltf.close <= fvg.top)
+                        break
+
+            touched_anchors.append(
+                TouchedAnchor(
+                    fvg=fvg,
+                    first_touch_timestamp=first_ts,
+                    most_recent_touch_timestamp=rec_ts,
+                    is_currently_inside=is_inside,
+                    touch_timeframe=first_tf,
+                )
+            )
+
+        if not touched_anchors:
+            fvg_ptr += 1
+            continue
+
+        touched_anchors.sort(
+            key=lambda a: (a.is_currently_inside, a.most_recent_touch_timestamp),
+            reverse=True,
         )
-        if not anchor:
-            i += 1
+        anchor = touched_anchors[0]
+
+        # Check matching direction and post-touch formation
+        if current_fvg.direction != anchor.fvg.direction or current_fvg.close_timestamp < anchor.first_touch_timestamp:
+            fvg_ptr += 1
             continue
 
-        # Search for post-touch unmitigated LTF FVGs
-        unmitigated = find_unmitigated_ltf_fvgs(
-            candles_ltf=closed_ltf,
-            after_timestamp=anchor.first_touch_timestamp,
-            direction=anchor.fvg.direction,
-            current_price=curr_ltf.close,
-            current_time_ms=curr_time,
-            ltf_timeframe=ltf_timeframe,
-            min_gap_pct=min_gap_pct,
-            completion_target="2R",
-        )
-        if not unmitigated:
-            i += 1
+        # Find all unmitigated LTF FVGs formed between anchor.first_touch_timestamp and fvg_idx
+        candidate_pool: List[FVG] = []
+        for prev_ptr in range(fvg_ptr + 1):
+            p_idx, p_fvg = ltf_fvgs[prev_ptr]
+            if p_fvg.direction != anchor.fvg.direction or p_fvg.close_timestamp < anchor.first_touch_timestamp:
+                continue
+            if p_fvg.formed_at in entered_fvg_timestamps:
+                continue
+
+            # Check invalidation between p_idx and fvg_idx
+            is_inval = False
+            for sub_c in candles_ltf[p_idx + 1:fvg_idx + 1]:
+                if p_fvg.direction == "Bullish":
+                    if sub_c.low <= min(p_fvg.c1.low, p_fvg.c2.low, p_fvg.c3.low):
+                        is_inval = True
+                        break
+                else:
+                    if sub_c.high >= max(p_fvg.c1.high, p_fvg.c2.high, p_fvg.c3.high):
+                        is_inval = True
+                        break
+            if not is_inval:
+                candidate_pool.append(p_fvg)
+
+        if not candidate_pool:
+            fvg_ptr += 1
             continue
 
-        best_ltf = select_extreme_ltf_fvg(unmitigated, anchor.fvg.direction)
-        if not best_ltf or best_ltf.formed_at in entered_fvg_timestamps:
-            i += 1
+        # Select Extreme FVG
+        if anchor.fvg.direction == "Bullish":
+            best_ltf = min(candidate_pool, key=lambda f: (f.bottom, f.formed_at))
+        else:
+            best_ltf = max(candidate_pool, key=lambda f: (f.top, -f.formed_at))
+
+        if best_ltf.formed_at in entered_fvg_timestamps:
+            fvg_ptr += 1
             continue
 
-        # Apply FVG formation session/weekday filters to LTF FVG c3 close timestamp
+        # Filters
         c3_close_ts = best_ltf.close_timestamp
         if session_filter and not is_in_ny_session(c3_close_ts):
             trades_filtered_out += 1
             entered_fvg_timestamps.add(best_ltf.formed_at)
-            i += 1
+            fvg_ptr += 1
             continue
         if weekday_filter and not is_weekday(c3_close_ts):
             trades_filtered_out += 1
             entered_fvg_timestamps.add(best_ltf.formed_at)
-            i += 1
+            fvg_ptr += 1
             continue
 
-        # Check forward candles strictly starting from i + 1 to find when price retraces to entry
         is_bullish = best_ltf.direction == "Bullish"
         entry_price = best_ltf.top if is_bullish else best_ltf.bottom
         stop_loss = min(best_ltf.c1.low, best_ltf.c2.low, best_ltf.c3.low) if is_bullish else max(best_ltf.c1.high, best_ltf.c2.high, best_ltf.c3.high)
 
         entry_triggered = False
-        k = i + 1
-        while k < len(candles_ltf):
+        k = fvg_idx + 1
+        while k < n_ltf:
             c_k = candles_ltf[k]
             if is_bullish:
-                # If breached SL before touching entry -> invalidated
                 if c_k.low <= stop_loss and c_k.high < entry_price:
                     entered_fvg_timestamps.add(best_ltf.formed_at)
                     break
@@ -479,7 +611,6 @@ async def run_extreme_backtest(
                     entry_triggered = True
                     break
             else:
-                # If breached SL before touching entry -> invalidated
                 if c_k.high >= stop_loss and c_k.low > entry_price:
                     entered_fvg_timestamps.add(best_ltf.formed_at)
                     break
@@ -491,20 +622,17 @@ async def run_extreme_backtest(
         if entry_triggered:
             entry_ts = candles_ltf[k].timestamp
 
-            # Apply entry fill session/weekday filters
             if entry_session_filter and not is_in_ny_session(entry_ts):
                 trades_filtered_out += 1
                 entered_fvg_timestamps.add(best_ltf.formed_at)
-                i += 1
+                fvg_ptr += 1
                 continue
             if entry_weekday_filter and not is_weekday(entry_ts):
                 trades_filtered_out += 1
                 entered_fvg_timestamps.add(best_ltf.formed_at)
-                i += 1
+                fvg_ptr += 1
                 continue
 
-            # Include the fill candle itself: its high/low must be evaluated for TP/SL
-            # resolution exactly like the live ledger (candles where ts >= entry_timestamp).
             subsequent = candles_ltf[k:]
             trade = simulate_trade_execution(
                 symbol=symbol,
@@ -519,11 +647,12 @@ async def run_extreme_backtest(
             executed_trades.append(trade)
             entered_fvg_timestamps.add(best_ltf.formed_at)
 
-            # Advance index forward past trade hold duration
+            # Advance sim index past trade hold duration
             bars_held = max(1, trade.duration_minutes // (ltf_duration_ms // 60000))
-            i = max(i + 1, k + bars_held)
+            curr_sim_idx = max(fvg_idx + 1, k + bars_held)
+            fvg_ptr += 1
         else:
-            i += 1
+            fvg_ptr += 1
 
     # Tally results
     total_trades = len(executed_trades)
