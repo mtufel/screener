@@ -1132,6 +1132,7 @@ async def backtest_endpoint(
     )
 
     try:
+        provider = get_market_data_provider(state.get("data_provider"))
         summary = await run_historical_backtest(
             symbol=clean_symbol,
             days=days,
@@ -1144,6 +1145,7 @@ async def backtest_endpoint(
             use_close_invalidation=use_close_invalidation,
             max_htf_retrace_candles=max_htf_retrace_candles,
             min_candle_gap=min_candle_gap,
+            client=provider,
         )
         return JSONResponse(content={"status": "success", "data": summary.to_dict()})
     except Exception as exc:
@@ -1332,6 +1334,7 @@ async def api_extreme_backtest(
             else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
 
+        provider = get_market_data_provider(state.get("data_provider"))
         report = await run_extreme_backtest(
             symbol=symbol.strip().upper(),
             days=days,
@@ -1342,6 +1345,7 @@ async def api_extreme_backtest(
             weekday_filter=wkday_filter,
             entry_session_filter=entry_sess_filter,
             entry_weekday_filter=entry_wkday_filter,
+            client=provider,
         )
         return JSONResponse(content={
             "status": "success",

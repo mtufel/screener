@@ -192,6 +192,7 @@ class HyperliquidClient:
                     return response.json()
 
                 except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+                    status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                     req_info = payload.get("req", {})
                     req_summary = f"coin={req_info.get('coin')}, interval={req_info.get('interval')}" if req_info else ""
                     logger.warning(

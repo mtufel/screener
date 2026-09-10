@@ -21,7 +21,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from dotenv import load_dotenv
 
-from hyperliquid_client import HyperliquidClient, hyperliquid_client, SYMBOL_ALIASES
+from hyperliquid_client import HyperliquidClient, SYMBOL_ALIASES
+from market_data_provider import get_market_data_provider, market_data_provider
 from strategy_extreme_fvg import (
     Candle,
     FVG,
@@ -326,20 +327,24 @@ async def run_extreme_backtest(
     weekday_filter: bool = False,
     entry_session_filter: bool = False,
     entry_weekday_filter: bool = False,
-    client: Optional[HyperliquidClient] = None,
+    client: Optional[Any] = None,
 ) -> ExtremeBacktestReport:
     """
     Executes a complete historical backtest over the specified number of days.
     """
-    cli = client or hyperliquid_client
-    raw_sym = SYMBOL_ALIASES.get(symbol.upper(), symbol.upper())
+    prov = client or market_data_provider
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - (days * 24 * 3600 * 1000)
 
     # 1. Fetch historical 4H and LTF candles
     try:
-        raw_4h = await cli.get_candle_snapshot(raw_sym, "4h", start_ms - (14 * 24 * 3600 * 1000), now_ms)
-        raw_ltf = await cli.get_candle_snapshot(raw_sym, ltf_timeframe, start_ms, now_ms)
+        if hasattr(prov, "get_historical_candles_range"):
+            raw_4h = await prov.get_historical_candles_range(symbol, "4h", start_ms - (14 * 24 * 3600 * 1000), now_ms)
+            raw_ltf = await prov.get_historical_candles_range(symbol, ltf_timeframe, start_ms, now_ms)
+        else:
+            raw_sym = SYMBOL_ALIASES.get(symbol.upper(), symbol.upper())
+            raw_4h = await prov.get_candle_snapshot(raw_sym, "4h", start_ms - (14 * 24 * 3600 * 1000), now_ms)
+            raw_ltf = await prov.get_candle_snapshot(raw_sym, ltf_timeframe, start_ms, now_ms)
     except Exception as exc:
         logger.error("Failed to retrieve historical candles for %s (%s): %s", symbol, ltf_timeframe, exc)
         raw_4h = []
