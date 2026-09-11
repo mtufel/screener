@@ -37,6 +37,7 @@ from strategy_extreme_fvg import (
     find_unmitigated_ltf_fvgs,
     select_extreme_ltf_fvg,
     build_extreme_trade_setup,
+    create_residual_fvg,
     is_in_ny_session,
     is_weekday,
     HTF_CANDLE_DURATION_MS,
@@ -83,6 +84,8 @@ class ExtremeHistoricalTrade:
     htf_first_touch_timestamp: int = 0
     htf_most_recent_touch_timestamp: int = 0
     ltf_gap_pct: float = 0.0
+    deepest_adverse_wick: float = 0.0
+    mitigation_count: int = 0
 
     @property
     def entry_time_ist(self) -> str:
@@ -138,6 +141,8 @@ class ExtremeHistoricalTrade:
             "mfe_r": round(self.mfe_r, 2),
             "mae_r": round(self.mae_r, 2),
             "duration_min": self.duration_minutes,
+            "deepest_adverse_wick": self.deepest_adverse_wick,
+            "mitigation_count": self.mitigation_count,
             "htf_anchor": {
                 "bottom": self.htf_fvg_bottom,
                 "top": self.htf_fvg_top,
@@ -188,6 +193,7 @@ class ExtremeBacktestReport:
     weekday_filter_enabled: bool = False
     entry_session_filter_enabled: bool = False
     entry_weekday_filter_enabled: bool = False
+    partial_mitigation_enabled: bool = True
     trades_filtered_out: int = 0
     trades: List[ExtremeHistoricalTrade] = field(default_factory=list)
 
@@ -315,6 +321,8 @@ def simulate_trade_execution(
         htf_most_recent_touch_timestamp=anchor.most_recent_touch_timestamp,
         ltf_gap_pct=ltf_fvg.gap_pct,
         ltf_timeframe=ltf_fvg.timeframe or "5m",
+        deepest_adverse_wick=max_adv_price,
+        mitigation_count=ltf_fvg.mitigation_count,
     )
 
 
@@ -328,6 +336,7 @@ async def run_extreme_backtest(
     weekday_filter: bool = False,
     entry_session_filter: bool = False,
     entry_weekday_filter: bool = False,
+    partial_mitigation: bool = True,
     client: Optional[Any] = None,
 ) -> ExtremeBacktestReport:
     """
@@ -363,6 +372,7 @@ async def run_extreme_backtest(
             weekday_filter_enabled=weekday_filter,
             entry_session_filter_enabled=entry_session_filter,
             entry_weekday_filter_enabled=entry_weekday_filter,
+            partial_mitigation_enabled=partial_mitigation,
             total_trades=0,
             wins_1r=0,
             wins_2r=0,
@@ -434,6 +444,7 @@ async def run_extreme_backtest(
     executed_trades: List[ExtremeHistoricalTrade] = []
     trades_filtered_out = 0
     entered_fvg_timestamps = set()
+    active_residuals: List[Tuple[int, FVG]] = []  # (avail_candle_idx, FVG)
 
     # Pre-index 4H FVG first touches to eliminate redundant candle scans
     first_touch_map: Dict[int, Optional[Tuple[int, str]]] = {}
@@ -568,6 +579,31 @@ async def run_extreme_backtest(
             if not is_inval:
                 candidate_pool.append(p_fvg)
 
+        # Include active residual FVGs if partial mitigation is enabled
+        if partial_mitigation and active_residuals:
+            surviving_residuals = []
+            for avail_idx, res_fvg in active_residuals:
+                if res_fvg.direction != anchor.fvg.direction or res_fvg.close_timestamp < anchor.first_touch_timestamp:
+                    continue
+                if avail_idx > fvg_idx:
+                    surviving_residuals.append((avail_idx, res_fvg))
+                    continue
+                # Invalidation check from avail_idx to fvg_idx
+                is_inval = False
+                for sub_c in candles_ltf[avail_idx:fvg_idx + 1]:
+                    if res_fvg.direction == "Bullish":
+                        if sub_c.low <= min(res_fvg.c1.low, res_fvg.c2.low, res_fvg.c3.low):
+                            is_inval = True
+                            break
+                    else:
+                        if sub_c.high >= max(res_fvg.c1.high, res_fvg.c2.high, res_fvg.c3.high):
+                            is_inval = True
+                            break
+                if not is_inval:
+                    candidate_pool.append(res_fvg)
+                    surviving_residuals.append((avail_idx, res_fvg))
+            active_residuals = surviving_residuals
+
         if not candidate_pool:
             fvg_ptr += 1
             continue
@@ -578,7 +614,7 @@ async def run_extreme_backtest(
         else:
             best_ltf = max(candidate_pool, key=lambda f: (f.top, -f.formed_at))
 
-        if best_ltf.formed_at in entered_fvg_timestamps:
+        if best_ltf.mitigation_count == 0 and best_ltf.formed_at in entered_fvg_timestamps:
             fvg_ptr += 1
             continue
 
@@ -586,12 +622,14 @@ async def run_extreme_backtest(
         c3_close_ts = best_ltf.close_timestamp
         if session_filter and not is_in_ny_session(c3_close_ts):
             trades_filtered_out += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
+            if best_ltf.mitigation_count == 0:
+                entered_fvg_timestamps.add(best_ltf.formed_at)
             fvg_ptr += 1
             continue
         if weekday_filter and not is_weekday(c3_close_ts):
             trades_filtered_out += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
+            if best_ltf.mitigation_count == 0:
+                entered_fvg_timestamps.add(best_ltf.formed_at)
             fvg_ptr += 1
             continue
 
@@ -605,14 +643,16 @@ async def run_extreme_backtest(
             c_k = candles_ltf[k]
             if is_bullish:
                 if c_k.low <= stop_loss and c_k.high < entry_price:
-                    entered_fvg_timestamps.add(best_ltf.formed_at)
+                    if best_ltf.mitigation_count == 0:
+                        entered_fvg_timestamps.add(best_ltf.formed_at)
                     break
                 if c_k.low <= entry_price:
                     entry_triggered = True
                     break
             else:
                 if c_k.high >= stop_loss and c_k.low > entry_price:
-                    entered_fvg_timestamps.add(best_ltf.formed_at)
+                    if best_ltf.mitigation_count == 0:
+                        entered_fvg_timestamps.add(best_ltf.formed_at)
                     break
                 if c_k.high >= entry_price:
                     entry_triggered = True
@@ -624,12 +664,14 @@ async def run_extreme_backtest(
 
             if entry_session_filter and not is_in_ny_session(entry_ts):
                 trades_filtered_out += 1
-                entered_fvg_timestamps.add(best_ltf.formed_at)
+                if best_ltf.mitigation_count == 0:
+                    entered_fvg_timestamps.add(best_ltf.formed_at)
                 fvg_ptr += 1
                 continue
             if entry_weekday_filter and not is_weekday(entry_ts):
                 trades_filtered_out += 1
-                entered_fvg_timestamps.add(best_ltf.formed_at)
+                if best_ltf.mitigation_count == 0:
+                    entered_fvg_timestamps.add(best_ltf.formed_at)
                 fvg_ptr += 1
                 continue
 
@@ -645,12 +687,89 @@ async def run_extreme_backtest(
                 ltf_fvg=best_ltf,
             )
             executed_trades.append(trade)
-            entered_fvg_timestamps.add(best_ltf.formed_at)
+
+            if best_ltf.mitigation_count == 0:
+                entered_fvg_timestamps.add(best_ltf.formed_at)
 
             # Advance sim index past trade hold duration
             bars_held = max(1, trade.duration_minutes // (ltf_duration_ms // 60000))
-            curr_sim_idx = max(fvg_idx + 1, k + bars_held)
-            fvg_ptr += 1
+            trade_exit_idx = k + bars_held
+            curr_sim_idx = max(fvg_idx + 1, trade_exit_idx)
+
+            # Residual FVG re-entry logic
+            if partial_mitigation:
+                # Remove current best_ltf from active_residuals if present
+                active_residuals = [(idx, f) for idx, f in active_residuals if f is not best_ltf]
+                curr_res_fvg = None
+                curr_res_avail_idx = trade_exit_idx
+                if trade.hit_2r or trade.hit_1r or trade.hit_3r:
+                    curr_res_fvg = create_residual_fvg(best_ltf, deepest_wick=trade.deepest_adverse_wick, min_gap_pct=min_gap_pct)
+
+                fvg_ptr += 1
+
+                while curr_res_fvg is not None:
+                    next_event_idx = ltf_fvgs[fvg_ptr][0] if fvg_ptr < n_fvgs else n_ltf
+                    is_res_bullish = curr_res_fvg.direction == "Bullish"
+                    res_entry_px = curr_res_fvg.top if is_res_bullish else curr_res_fvg.bottom
+                    res_sl = min(curr_res_fvg.c1.low, curr_res_fvg.c2.low, curr_res_fvg.c3.low) if is_res_bullish else max(curr_res_fvg.c1.high, curr_res_fvg.c2.high, curr_res_fvg.c3.high)
+
+                    res_triggered = False
+                    res_inval = False
+                    k_res = curr_res_avail_idx
+                    while k_res < next_event_idx:
+                        c_res = candles_ltf[k_res]
+                        if is_res_bullish:
+                            if c_res.low <= res_sl and c_res.high < res_entry_px:
+                                res_inval = True
+                                break
+                            if c_res.low <= res_entry_px:
+                                res_triggered = True
+                                break
+                        else:
+                            if c_res.high >= res_sl and c_res.low > res_entry_px:
+                                res_inval = True
+                                break
+                            if c_res.high >= res_entry_px:
+                                res_triggered = True
+                                break
+                        k_res += 1
+
+                    if res_inval:
+                        curr_res_fvg = None
+                        break
+
+                    if not res_triggered:
+                        active_residuals.append((curr_res_avail_idx, curr_res_fvg))
+                        break
+
+                    res_entry_ts = candles_ltf[k_res].timestamp
+                    if (entry_session_filter and not is_in_ny_session(res_entry_ts)) or (entry_weekday_filter and not is_weekday(res_entry_ts)):
+                        trades_filtered_out += 1
+                        curr_res_avail_idx = k_res + 1
+                        continue
+
+                    res_trade = simulate_trade_execution(
+                        symbol=symbol,
+                        direction=curr_res_fvg.direction,
+                        entry_price=res_entry_px,
+                        stop_loss=res_sl,
+                        entry_timestamp=res_entry_ts,
+                        subsequent_candles=candles_ltf[k_res:],
+                        anchor=anchor,
+                        ltf_fvg=curr_res_fvg,
+                    )
+                    executed_trades.append(res_trade)
+                    res_bars_held = max(1, res_trade.duration_minutes // (ltf_duration_ms // 60000))
+                    curr_res_avail_idx = k_res + res_bars_held
+                    curr_sim_idx = max(curr_sim_idx, curr_res_avail_idx)
+
+                    if res_trade.hit_2r or res_trade.hit_1r or res_trade.hit_3r:
+                        curr_res_fvg = create_residual_fvg(curr_res_fvg, deepest_wick=res_trade.deepest_adverse_wick, min_gap_pct=min_gap_pct)
+                    else:
+                        curr_res_fvg = None
+                        break
+            else:
+                fvg_ptr += 1
         else:
             fvg_ptr += 1
 
@@ -701,6 +820,7 @@ async def run_extreme_backtest(
         weekday_filter_enabled=weekday_filter,
         entry_session_filter_enabled=entry_session_filter,
         entry_weekday_filter_enabled=entry_weekday_filter,
+        partial_mitigation_enabled=partial_mitigation,
         trades_filtered_out=trades_filtered_out,
         total_trades=total_trades,
         wins_1r=wins_1r,
@@ -783,6 +903,8 @@ async def main():
     parser.add_argument("--weekday-filter", action="store_true", default=None, help="Only include FVGs formed on weekdays (Mon-Fri UTC)")
     parser.add_argument("--entry-session-filter", action="store_true", default=None, help="Only execute trades with entry filled during NY session (13:00-22:00 UTC)")
     parser.add_argument("--entry-weekday-filter", action="store_true", default=None, help="Only execute trades with entry filled on weekdays (Mon-Fri UTC)")
+    parser.add_argument("--partial-mitigation", dest="partial_mitigation", action="store_true", default=None, help="Enable residual FVG re-entries on partial mitigation (default: True)")
+    parser.add_argument("--no-partial-mitigation", dest="partial_mitigation", action="store_false", help="Disable residual FVG re-entries (classic 1-trade-per-FVG)")
     args = parser.parse_args()
 
     # CLI args override env vars; env vars override False defaults
@@ -790,6 +912,7 @@ async def main():
     weekday_filter = args.weekday_filter if args.weekday_filter is not None else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").lower() == "true"
     entry_session_filter = args.entry_session_filter if args.entry_session_filter is not None else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").lower() == "true"
     entry_weekday_filter = args.entry_weekday_filter if args.entry_weekday_filter is not None else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").lower() == "true"
+    partial_mitigation = args.partial_mitigation if args.partial_mitigation is not None else os.getenv("EXTREME_PARTIAL_MITIGATION_ENABLED", "true").lower() in ("true", "1", "yes")
 
     use_close = (args.invalidation == "close")
     report = await run_extreme_backtest(
@@ -802,6 +925,7 @@ async def main():
         weekday_filter=weekday_filter,
         entry_session_filter=entry_session_filter,
         entry_weekday_filter=entry_weekday_filter,
+        partial_mitigation=partial_mitigation,
     )
     print_backtest_report(report)
 

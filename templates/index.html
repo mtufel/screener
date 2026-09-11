@@ -1036,6 +1036,13 @@
                   <option value="true">Mon-Fri</option>
                 </select>
               </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Residual FVG</label>
+                <select id="extremeBtPartialMitigation" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="true" selected>Enabled (Re-entries)</option>
+                  <option value="false">Disabled (1-Trade)</option>
+                </select>
+              </div>
               <div class="self-end">
                 <button
                   onclick="runExtremeBacktest()"
@@ -1685,6 +1692,7 @@
       const weekdayFilter = document.getElementById('extremeBtWeekday') ? document.getElementById('extremeBtWeekday').value : 'false';
       const entrySessionFilter = document.getElementById('extremeBtEntrySession') ? document.getElementById('extremeBtEntrySession').value : 'false';
       const entryWeekdayFilter = document.getElementById('extremeBtEntryWeekday') ? document.getElementById('extremeBtEntryWeekday').value : 'false';
+      const partialMitigation = document.getElementById('extremeBtPartialMitigation') ? document.getElementById('extremeBtPartialMitigation').value : 'true';
 
       btn.disabled = true;
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting...</span>';
@@ -1692,7 +1700,7 @@
       tbody.innerHTML = '';
 
       try {
-        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05&session_filter=${sessionFilter}&weekday_filter=${weekdayFilter}&entry_session_filter=${entrySessionFilter}&entry_weekday_filter=${entryWeekdayFilter}`;
+        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05&session_filter=${sessionFilter}&weekday_filter=${weekdayFilter}&entry_session_filter=${entrySessionFilter}&entry_weekday_filter=${entryWeekdayFilter}&partial_mitigation=${partialMitigation}`;
         const resp = await fetchWithRetry(url, {}, 60000, 2);
         const data = await resp.json();
 
@@ -1734,10 +1742,13 @@
             const r3 = t.hit_3r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
             const htf = t.htf_anchor || {};
             const ltfFvg = t.ltf_fvg || {};
+            const residualBadge = (t.mitigation_count && t.mitigation_count > 0)
+              ? `<span class="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/20 text-amber-300 font-semibold border border-amber-500/30">Residual #${t.mitigation_count}</span>`
+              : '';
 
             rows += `
               <tr class="hover:bg-dark-700/30 transition-colors">
-                <td class="p-3 ${dirColor} font-bold">${t.direction}</td>
+                <td class="p-3 ${dirColor} font-bold">${t.direction}${residualBadge ? `<br>${residualBadge}` : ''}</td>
                 <td class="p-3 text-slate-300">
                   <span class="block font-semibold">$${formatNumber(htf.bottom)} - $${formatNumber(htf.top)}</span>
                   <span class="text-[10px] text-slate-400 block">Touch: ${htf.first_touch_time || '--'}</span>

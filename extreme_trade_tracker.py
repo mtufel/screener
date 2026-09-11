@@ -96,6 +96,15 @@ class TrackedExtremeTrade:
     entry_timestamp: Optional[int] = None
     closed_timestamp: Optional[int] = None
     absent_cycles: int = 0
+    mitigation_count: int = 0
+
+    @property
+    def fvg_top(self) -> float:
+        return float(self.ltf_fvg.get("top", self.entry_price))
+
+    @property
+    def fvg_bottom(self) -> float:
+        return float(self.ltf_fvg.get("bottom", self.entry_price))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -323,7 +332,7 @@ class ExtremeTradeTracker:
                 setup_created_ist = formed_ist or now_ist_str
 
                 existing_formed = existing_pending.ltf_fvg.get("formed_at", 0) or 0
-                if fvg_formed_at > existing_formed:
+                if fvg_formed_at >= existing_formed:
                     refreshed = TrackedExtremeTrade(
                         trade_id=trade_id,
                         symbol=sym,
@@ -343,6 +352,7 @@ class ExtremeTradeTracker:
                         status_detail="Waiting for Retrace (refreshed to latest emission)",
                         created_at_ist=setup_created_ist,
                         max_favorable_price=curr_px,
+                        mitigation_count=s.get("target_fvg", {}).get("mitigation_count", 0),
                     )
                     self.active_trades.pop(existing_pending.trade_id, None)
                     self.active_trades[trade_id] = refreshed
@@ -387,9 +397,8 @@ class ExtremeTradeTracker:
                     created_at_ist=setup_created_ist,
                     entry_filled_at_ist=s.get("entry_time_ist") if is_active else None,
                     floating_r=s.get("floating_r", 0.0) if is_active else 0.0,
-                    max_favorable_price=curr_px,
-                    mfe_r=max(0.0, s.get("floating_r", 0.0)) if is_active else 0.0,
                     entry_timestamp=s.get("entry_timestamp") or (now_ts if is_active else None),
+                    mitigation_count=s.get("target_fvg", {}).get("mitigation_count", 0),
                 )
                 self.active_trades[trade_id] = trade
                 events.append(("NEW_SETUP", trade))

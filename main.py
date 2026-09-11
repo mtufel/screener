@@ -1299,6 +1299,7 @@ async def api_extreme_backtest(
     weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter (Mon-Fri UTC)"),
     entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill NY session filter (13:00-22:00 UTC)"),
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter (Mon-Fri UTC)"),
+    partial_mitigation: Optional[bool] = Query(default=None, description="Enable residual FVG re-entries"),
 ):
     import math
     from backtest_extreme_fvg import run_extreme_backtest
@@ -1334,6 +1335,11 @@ async def api_extreme_backtest(
             if entry_weekday_filter is not None
             else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
+        part_mitigation = (
+            partial_mitigation
+            if partial_mitigation is not None
+            else os.getenv("EXTREME_PARTIAL_MITIGATION_ENABLED", "true").strip().lower() in ("true", "1", "yes")
+        )
 
         provider = get_market_data_provider(state.get("data_provider"))
         report = await run_extreme_backtest(
@@ -1346,6 +1352,7 @@ async def api_extreme_backtest(
             weekday_filter=wkday_filter,
             entry_session_filter=entry_sess_filter,
             entry_weekday_filter=entry_wkday_filter,
+            partial_mitigation=part_mitigation,
             client=provider,
         )
         return JSONResponse(content={
@@ -1358,6 +1365,8 @@ async def api_extreme_backtest(
             "session_filter_enabled": report.session_filter_enabled,
             "weekday_filter_enabled": report.weekday_filter_enabled,
             "entry_session_filter_enabled": report.entry_session_filter_enabled,
+            "entry_weekday_filter_enabled": report.entry_weekday_filter_enabled,
+            "partial_mitigation_enabled": report.partial_mitigation_enabled,
             "entry_weekday_filter_enabled": report.entry_weekday_filter_enabled,
             "trades_filtered_out": report.trades_filtered_out,
             "total_trades": report.total_trades,

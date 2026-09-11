@@ -92,6 +92,16 @@ class FVG:
     lifecycle_state: str = "PENDING_RETRACE"
     entry_timestamp: Optional[int] = None
     floating_r: float = 0.0
+    original_top: Optional[float] = None
+    original_bottom: Optional[float] = None
+    mitigation_count: int = 0
+    deepest_wick_penetration: Optional[float] = None
+
+    def __post_init__(self):
+        if self.original_top is None:
+            self.original_top = self.top
+        if self.original_bottom is None:
+            self.original_bottom = self.bottom
 
     @property
     def width(self) -> float:
@@ -119,6 +129,11 @@ class FVG:
     def formed_time_ist(self) -> str:
         """Formatted formation time (C3 close) in IST."""
         return datetime.fromtimestamp(self.close_timestamp / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+    def derive_residual(self, deepest_wick: float, min_gap_pct: float = 0.05) -> Optional["FVG"]:
+        """Creates a shrunk residual FVG resulting from partial mitigation via ResidualFVGEngine."""
+        from residual_fvg_engine import ResidualFVGEngine
+        return ResidualFVGEngine.create_residual(self, deepest_wick, min_gap_pct)
 
 
 def filter_closed_candles(
@@ -548,6 +563,10 @@ def fvg_to_dict(fvg: FVG) -> Dict[str, Any]:
         "lifecycle_state": fvg.lifecycle_state,
         "entry_timestamp": fvg.entry_timestamp,
         "floating_r": fvg.floating_r,
+        "original_top": fvg.original_top,
+        "original_bottom": fvg.original_bottom,
+        "mitigation_count": fvg.mitigation_count,
+        "deepest_wick_penetration": fvg.deepest_wick_penetration,
     }
 
 
@@ -569,7 +588,25 @@ def fvg_from_dict(d: Dict[str, Any]) -> FVG:
         lifecycle_state=d.get("lifecycle_state", "PENDING_RETRACE"),
         entry_timestamp=d.get("entry_timestamp"),
         floating_r=float(d.get("floating_r", 0.0)),
+        original_top=float(d.get("original_top") or d["top"]),
+        original_bottom=float(d.get("original_bottom") or d["bottom"]),
+        mitigation_count=int(d.get("mitigation_count", 0)),
+        deepest_wick_penetration=float(d["deepest_wick_penetration"]) if d.get("deepest_wick_penetration") is not None else None,
     )
+
+
+def create_residual_fvg(
+    fvg: FVG,
+    deepest_wick: Optional[float] = None,
+    min_gap_pct: float = 0.05,
+) -> Optional[FVG]:
+    """
+    Constructs a new residual FVG after partial mitigation via ResidualFVGEngine.
+    """
+    if deepest_wick is None or fvg is None:
+        return fvg
+    from residual_fvg_engine import ResidualFVGEngine
+    return ResidualFVGEngine.create_residual(fvg=fvg, deepest_wick=deepest_wick, min_gap_pct=min_gap_pct)
 
 
 # Global Singleton Cache Instance
@@ -935,104 +972,21 @@ def evaluate_ltf_setup_lifecycle(
     subsequent_candles: List[Candle],
     current_price: float = 0.0,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
-) -> Tuple[str, Optional[int], float]:
+    min_gap_pct: float = 0.05,
+    partial_mitigation: bool = True,
+) -> Tuple[str, Optional[int], float, Optional[FVG]]:
     """
-    Evaluates the lifecycle state of a candidate LTF FVG from formation across subsequent candles up to current_price.
-    Returns: (state, entry_timestamp, floating_r)
-    - PENDING_RETRACE: Price has not touched entry yet.
-    - TRADE_ACTIVE: Price touched entry, but neither SL nor completion_target has been hit.
-    - STOPPED_OUT: Price hit SL after entry.
-    - COMPLETED: Price hit completion_target (TP) after entry.
-    - INVALIDATED: Price blew through SL before ever touching entry.
+    Evaluates the lifecycle state of a candidate LTF FVG across subsequent candles and live price
+    delegating to the dedicated OOP TradeLifecycleEvaluator.
     """
-    direction = ltf_fvg.direction
-    c1, c2, c3 = ltf_fvg.c1, ltf_fvg.c2, ltf_fvg.c3
-
-    if direction == "Bullish":
-        entry_price = ltf_fvg.top
-        stop_loss = min(c1.low, c2.low, c3.low)
-        risk_r = max(0.0, entry_price - stop_loss)
-        mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
-        tp_target = entry_price + mult * risk_r
-    else:
-        entry_price = ltf_fvg.bottom
-        stop_loss = max(c1.high, c2.high, c3.high)
-        risk_r = max(0.0, stop_loss - entry_price)
-        mult = 1.0 if completion_target == "1R" else (2.0 if completion_target == "2R" else 3.0)
-        tp_target = entry_price - mult * risk_r
-
-    if risk_r <= 0:
-        return ("INVALIDATED", None, 0.0)
-
-    state = "PENDING_RETRACE"
-    entry_ts: Optional[int] = None
-
-    for c in subsequent_candles:
-        if state == "PENDING_RETRACE":
-            # If candle breached SL before touching entry
-            if direction == "Bullish":
-                if c.low <= stop_loss and c.high < entry_price:
-                    return ("INVALIDATED", None, 0.0)
-                if c.low <= entry_price:
-                    state = "TRADE_ACTIVE"
-                    entry_ts = c.timestamp
-            else:
-                if c.high >= stop_loss and c.low > entry_price:
-                    return ("INVALIDATED", None, 0.0)
-                if c.high >= entry_price:
-                    state = "TRADE_ACTIVE"
-                    entry_ts = c.timestamp
-
-        if state == "TRADE_ACTIVE":
-            # Check SL
-            if direction == "Bullish" and c.low <= stop_loss:
-                return ("STOPPED_OUT", entry_ts, -1.0)
-            elif direction == "Bearish" and c.high >= stop_loss:
-                return ("STOPPED_OUT", entry_ts, -1.0)
-
-            # Check TP
-            if direction == "Bullish" and c.high >= tp_target:
-                return ("COMPLETED", entry_ts, mult)
-            elif direction == "Bearish" and c.low <= tp_target:
-                return ("COMPLETED", entry_ts, mult)
-
-    # Check live price
-    if current_price > 0:
-        if state == "PENDING_RETRACE":
-            if direction == "Bullish":
-                if current_price <= stop_loss:
-                    return ("INVALIDATED", None, 0.0)
-                elif current_price <= entry_price:
-                    state = "TRADE_ACTIVE"
-                    entry_ts = int(time.time() * 1000)
-            else:
-                if current_price >= stop_loss:
-                    return ("INVALIDATED", None, 0.0)
-                elif current_price >= entry_price:
-                    state = "TRADE_ACTIVE"
-                    entry_ts = int(time.time() * 1000)
-
-        elif state == "TRADE_ACTIVE":
-            if direction == "Bullish":
-                if current_price <= stop_loss:
-                    return ("STOPPED_OUT", entry_ts, -1.0)
-                elif current_price >= tp_target:
-                    return ("COMPLETED", entry_ts, mult)
-            else:
-                if current_price >= stop_loss:
-                    return ("STOPPED_OUT", entry_ts, -1.0)
-                elif current_price <= tp_target:
-                    return ("COMPLETED", entry_ts, mult)
-
-    # Calculate floating R if active
-    floating_r = 0.0
-    if state == "TRADE_ACTIVE" and current_price > 0 and risk_r > 0:
-        if direction == "Bullish":
-            floating_r = (current_price - entry_price) / risk_r
-        else:
-            floating_r = (entry_price - current_price) / risk_r
-
-    return (state, entry_ts, floating_r)
+    from residual_fvg_engine import TradeLifecycleEvaluator
+    evaluator = TradeLifecycleEvaluator(
+        fvg=ltf_fvg,
+        completion_target=completion_target,
+        min_gap_pct=min_gap_pct,
+        partial_mitigation=partial_mitigation,
+    )
+    return evaluator.evaluate(subsequent_candles=subsequent_candles, current_price=current_price)
 
 
 def find_unmitigated_ltf_fvgs(
@@ -1044,6 +998,7 @@ def find_unmitigated_ltf_fvgs(
     ltf_timeframe: str = "5m",
     min_gap_pct: float = 0.05,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
+    partial_mitigation: bool = True,
 ) -> List[FVG]:
     """
     Scans candles_ltf for FVGs matching direction that formed strictly AFTER after_timestamp,
@@ -1105,19 +1060,21 @@ def find_unmitigated_ltf_fvgs(
 
         # Evaluate trade state machine across subsequent candles
         subsequent = closed_ltf[i + 3:]
-        state, entry_ts, floating_r = evaluate_ltf_setup_lifecycle(
+        state, entry_ts, floating_r, active_fvg = evaluate_ltf_setup_lifecycle(
             ltf_fvg=cand,
             subsequent_candles=subsequent,
             current_price=current_price,
             completion_target=completion_target,
+            min_gap_pct=min_gap_pct,
+            partial_mitigation=partial_mitigation,
         )
 
         # Only retain setups that are PENDING_RETRACE or TRADE_ACTIVE
         if state in ("PENDING_RETRACE", "TRADE_ACTIVE"):
-            cand.lifecycle_state = state
-            cand.entry_timestamp = entry_ts
-            cand.floating_r = floating_r
-            unmitigated.append(cand)
+            active_fvg.lifecycle_state = state
+            active_fvg.entry_timestamp = entry_ts
+            active_fvg.floating_r = floating_r
+            unmitigated.append(active_fvg)
 
     return unmitigated
 
@@ -1204,13 +1161,14 @@ async def get_extreme_setup_for_symbol(
     completion_target: Literal["1R", "2R", "3R"] = "2R",
     session_filter: bool = False,
     weekday_filter: bool = False,
+    partial_mitigation: bool = True,
     candles_4h: Optional[List[Candle]] = None,
     candles_ltf: Optional[List[Candle]] = None,
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:
     1. Finds the most recent touched 4H FVG anchor (reusing candle data).
-    2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter and state machine).
+    2. Scans for unmitigated LTF FVGs formed post-touch (with min_gap_pct filter, partial_mitigation, and state machine).
     3. Selects the #1 Extreme FVG (lowest for Bullish, highest for Bearish).
     4. Applies optional formation session/weekday filters on candidate FVG completion time.
     5. Computes Entry, SL, and 1R/2R/3R targets.
@@ -1248,6 +1206,7 @@ async def get_extreme_setup_for_symbol(
         ltf_timeframe=ltf_timeframe,
         min_gap_pct=min_gap_pct,
         completion_target=completion_target,
+        partial_mitigation=partial_mitigation,
     )
     if not unmitigated:
         logger.debug("[ExtremeStrategy] [%s] 0 unmitigated LTF FVGs found post-touch (threshold: %.3f%%)", symbol, min_gap_pct)

@@ -216,7 +216,13 @@ def test_daemon_restart_does_not_mass_expire(tmp_path):
 
 def test_fresher_emission_refreshes_stale_pending_record(tmp_path):
     """ETH-style stale anchor pairing: newer emission replaces entry/anchor/FVG in place."""
-    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "t.json"))
+    tracker = ExtremeTradeTracker(
+        storage_path=str(tmp_path / "t.json"),
+        session_filter=False,
+        weekday_filter=False,
+        entry_session_filter=False,
+        entry_weekday_filter=False,
+    )
     stale = _mk_setup(symbol="ETH", formed_at=1788434100000)
     stale.update(entry_price=2399.3, stop_loss=2386.0, risk_r=13.3,
                  tp_1r=2412.6, tp_2r=2425.9, tp_3r=2439.2)
@@ -240,7 +246,13 @@ def test_fresher_emission_refreshes_stale_pending_record(tmp_path):
 
 
 def test_trade_active_record_never_mutated_by_scanner_emission(tmp_path):
-    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "t.json"))
+    tracker = ExtremeTradeTracker(
+        storage_path=str(tmp_path / "t.json"),
+        session_filter=False,
+        weekday_filter=False,
+        entry_session_filter=False,
+        entry_weekday_filter=False,
+    )
     active = _mk_setup(symbol="BTC", formed_at=1788433200000, state="TRADE_ACTIVE")
     active["entry_time_ist"] = "03-Sep 06:52 PM IST"
     active["entry_timestamp"] = 1788433500000
@@ -430,7 +442,13 @@ def test_earlier_sl_hit_never_overridden_by_later_tp_touch(tmp_path):
 
 def test_bullish_earlier_sl_hit_never_overridden_by_later_tp_touch(tmp_path):
     """Bullish: Bar 1 breaches SL (95.0), Bar 2 touches TP (110.0). Must resolve STOPPED_OUT."""
-    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "t.json"))
+    tracker = ExtremeTradeTracker(
+        storage_path=str(tmp_path / "t.json"),
+        session_filter=False,
+        weekday_filter=False,
+        entry_session_filter=False,
+        entry_weekday_filter=False,
+    )
     entry_t = 1000000
     setup = {
         "symbol": "BTC",

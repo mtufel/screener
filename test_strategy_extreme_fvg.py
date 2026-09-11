@@ -623,7 +623,8 @@ def test_trade_discarded_if_tp_hit():
     c5 = make_candle(1000 + 4 * M15, 108, 125, 107, 124)
 
     now_ms = 1000 + 5 * M15
-    unmitigated = find_unmitigated_ltf_fvgs(
+    # When partial_mitigation=False, the FVG is discarded upon hitting TP
+    unmitigated_no_part = find_unmitigated_ltf_fvgs(
         candles_ltf=[c1, c2, c3, c4, c5],
         after_timestamp=touch_ts,
         direction="Bullish",
@@ -631,9 +632,24 @@ def test_trade_discarded_if_tp_hit():
         current_time_ms=now_ms,
         ltf_timeframe="15m",
         completion_target="1R",
+        partial_mitigation=False,
     )
+    assert len(unmitigated_no_part) == 0  # Discarded because target reached
 
-    assert len(unmitigated) == 0  # Discarded because target reached
+    # When partial_mitigation=True, the residual FVG [100, 102] remains active
+    unmitigated_part = find_unmitigated_ltf_fvgs(
+        candles_ltf=[c1, c2, c3, c4, c5],
+        after_timestamp=touch_ts,
+        direction="Bullish",
+        current_price=124.0,
+        current_time_ms=now_ms,
+        ltf_timeframe="15m",
+        completion_target="1R",
+        partial_mitigation=True,
+    )
+    assert len(unmitigated_part) == 1
+    assert unmitigated_part[0].top == 102
+    assert unmitigated_part[0].bottom == 100
 
 
 def test_unentered_fvg_stays_pending():

@@ -35,7 +35,7 @@ def mk_c(ts, o, h, l, c):
 T0 = 1_700_000_000_000 - (1_700_000_000_000 % FIVE_MIN_MS)
 
 
-def _run(candles, direction="Bullish", after=0, now=None, min_gap_pct=0.05, current_price=0.0):
+def _run(candles, direction="Bullish", after=0, now=None, min_gap_pct=0.05, current_price=0.0, partial_mitigation=True):
     return find_unmitigated_ltf_fvgs(
         candles_ltf=candles,
         after_timestamp=after,
@@ -44,6 +44,7 @@ def _run(candles, direction="Bullish", after=0, now=None, min_gap_pct=0.05, curr
         current_time_ms=now if now is not None else (candles[-1].timestamp + FIVE_MIN_MS if candles else T0),
         ltf_timeframe="5m",
         min_gap_pct=min_gap_pct,
+        partial_mitigation=partial_mitigation,
     )
 
 
@@ -270,9 +271,20 @@ def test_resolved_states_are_discarded_from_discovery():
     c5 = mk_c(T0 + 4 * FIVE_MIN_MS, 103.0, 103.5, 99.0, 99.5)
     assert _run([c1, c2, c3, c4, c5], now=T0 + 5 * FIVE_MIN_MS) == []
 
-    # Fill then complete (2R: 103.0 + 2 * 3.5 = 110.0)
+    # Fill then complete when partial_mitigation=False
     c5b = mk_c(T0 + 4 * FIVE_MIN_MS, 103.0, 110.5, 102.0, 109.0)
-    assert _run([c1, c2, c3, c4, c5b], now=T0 + 5 * FIVE_MIN_MS) == []
+    assert _run([c1, c2, c3, c4, c5b], now=T0 + 5 * FIVE_MIN_MS, partial_mitigation=False) == []
+
+    # Fill then complete with 100% full mitigation (deepest wick <= bottom 101.0)
+    c5c = mk_c(T0 + 4 * FIVE_MIN_MS, 103.0, 110.5, 100.5, 109.0)
+    assert _run([c1, c2, c3, c4, c5c], now=T0 + 5 * FIVE_MIN_MS, partial_mitigation=True) == []
+
+    # Fill then complete with partial mitigation -> returns residual FVG [101.0, 102.0]
+    res = _run([c1, c2, c3, c4, c5b], now=T0 + 5 * FIVE_MIN_MS, partial_mitigation=True)
+    assert len(res) == 1
+    assert res[0].top == 102.0
+    assert res[0].bottom == 101.0
+    assert res[0].mitigation_count == 1
 
 
 def test_direction_filter_only_matching_fvgs_discovered():
@@ -296,10 +308,11 @@ def test_lifecycle_pending_with_no_subsequent_candles():
     fvg = FVG(direction="Bullish", top=103.0, bottom=101.0, c1=c1, c2=c2, c3=c3,
               formed_at=c3.timestamp, timeframe="5m")
 
-    state, entry_ts, floating = evaluate_ltf_setup_lifecycle(fvg, subsequent_candles=[], current_price=0.0)
+    state, entry_ts, floating, resulting_fvg = evaluate_ltf_setup_lifecycle(fvg, subsequent_candles=[], current_price=0.0)
     assert state == "PENDING_RETRACE"
     assert entry_ts is None
     assert floating == 0.0
+    assert resulting_fvg.top == 103.0
 
 
 def test_lifecycle_sl_breach_vs_touch_breach_same_candle():
@@ -311,12 +324,12 @@ def test_lifecycle_sl_breach_vs_touch_breach_same_candle():
               formed_at=c3.timestamp, timeframe="5m")
 
     breach = mk_c(T0 + 3 * FIVE_MIN_MS, 102.0, 102.5, 99.0, 99.5)  # no entry touch
-    state, entry_ts, _ = evaluate_ltf_setup_lifecycle(fvg, [breach], current_price=0.0)
+    state, entry_ts, _, _ = evaluate_ltf_setup_lifecycle(fvg, [breach], current_price=0.0)
     assert state == "INVALIDATED"
     assert entry_ts is None
 
     touch_breach = mk_c(T0 + 3 * FIVE_MIN_MS, 104.0, 104.5, 99.0, 99.5)  # touches entry first
-    state2, entry_ts2, floating2 = evaluate_ltf_setup_lifecycle(fvg, [touch_breach], current_price=0.0)
+    state2, entry_ts2, floating2, _ = evaluate_ltf_setup_lifecycle(fvg, [touch_breach], current_price=0.0)
     assert state2 == "STOPPED_OUT"
     assert entry_ts2 == touch_breach.timestamp
     assert floating2 == -1.0
@@ -330,11 +343,11 @@ def test_lifecycle_live_price_branches():
     fvg = FVG(direction="Bullish", top=103.0, bottom=101.0, c1=c1, c2=c2, c3=c3,
               formed_at=c3.timestamp, timeframe="5m")
 
-    state, entry_ts, floating = evaluate_ltf_setup_lifecycle(fvg, [], current_price=102.0)
+    state, entry_ts, floating, _ = evaluate_ltf_setup_lifecycle(fvg, [], current_price=102.0)
     assert state == "TRADE_ACTIVE"
     assert entry_ts is not None and entry_ts > 0
     # floating_r is wick-risk based: (current - entry) / (entry - SL) = -1.0 / 3.5
     assert floating == pytest.approx((102.0 - 103.0) / 3.5)
 
-    state2, _, _ = evaluate_ltf_setup_lifecycle(fvg, [], current_price=99.0)
+    state2, _, _, _ = evaluate_ltf_setup_lifecycle(fvg, [], current_price=99.0)
     assert state2 == "INVALIDATED"
