@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import websockets
 
 from candle_store import CandleStore, candle_store
+from market_data.base import is_ws_open
 
 logger = logging.getLogger("market_data.binance_ws")
 
@@ -54,7 +55,7 @@ class BinanceWSClient:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._ws is not None and not self._ws.closed
+        return self._connected and is_ws_open(self._ws)
 
     def update_subscriptions(self, symbols: List[str], timeframes: Optional[List[str]] = None):
         """Adds new symbols/timeframes to stream."""

@@ -19,9 +19,9 @@ import websockets
 
 from candle_store import CandleStore, candle_store
 from hyperliquid_client import resolve_symbol
+from market_data.base import is_ws_open
 
 logger = logging.getLogger("market_data.hyperliquid_ws")
-HYPERLIQUID_WS_URL = os.getenv("HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws")
 
 
 REVERSE_ALIASES: Dict[str, List[str]] = {
@@ -32,17 +32,27 @@ REVERSE_ALIASES: Dict[str, List[str]] = {
 
 
 class HyperliquidWSClient:
-    """Resilient async WebSocket client for streaming Hyperliquid market data into CandleStore."""
+    """Resilient async WebSocket client for Hyperliquid market data."""
 
     def __init__(
         self,
-        url: str = HYPERLIQUID_WS_URL,
+        api_url: Optional[str] = None,
         store: Optional[CandleStore] = None,
         symbols: Optional[List[str]] = None,
         timeframes: Optional[List[str]] = None,
         on_price_update: Optional[Callable[[Dict[str, float]], Any]] = None,
     ):
-        self.url = url
+        raw_url = api_url or os.getenv("HYPERLIQUID_API_URL", "https://api.hyperliquid.xyz/info")
+        # Convert http/https URL to ws/wss endpoint:
+        # e.g., https://api.hyperliquid.xyz/info -> wss://api.hyperliquid.xyz/ws
+        if "://" in raw_url:
+            scheme, rest = raw_url.split("://", 1)
+            ws_scheme = "wss" if scheme == "https" else "ws"
+            host_part = rest.split("/")[0]
+            self.url = f"{ws_scheme}://{host_part}/ws"
+        else:
+            self.url = "wss://api.hyperliquid.xyz/ws"
+
         self.store = store or candle_store
         self.symbols: Set[str] = {s.strip().upper() for s in (symbols or []) if s.strip()}
         self.timeframes: Set[str] = {tf.strip().lower() for tf in (timeframes or ["5m"]) if tf.strip()}
@@ -57,7 +67,7 @@ class HyperliquidWSClient:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._ws is not None and not self._ws.closed
+        return self._connected and is_ws_open(self._ws)
 
     def update_subscriptions(self, symbols: List[str], timeframes: Optional[List[str]] = None):
         """Adds new symbols/timeframes to stream."""

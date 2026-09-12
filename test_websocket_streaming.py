@@ -181,3 +181,50 @@ def test_dashboard_websocket_endpoint():
         websocket.send_text("ping")
         resp = websocket.receive_text()
         assert resp == "pong"
+
+
+def test_is_ws_open_and_client_connection_compatibility(test_store):
+    from market_data.base import is_ws_open
+    from websockets.protocol import State
+
+    # 1. Modern websockets 14/15+ ClientConnection (has state, but no 'closed' attribute)
+    modern_conn = MagicMock(spec=["state", "close_code", "send", "recv"])
+    modern_conn.state = State.OPEN
+    modern_conn.close_code = None
+    assert not hasattr(modern_conn, "closed")
+    assert is_ws_open(modern_conn) is True
+
+    # 2. Modern connection closed
+    modern_conn.state = State.CLOSED
+    modern_conn.close_code = 1000
+    assert is_ws_open(modern_conn) is False
+
+    # 3. Legacy websockets connection (<14) with .closed
+    legacy_conn = MagicMock(spec=["closed"])
+    legacy_conn.closed = False
+    assert is_ws_open(legacy_conn) is True
+    legacy_conn.closed = True
+    assert is_ws_open(legacy_conn) is False
+
+    # 4. None connection
+    assert is_ws_open(None) is False
+
+    # 5. Integration with BinanceWSClient and HyperliquidWSClient
+    binance_client = BinanceWSClient(use_futures=True, store=test_store)
+    assert binance_client.is_connected is False
+
+    binance_client._connected = True
+    binance_client._ws = modern_conn
+    modern_conn.state = State.OPEN
+    # Should not raise AttributeError: 'ClientConnection' object has no attribute 'closed'
+    assert binance_client.is_connected is True
+
+    modern_conn.state = State.CLOSED
+    assert binance_client.is_connected is False
+
+    hl_client = HyperliquidWSClient(store=test_store)
+    hl_client._connected = True
+    hl_client._ws = modern_conn
+    modern_conn.state = State.OPEN
+    assert hl_client.is_connected is True
+

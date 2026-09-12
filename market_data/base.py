@@ -6,6 +6,20 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 
+def is_ws_open(ws: Any) -> bool:
+    """Safely determines if a websockets connection is currently open across websockets v10-v15+."""
+    if ws is None:
+        return False
+    state = getattr(ws, "state", None)
+    if state is not None:
+        return getattr(state, "name", "") == "OPEN" or state == 1
+    if hasattr(ws, "closed"):
+        return not ws.closed
+    if hasattr(ws, "open"):
+        return bool(ws.open)
+    return getattr(ws, "close_code", None) is None
+
+
 class BaseMarketDataProvider(ABC):
     """Abstract Base Class for all market data providers."""
 
