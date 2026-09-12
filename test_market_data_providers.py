@@ -22,9 +22,14 @@ from fastapi.testclient import TestClient
 from main import app, state
 
 
+from candle_store import candle_store
+
+
 @pytest.fixture(autouse=True)
 def cleanup_providers():
+    candle_store.clear()
     yield
+    candle_store.clear()
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -191,14 +196,17 @@ def test_provider_factory_resolution():
     p1 = get_market_data_provider("binance")
     assert isinstance(p1, BinanceProvider)
     assert p1.name == "binance_futures"
+    assert isinstance(p1.fallback_provider, HyperliquidProvider)
 
-    p2 = get_market_data_provider("binance_spot")
+    p2 = get_market_data_provider("binance_spot", fallback_name="none")
     assert isinstance(p2, BinanceProvider)
     assert p2.name == "binance_spot"
+    assert p2.fallback_provider is None
 
     p3 = get_market_data_provider("oanda")
     assert isinstance(p3, OandaProvider)
     assert p3.name == "oanda"
+    assert isinstance(p3.fallback_provider, HyperliquidProvider)
 
     p4 = get_market_data_provider("hyperliquid")
     assert isinstance(p4, HyperliquidProvider)
@@ -208,17 +216,95 @@ def test_provider_factory_resolution():
 def test_api_extreme_config_provider_switch():
     client = TestClient(app)
 
-    # Switch provider to oanda via API
-    resp = client.post("/api/extreme/config?provider=oanda")
+    # Switch provider to oanda via API with fallback hyperliquid
+    resp = client.post("/api/extreme/config?provider=oanda&fallback_provider=hyperliquid")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
     assert data["config"]["data_provider"] == "oanda"
+    assert data["config"]["fallback_data_provider"] == "hyperliquid"
     assert state["data_provider"] == "oanda"
+    assert state["fallback_data_provider"] == "hyperliquid"
 
     # Switch back to binance
-    resp2 = client.post("/api/extreme/config?provider=binance")
+    resp2 = client.post("/api/extreme/config?provider=binance&fallback_provider=hyperliquid")
     assert resp2.status_code == 200
     data2 = resp2.json()
     assert data2["config"]["data_provider"] == "binance"
     assert state["data_provider"] == "binance"
+
+
+# ==============================================================================
+# 4. PROVIDER FALLBACK DELEGATION TESTS
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_binance_provider_fallback_on_rate_limit():
+    mock_fallback = MagicMock(spec=HyperliquidProvider)
+    mock_fallback.name = "hyperliquid"
+    mock_fallback.get_all_mids = AsyncMock(return_value={"BTC": 70000.0, "ETH": 3500.0})
+    mock_fallback.get_last_n_candles = AsyncMock(return_value=[
+        {"t": 1700000000000, "T": 1700000300000, "s": "BTC", "i": "5m", "o": 70000.0, "h": 70100.0, "l": 69900.0, "c": 70050.0, "v": 10.0, "n": 50}
+    ])
+    mock_fallback.get_historical_candles_range = AsyncMock(return_value=[
+        {"t": 1700000000000, "T": 1700000300000, "s": "BTC", "i": "5m", "o": 70000.0, "h": 70100.0, "l": 69900.0, "c": 70050.0, "v": 10.0, "n": 50}
+    ])
+    mock_fallback.get_universe_coins = AsyncMock(return_value=["BTC", "ETH", "SOL"])
+
+    p = BinanceProvider(use_futures=True, fallback_provider=mock_fallback)
+
+    # 1. Simulate 418 rate limit on get_all_mids -> falls back to hyperliquid
+    mock_resp_418 = MagicMock()
+    mock_resp_418.status_code = 418
+    mock_resp_418.text = "IP banned"
+    with patch.object(p._http, "get", new=AsyncMock(return_value=mock_resp_418)):
+        mids = await p.get_all_mids()
+        assert mids["BTC"] == 70000.0
+        mock_fallback.get_all_mids.assert_awaited_once()
+
+    # 2. get_last_n_candles falls back when rate limited
+    candles = await p.get_last_n_candles("BTC", timeframe="5m", n=1)
+    assert len(candles) == 1
+    assert candles[0]["c"] == 70050.0
+    mock_fallback.get_last_n_candles.assert_awaited_once()
+
+    # 3. get_historical_candles_range falls back when primary returns empty
+    with patch.object(p._http, "get", new=AsyncMock(return_value=mock_resp_418)):
+        hist = await p.get_historical_candles_range("BTC", "5m", 1700000000000, 1700000300000)
+        assert len(hist) == 1
+        assert hist[0]["c"] == 70050.0
+        mock_fallback.get_historical_candles_range.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_oanda_provider_fallback_when_unconfigured():
+    mock_fallback = MagicMock(spec=HyperliquidProvider)
+    mock_fallback.name = "hyperliquid"
+    mock_fallback.get_all_mids = AsyncMock(return_value={"BTC": 68000.0})
+    mock_fallback.get_last_n_candles = AsyncMock(return_value=[
+        {"t": 1700000000000, "T": 1700000300000, "s": "BTC", "i": "5m", "o": 68000.0, "h": 68100.0, "l": 67900.0, "c": 68050.0, "v": 5.0, "n": 20}
+    ])
+    mock_fallback.get_historical_candles_range = AsyncMock(return_value=[
+        {"t": 1700000000000, "T": 1700000300000, "s": "BTC", "i": "5m", "o": 68000.0, "h": 68100.0, "l": 67900.0, "c": 68050.0, "v": 5.0, "n": 20}
+    ])
+    mock_fallback.get_universe_coins = AsyncMock(return_value=["BTC", "ETH"])
+
+    # Unconfigured OANDA provider (empty api_key)
+    p = OandaProvider(api_key="", account_id="", fallback_provider=mock_fallback)
+    assert not p.is_configured()
+
+    mids = await p.get_all_mids()
+    assert mids["BTC"] == 68000.0
+    mock_fallback.get_all_mids.assert_awaited_once()
+
+    candles = await p.get_last_n_candles("BTC", "5m", 1)
+    assert len(candles) == 1
+    assert candles[0]["c"] == 68050.0
+    mock_fallback.get_last_n_candles.assert_awaited_once()
+
+    hist = await p.get_historical_candles_range("BTC", "5m", 1700000000000, 1700000300000)
+    assert len(hist) == 1
+    mock_fallback.get_historical_candles_range.assert_awaited_once()
+
+    universe = await p.get_universe_coins()
+    assert universe == ["BTC", "ETH"]
+    mock_fallback.get_universe_coins.assert_awaited_once()

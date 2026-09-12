@@ -100,6 +100,19 @@ def format_single_setup(setup: SetupResult) -> str:
     fvg_formed_time = setup.fvg_formation_time_ist or setup.formed_time_ist
     entry_time = setup.entry_time_ist or ("Live Retrace" if setup.stage == "ACTIVATED" else "⏳ Awaiting Retrace")
 
+    pos_size_line = ""
+    try:
+        from position_sizing import PositionSizingEngine
+        pos_res = PositionSizingEngine.calculate(
+            entry_price=setup.entry_price or setup.current_price,
+            stop_loss=setup.stop_loss_price,
+            symbol=setup.symbol,
+        )
+        if pos_res:
+            pos_size_line = f"\n{PositionSizingEngine.format_telegram_snippet(pos_res, setup.symbol)}"
+    except Exception:
+        pos_size_line = ""
+
     if setup.stage == "ACTIVATED":
         emoji = "🚀 🟢" if is_bullish else "🚀 🔴"
         return (
@@ -109,7 +122,7 @@ def format_single_setup(setup: SetupResult) -> str:
             f"<b>⏰ 4H FVG Formed:</b> {getattr(setup.htf_fvg, 'formed_time_ist', '--') or '--'}\n"
             f"<b>🚀 Trade Entry Time:</b> {entry_time}\n"
             f"<b>Entry Price:</b> ${entry_price_str}\n"
-            f"<b>Stop Loss:</b> {sl_operator} ${sl_str} (Risk: {sl_pts_str} pts / {setup.tp_levels.risk_pct:.2f}%)\n"
+            f"<b>Stop Loss:</b> {sl_operator} ${sl_str} (Risk: {sl_pts_str} pts / {setup.tp_levels.risk_pct:.2f}%){pos_size_line}\n"
             f"<b>Take Profit Targets:</b>\n"
             f"  🎯 <b>1.0R:</b> ${tp1_str} (+{tp1_pts_str} pts)\n"
             f"  🎯 <b>1.5R:</b> ${tp1_5_str} (+{tp1_5_pts_str} pts)\n"
@@ -128,7 +141,7 @@ def format_single_setup(setup: SetupResult) -> str:
             f"<b>Current Price:</b> ${current_price_str}\n"
             f"<b>Retrace Target Zone:</b> ${ltf_low_str} – ${ltf_high_str}\n"
             f"<b>4H FVG:</b> ${htf_low_str} – ${htf_high_str}\n"
-            f"<b>Projected SL:</b> {sl_operator} ${sl_str} (Risk: {sl_pts_str} pts / {setup.tp_levels.risk_pct:.2f}%)\n"
+            f"<b>Projected SL:</b> {sl_operator} ${sl_str} (Risk: {sl_pts_str} pts / {setup.tp_levels.risk_pct:.2f}%){pos_size_line}\n"
             f"<b>Projected 2.0R TP:</b> ${tp2_str} (+{tp2_pts_str} pts)\n"
             f"<b>Score:</b> {setup.score:.2f}"
         )

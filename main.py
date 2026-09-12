@@ -108,6 +108,7 @@ state: Dict[str, Any] = {
     "extreme_background_task": None,
     "extreme_notified_states": {},
     "data_provider": os.getenv("DATA_PROVIDER", "binance").strip().lower(),
+    "fallback_data_provider": os.getenv("FALLBACK_DATA_PROVIDER", "hyperliquid").strip().lower(),
 }
 
 
@@ -281,7 +282,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     from extreme_trade_tracker import extreme_trade_tracker
 
     setups_out = []
-    provider = get_market_data_provider(state.get("data_provider"))
+    provider_name = state.get("data_provider", "binance")
+    provider = get_market_data_provider(provider_name)
+    logger.info(
+        "[ScreenerCycle] Starting Extreme scan cycle for %d symbol(s): %s (LTF: %s, Target: %s, Provider: %s)",
+        len(coin_list), coin_list, ltf, target, provider.name
+    )
     mids = await provider.get_all_mids()
 
     for sym in coin_list:
@@ -300,6 +306,9 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             else:
                 floating_r = (active_trade.entry_price - curr_px) / risk_r
             dist_pct = ((curr_px - active_trade.entry_price) / active_trade.entry_price) * 100
+
+            from position_sizing import PositionSizingEngine
+            act_pos = PositionSizingEngine.calculate(entry_price=active_trade.entry_price, stop_loss=active_trade.stop_loss, symbol=sym)
 
             setups_out.append({
                 "symbol": sym,
@@ -322,6 +331,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 "anchor": active_trade.htf_anchor,
                 "target_fvg": active_trade.ltf_fvg,
                 "unmitigated_count": 1,
+                "position_size": act_pos.to_dict() if act_pos else None,
             })
             continue
 
@@ -341,6 +351,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 if curr_px == 0.0:
                     curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
+                pos_res = setup.position_size
                 setup_dict = {
                     "symbol": sym,
                     "direction": setup.direction,
@@ -377,6 +388,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                         "formed_at": setup.ltf_fvg.formed_at,
                     },
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
+                    "position_size": pos_res.to_dict() if pos_res else None,
                 }
                 setups_out.append(setup_dict)
             await asyncio.sleep(0.1)
@@ -452,6 +464,16 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         except Exception as c_exc:
             logger.debug("Chart generation failed for event %s: %s", evt_type, c_exc)
 
+        # Position sizing snippet
+        pos_str = ""
+        try:
+            from position_sizing import PositionSizingEngine
+            pos_res = PositionSizingEngine.calculate(entry_price=tr.entry_price, stop_loss=tr.stop_loss, symbol=tr.symbol)
+            if pos_res:
+                pos_str = f"\n• <b>Position Size:</b> <code>{pos_res.quantity_formatted}</code> (${pos_res.notional_usd:,.2f} Notional @ ${pos_res.risk_usd:.2f} Risk)"
+        except Exception:
+            pos_str = ""
+
         if evt_type == "NEW_SETUP" and tr.state == "PENDING_RETRACE":
             dist = ((float(mids.get(tr.symbol, tr.entry_price)) - tr.entry_price) / tr.entry_price) * 100
             msg = (
@@ -462,7 +484,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"  └ <i>Formed:</i> {tr.ltf_fvg.get('formed_time_ist', '--')}\n"
                 f"• <b>Limit Order Entry:</b> <code>${tr.entry_price:,.2f}</code> ({dist:+.2f}% away)\n"
                 f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
-                f"• <b>Risk ($R$):</b> ${tr.risk_r:,.2f} ({tr.risk_pct:.2f}%)\n"
+                f"• <b>Risk ($R$):</b> ${tr.risk_r:,.2f} ({tr.risk_pct:.2f}%){pos_str}\n"
                 f"• <b>TP 1R:</b> ${tr.tp_1r:,.2f} | <b>TP 2R:</b> ${tr.tp_2r:,.2f} | <b>TP 3R:</b> ${tr.tp_3r:,.2f}\n"
                 f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
             )
@@ -480,7 +502,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"  └ <i>Formed:</i> {tr.htf_anchor.get('formed_time_ist', '--')} | <i>1st Touch:</i> {tr.htf_anchor.get('first_touch_time_ist', '--')}\n"
                 f"• <b>Filled At:</b> <code>${tr.entry_price:,.2f}</code>\n"
                 f"• <b>Fill Time:</b> {tr.entry_filled_at_ist or 'Live'}\n"
-                f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
+                f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>{pos_str}\n"
                 f"• <b>Primary Target ({tr.completion_target}):</b> <code>${primary_tp:,.2f}</code>\n"
                 f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
             )
@@ -526,6 +548,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     state["extreme_pending_count"] = pend_count
     state["extreme_last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
     state["extreme_total_cycles"] += 1
+
+    elapsed_sec = (datetime.now(IST) - start_time_ist).total_seconds()
+    logger.info(
+        "[ScreenerCycle] Finished cycle in %.2fs -> Total Setups: %d (Active: %d, Pending Retrace: %d)",
+        elapsed_sec, len(setups_out), act_count, pend_count
+    )
 
     return setups_out
 
@@ -1121,6 +1149,7 @@ async def backtest_endpoint(
     )
 
     try:
+        provider = get_market_data_provider(state.get("data_provider"))
         summary = await run_historical_backtest(
             symbol=clean_symbol,
             days=days,
@@ -1133,6 +1162,7 @@ async def backtest_endpoint(
             use_close_invalidation=use_close_invalidation,
             max_htf_retrace_candles=max_htf_retrace_candles,
             min_candle_gap=min_candle_gap,
+            client=provider,
         )
         return JSONResponse(content={"status": "success", "data": summary.to_dict()})
     except Exception as exc:
@@ -1191,6 +1221,9 @@ async def api_extreme_scan(
                 floating_r = (active_trade.entry_price - curr_px) / risk_r
             dist_pct = ((curr_px - active_trade.entry_price) / active_trade.entry_price) * 100
 
+            from position_sizing import PositionSizingEngine
+            act_pos = PositionSizingEngine.calculate(entry_price=active_trade.entry_price, stop_loss=active_trade.stop_loss, symbol=sym)
+
             setups_out.append({
                 "symbol": sym,
                 "direction": active_trade.direction,
@@ -1212,6 +1245,7 @@ async def api_extreme_scan(
                 "anchor": active_trade.htf_anchor,
                 "target_fvg": active_trade.ltf_fvg,
                 "unmitigated_count": 1,
+                "position_size": act_pos.to_dict() if act_pos else None,
             })
             continue
 
@@ -1231,6 +1265,7 @@ async def api_extreme_scan(
                 if curr_px == 0.0:
                     curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
+                pos_res = setup.position_size
                 setups_out.append({
                     "symbol": sym,
                     "direction": setup.direction,
@@ -1267,6 +1302,7 @@ async def api_extreme_scan(
                         "formed_at": setup.ltf_fvg.formed_at,
                     },
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
+                    "position_size": pos_res.to_dict() if pos_res else None,
                 })
         except Exception as exc:
             logger.warning("Failed to get extreme setup for %s: %s", sym, exc)
@@ -1321,6 +1357,7 @@ async def api_extreme_backtest(
             else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
 
+        provider = get_market_data_provider(state.get("data_provider"))
         report = await run_extreme_backtest(
             symbol=symbol.strip().upper(),
             days=days,
@@ -1331,6 +1368,7 @@ async def api_extreme_backtest(
             weekday_filter=wkday_filter,
             entry_session_filter=entry_sess_filter,
             entry_weekday_filter=entry_wkday_filter,
+            client=provider,
         )
         return JSONResponse(content={
             "status": "success",
@@ -1389,6 +1427,7 @@ async def api_extreme_status():
         "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "data_provider": state.get("data_provider", "binance"),
+        "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
         "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
         "active_count": state.get("extreme_active_count", 0),
         "pending_count": state.get("extreme_pending_count", 0),
@@ -1437,6 +1476,7 @@ async def api_extreme_config(
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter"),
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
     provider: Optional[str] = Query(default=None, pattern="^(binance|binance_futures|binance_spot|oanda|hyperliquid)$", description="Market data provider"),
+    fallback_provider: Optional[str] = Query(default=None, pattern="^(hyperliquid|binance|binance_futures|binance_spot|oanda|none)$", description="Fallback market data provider"),
 ):
     if interval_seconds is not None:
         state["extreme_interval_seconds"] = interval_seconds
@@ -1462,6 +1502,9 @@ async def api_extreme_config(
     if provider is not None and provider.strip():
         state["data_provider"] = provider.strip().lower()
         logger.info("Switched active data provider to '%s'", state["data_provider"])
+    if fallback_provider is not None and fallback_provider.strip():
+        state["fallback_data_provider"] = fallback_provider.strip().lower()
+        logger.info("Switched active fallback data provider to '%s'", state["fallback_data_provider"])
 
     cfg_payload = {
         "interval_seconds": state["extreme_interval_seconds"],
@@ -1475,6 +1518,7 @@ async def api_extreme_config(
         "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
         "coins_whitelist": state["coins_whitelist"],
         "data_provider": state.get("data_provider", "binance"),
+        "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
     }
 
     # Persist updated configuration to Redis

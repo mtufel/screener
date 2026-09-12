@@ -108,35 +108,19 @@ class TrackedExtremeTrade:
 class ExtremeTradeTracker:
     def __init__(
         self,
-        storage_path: str = PERSISTENCE_FILE,
-        session_filter: Optional[bool] = None,
-        weekday_filter: Optional[bool] = None,
-        entry_session_filter: Optional[bool] = None,
-        entry_weekday_filter: Optional[bool] = None,
+        storage_path: Optional[str] = None,
+        session_filter: bool = False,
+        weekday_filter: bool = False,
+        entry_session_filter: bool = False,
+        entry_weekday_filter: bool = False,
     ):
-        self.storage_path = Path(storage_path)
+        self.storage_path = Path(storage_path or PERSISTENCE_FILE)
         self.active_trades: Dict[str, TrackedExtremeTrade] = {}
         self.history: List[TrackedExtremeTrade] = []
-        self.session_filter_enabled = (
-            session_filter
-            if session_filter is not None
-            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.weekday_filter_enabled = (
-            weekday_filter
-            if weekday_filter is not None
-            else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.entry_session_filter_enabled = (
-            entry_session_filter
-            if entry_session_filter is not None
-            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.entry_weekday_filter_enabled = (
-            entry_weekday_filter
-            if entry_weekday_filter is not None
-            else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
+        self.session_filter_enabled = session_filter
+        self.weekday_filter_enabled = weekday_filter
+        self.entry_session_filter_enabled = entry_session_filter
+        self.entry_weekday_filter_enabled = entry_weekday_filter
         self._load()
 
     def _load(self):
@@ -735,4 +719,9 @@ class ExtremeTradeTracker:
 
 
 # Singleton Instance
-extreme_trade_tracker = ExtremeTradeTracker()
+extreme_trade_tracker = ExtremeTradeTracker(
+    session_filter=os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+    weekday_filter=os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+    entry_session_filter=os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+    entry_weekday_filter=os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+)
