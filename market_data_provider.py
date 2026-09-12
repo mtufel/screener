@@ -18,6 +18,12 @@ from market_data.binance import BinanceProvider
 from market_data.oanda import OandaProvider, _oanda_rfc3339_to_ms
 from market_data.hyperliquid import HyperliquidProvider
 
+# ccxt adapter integration (wrap/extend for unified multi-exchange data)
+try:
+    from ccxt_adapter import CcxtDataProvider
+except ImportError:
+    CcxtDataProvider = None  # optional dependency
+
 logger = logging.getLogger("market_data_provider")
 
 # Provider Registry & Factory
@@ -45,6 +51,13 @@ def get_market_data_provider(
     cache_key = f"{selected}:{fb_selected}"
     if cache_key in _PROVIDERS:
         return _PROVIDERS[cache_key]
+
+    # If ccxt_exchange configured, prefer CcxtDataProvider (wrap + fallback)
+    if CcxtDataProvider and os.getenv("CCXT_EXCHANGE"):
+        inst = CcxtDataProvider({"exchange": os.getenv("CCXT_EXCHANGE"),
+                                 "provider": selected})
+        _PROVIDERS[cache_key] = inst
+        return inst
 
     # Resolve fallback provider if configured and not identical to primary
     fallback_inst: Optional[BaseMarketDataProvider] = None
