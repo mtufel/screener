@@ -880,6 +880,9 @@
               <h2 class="text-sm font-extrabold uppercase tracking-wider text-white flex items-center space-x-2">
                 <i class="fa-solid fa-clock-rotate-left text-amber-400"></i>
                 <span>Live Daemon Tracked Trades Log</span>
+                <span id="extremeWsBadge" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-1"></span>WS Live
+                </span>
               </h2>
               <p class="text-xs text-slate-400 mt-0.5">
                 Real-time tracking and outcome history of every trade scanned and managed by the continuous daemon.
@@ -1532,7 +1535,86 @@
         console.debug('Error polling extreme status:', err);
       }
     }
-    setInterval(pollExtremeStatus, 10000);
+
+    let extremeWs = null;
+    let extremeWsConnected = false;
+    let fallbackPollInterval = null;
+
+    function initExtremeWebSocket() {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/extreme-live`;
+        extremeWs = new WebSocket(wsUrl);
+
+        extremeWs.onopen = () => {
+          extremeWsConnected = true;
+          console.log('Connected to Extreme Live WebSocket');
+          if (fallbackPollInterval) {
+            clearInterval(fallbackPollInterval);
+            fallbackPollInterval = null;
+          }
+          const connBadge = document.getElementById('extremeWsBadge');
+          if (connBadge) {
+            connBadge.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-1"></span>WS Live';
+            connBadge.className = "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+          }
+        };
+
+        extremeWs.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'initial_state' || msg.type === 'scan_complete') {
+              updateExtremeDaemonUI(msg.is_running, msg.interval_seconds);
+              if (msg.last_scan_time_ist) {
+                const timeEl = document.getElementById('extremeScanTime');
+                if (timeEl) timeEl.innerText = `Daemon scan: ${msg.last_scan_time_ist} (Cycle #${msg.total_cycles})`;
+              }
+              if (msg.setups !== undefined) {
+                renderExtremeSetups(msg.setups);
+              }
+              const stateFilter = document.getElementById('liveFilterState')?.value || '';
+              const symbolFilter = document.getElementById('liveFilterSymbol')?.value || '';
+              if (!stateFilter && !symbolFilter && liveHistPage === 1 && msg.history_data) {
+                renderExtremeLiveHistory(msg.history_data);
+              } else {
+                fetchExtremeLiveHistory();
+              }
+            } else if (msg.type === 'trade_event') {
+              fetchExtremeLiveHistory();
+            }
+          } catch (parseErr) {
+            console.debug('Error parsing WS message:', parseErr);
+          }
+        };
+
+        extremeWs.onclose = () => {
+          extremeWsConnected = false;
+          console.log('Extreme Live WebSocket closed. Starting fallback polling...');
+          const connBadge = document.getElementById('extremeWsBadge');
+          if (connBadge) {
+            connBadge.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-amber-400 mr-1"></span>Polling';
+            connBadge.className = "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20";
+          }
+          if (!fallbackPollInterval) {
+            fallbackPollInterval = setInterval(pollExtremeStatus, 10000);
+          }
+          setTimeout(initExtremeWebSocket, 5000);
+        };
+
+        extremeWs.onerror = (err) => {
+          console.debug('Extreme Live WebSocket error:', err);
+          extremeWs.close();
+        };
+      } catch (err) {
+        console.debug('WebSocket initialization failed, falling back to polling:', err);
+        if (!fallbackPollInterval) {
+          fallbackPollInterval = setInterval(pollExtremeStatus, 10000);
+        }
+      }
+    }
+
+    // Initialize real-time WebSocket connection
+    initExtremeWebSocket();
 
     let liveHistPage = 1;
     const liveHistPerPage = 10;

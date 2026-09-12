@@ -19,10 +19,37 @@ class HyperliquidProvider(BaseMarketDataProvider):
     ):
         self._client = client or hyperliquid_client
         self._store = store or candle_store
+        self._ws_client: Optional[Any] = None
 
     @property
     def name(self) -> str:
         return "hyperliquid"
+
+    @property
+    def supports_websocket(self) -> bool:
+        return True
+
+    @property
+    def is_websocket_connected(self) -> bool:
+        return self._ws_client is not None and getattr(self._ws_client, "is_connected", False)
+
+    async def start_websocket(self, symbols: Optional[List[str]] = None, timeframes: Optional[List[str]] = None) -> bool:
+        from market_data.hyperliquid_ws import HyperliquidWSClient
+        if self._ws_client is None:
+            self._ws_client = HyperliquidWSClient(
+                store=self._store,
+                symbols=symbols,
+                timeframes=timeframes,
+            )
+        elif symbols:
+            self._ws_client.update_subscriptions(symbols, timeframes)
+        await self._ws_client.start()
+        return True
+
+    async def stop_websocket(self):
+        if self._ws_client:
+            await self._ws_client.stop()
+            self._ws_client = None
 
     def resolve_symbol(self, raw_symbol: str) -> str:
         return resolve_symbol(raw_symbol)
@@ -69,4 +96,5 @@ class HyperliquidProvider(BaseMarketDataProvider):
         return await self._client.get_universe_coins(min_volume=min_volume)
 
     async def close(self):
+        await self.stop_websocket()
         await self._client.close()

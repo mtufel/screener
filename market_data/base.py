@@ -3,7 +3,7 @@ Abstract Base Market Data Provider (market_data/base.py)
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class BaseMarketDataProvider(ABC):
@@ -54,4 +54,22 @@ class BaseMarketDataProvider(ABC):
     @abstractmethod
     async def close(self):
         """Releases underlying HTTP client connections."""
+        pass
+
+    @property
+    def supports_websocket(self) -> bool:
+        """Indicates whether this provider supports real-time WebSocket streaming."""
+        return False
+
+    @property
+    def is_websocket_connected(self) -> bool:
+        """Returns True if the WebSocket connection is currently active."""
+        return False
+
+    async def start_websocket(self, symbols: Optional[List[str]] = None, timeframes: Optional[List[str]] = None) -> bool:
+        """Starts background WebSocket streaming if supported."""
+        return False
+
+    async def stop_websocket(self):
+        """Stops background WebSocket streaming."""
         pass

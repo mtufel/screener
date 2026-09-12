@@ -40,10 +40,39 @@ class BinanceProvider(BaseMarketDataProvider):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._cached_universe: List[str] = []
         self._universe_cache_time = 0.0
+        self._ws_client: Optional[Any] = None
 
     @property
     def name(self) -> str:
         return "binance_futures" if self.use_futures else "binance_spot"
+
+    @property
+    def supports_websocket(self) -> bool:
+        return True
+
+    @property
+    def is_websocket_connected(self) -> bool:
+        return self._ws_client is not None and getattr(self._ws_client, "is_connected", False)
+
+    async def start_websocket(self, symbols: Optional[List[str]] = None, timeframes: Optional[List[str]] = None) -> bool:
+        from market_data.binance_ws import BinanceWSClient
+        if self._ws_client is None:
+            self._ws_client = BinanceWSClient(
+                use_futures=self.use_futures,
+                store=self._store,
+                symbols=symbols,
+                timeframes=timeframes,
+                resolve_symbol_func=self.resolve_symbol,
+            )
+        elif symbols:
+            self._ws_client.update_subscriptions(symbols, timeframes)
+        await self._ws_client.start()
+        return True
+
+    async def stop_websocket(self):
+        if self._ws_client:
+            await self._ws_client.stop()
+            self._ws_client = None
 
     def _get_http(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
@@ -405,6 +434,7 @@ class BinanceProvider(BaseMarketDataProvider):
         return ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PAXG"]
 
     async def close(self):
+        await self.stop_websocket()
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
             self._http_client = None

@@ -14,11 +14,37 @@ from datetime import datetime, timezone, timedelta
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+
+
+class DashboardWSManager:
+    """Manages active browser WebSocket connections for real-time dashboard push updates."""
+
+    def __init__(self):
+        self.active_connections: Set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.discard(websocket)
+
+    async def broadcast(self, message: Dict[str, Any]):
+        dead = set()
+        for ws in list(self.active_connections):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.add(ws)
+        self.active_connections.difference_update(dead)
+
+
+dashboard_ws_manager = DashboardWSManager()
 
 from hyperliquid_client import hyperliquid_client
 import strategy
@@ -209,11 +235,11 @@ async def execute_screener_cycle(
 
 
 async def trade_monitor_worker():
-    """Lightweight 30-second loop monitoring active trades in real time for TP/SL hits."""
-    logger.info("Real-time trade TP/SL monitor started (30s interval).")
+    """Real-time loop monitoring active trades for TP/SL hits (5s interval, served from WS/memory)."""
+    logger.info("Real-time trade TP/SL monitor started (5s interval).")
     while state["is_running"]:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
             if not state["is_running"]:
                 break
             provider = get_market_data_provider(state.get("data_provider"))
@@ -524,6 +550,17 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             await send_extreme_telegram_alert(msg, image_bytes=chart_img)
             await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
+        try:
+            from extreme_trade_tracker import extreme_trade_tracker
+            await dashboard_ws_manager.broadcast({
+                "type": "trade_event",
+                "event": evt_type,
+                "trade": tr.to_dict(),
+                "history_data": extreme_trade_tracker.get_filtered_trades(),
+            })
+        except Exception as b_exc:
+            logger.debug("Error broadcasting trade event to dashboard WS: %s", b_exc)
+
     act_count = len([s for s in setups_out if s["state"] == "TRADE_ACTIVE"])
     pend_count = len([s for s in setups_out if s["state"] == "PENDING_RETRACE"])
 
@@ -538,6 +575,20 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         "[ScreenerCycle] Finished cycle in %.2fs -> Total Setups: %d (Active: %d, Pending Retrace: %d)",
         elapsed_sec, len(setups_out), act_count, pend_count
     )
+
+    try:
+        from extreme_trade_tracker import extreme_trade_tracker
+        await dashboard_ws_manager.broadcast({
+            "type": "scan_complete",
+            "is_running": state.get("extreme_is_running", False),
+            "interval_seconds": state.get("extreme_interval_seconds", 30),
+            "last_scan_time_ist": state.get("extreme_last_scan_time_ist", "--"),
+            "total_cycles": state.get("extreme_total_cycles", 0),
+            "setups": setups_out,
+            "history_data": extreme_trade_tracker.get_filtered_trades(),
+        })
+    except Exception as b_exc:
+        logger.debug("Error broadcasting scan_complete to dashboard WS: %s", b_exc)
 
     return setups_out
 
@@ -599,6 +650,17 @@ async def lifespan(app: FastAPI):
                 logger.info("Restored runtime configuration from Redis ('%s').", cfg_key)
     except Exception as exc:
         logger.warning("Failed to restore initial state from Redis: %s", exc)
+
+    # Start Market Data WebSocket streaming for active provider if supported
+    try:
+        provider = get_market_data_provider(state.get("data_provider"))
+        if provider.supports_websocket:
+            coins = [c.strip().upper() for c in state.get("coins_whitelist", "BTC,ETH,SOL").split(",") if c.strip()]
+            ltf = state.get("extreme_ltf", "5m")
+            await provider.start_websocket(symbols=coins, timeframes=[ltf, "15m", "1h"])
+            logger.info("Started real-time WebSocket market data streaming for %s (%s).", provider.name, coins)
+    except Exception as ws_err:
+        logger.warning("Could not start market data WebSocket stream: %s. Using REST fallback.", ws_err)
 
     # Strategy 1 (Standard 4H+LTF) Lifecycle
     if ENABLE_STRATEGY_1:
@@ -1658,6 +1720,34 @@ async def api_extreme_clear_live_history():
     from extreme_trade_tracker import extreme_trade_tracker
     extreme_trade_tracker.clear_history()
     return JSONResponse(content={"status": "success", "message": "Live trade history cleared successfully"})
+
+
+@app.websocket("/ws/extreme-live")
+async def websocket_extreme_live(websocket: WebSocket):
+    """Real-time WebSocket feed for dashboard live setups, trade ledger events, and KPIs."""
+    await dashboard_ws_manager.connect(websocket)
+    try:
+        from extreme_trade_tracker import extreme_trade_tracker
+        initial_data = {
+            "type": "initial_state",
+            "is_running": state.get("extreme_is_running", False),
+            "interval_seconds": state.get("extreme_interval_seconds", 30),
+            "last_scan_time_ist": state.get("extreme_last_scan_time_ist", "--"),
+            "total_cycles": state.get("extreme_total_cycles", 0),
+            "setups": state.get("extreme_setups", []),
+            "history_data": extreme_trade_tracker.get_filtered_trades(),
+        }
+        await websocket.send_json(initial_data)
+
+        while True:
+            text = await websocket.receive_text()
+            if text == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        dashboard_ws_manager.disconnect(websocket)
+    except Exception as exc:
+        logger.debug("Dashboard WS disconnected: %s", exc)
+        dashboard_ws_manager.disconnect(websocket)
 
 
 if __name__ == "__main__":
