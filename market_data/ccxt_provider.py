@@ -147,7 +147,7 @@ class CcxtProvider(BaseMarketDataProvider):
         """
         Fetches all mid/last prices using CCXT fetch_tickers with local CandleStore caching.
         """
-        cached = self._store.get_cached_mids(self.name)
+        cached = self._store.get_cached_mids(self.name, ignore_ttl=self.is_websocket_connected)
         if cached is not None:
             return cached
 
@@ -206,7 +206,7 @@ class CcxtProvider(BaseMarketDataProvider):
         """
         # 1. Instant Cache Hit Check
         cached = self._store.get_candles(self.name, symbol, timeframe, n=n)
-        if cached and len(cached) >= min(n, 50) and self._store.is_fresh(self.name, symbol, timeframe):
+        if cached and len(cached) >= min(n, 50) and (self.is_websocket_connected or self._store.is_fresh(self.name, symbol, timeframe)):
             logger.info(
                 "[CcxtProvider] [CACHE HIT] %s %s -> Serving %d bars from CandleStore memory (0 network calls)",
                 symbol,

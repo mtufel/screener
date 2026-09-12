@@ -55,7 +55,7 @@ class HyperliquidProvider(BaseMarketDataProvider):
         return resolve_symbol(raw_symbol)
 
     async def get_all_mids(self) -> Dict[str, float]:
-        cached = self._store.get_cached_mids(self.name)
+        cached = self._store.get_cached_mids(self.name, ignore_ttl=self.is_websocket_connected)
         if cached is not None:
             return cached
         mids = await self._client.get_all_mids()
@@ -70,7 +70,7 @@ class HyperliquidProvider(BaseMarketDataProvider):
         n: int = 200,
     ) -> List[Dict[str, Any]]:
         cached = self._store.get_candles(self.name, symbol, timeframe, n=n)
-        if cached and len(cached) >= min(n, 50) and self._store.is_fresh(self.name, symbol, timeframe):
+        if cached and len(cached) >= min(n, 50) and (self.is_websocket_connected or self._store.is_fresh(self.name, symbol, timeframe)):
             return cached
 
         has_bootstrapped = self._store.has_sufficient_candles(self.name, symbol, timeframe, min_count=min(n, 50))

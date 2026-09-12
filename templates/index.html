@@ -2635,7 +2635,7 @@
 
     setInterval(() => {
       const toggle = document.getElementById('autoRefreshToggle');
-      if (toggle && toggle.checked && !isScanning) {
+      if (toggle && toggle.checked && !isScanning && !extremeWsConnected) {
         fetchStatus();
       }
     }, 10000);

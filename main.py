@@ -657,8 +657,10 @@ async def lifespan(app: FastAPI):
         if provider.supports_websocket:
             coins = [c.strip().upper() for c in state.get("coins_whitelist", "BTC,ETH,SOL").split(",") if c.strip()]
             ltf = state.get("extreme_ltf", "5m")
-            await provider.start_websocket(symbols=coins, timeframes=[ltf, "15m", "1h"])
-            logger.info("Started real-time WebSocket market data streaming for %s (%s).", provider.name, coins)
+            htf = state.get("htf_timeframe", "4h")
+            tf_set = list(dict.fromkeys([ltf, "15m", "1h", htf, "4h"]))
+            await provider.start_websocket(symbols=coins, timeframes=tf_set)
+            logger.info("Started real-time WebSocket market data streaming for %s (%s, %s).", provider.name, coins, tf_set)
     except Exception as ws_err:
         logger.warning("Could not start market data WebSocket stream: %s. Using REST fallback.", ws_err)
 

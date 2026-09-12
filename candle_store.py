@@ -103,9 +103,9 @@ class CandleStore:
         )
         return merged
 
-    def get_cached_mids(self, provider_name: str) -> Optional[Dict[str, float]]:
+    def get_cached_mids(self, provider_name: str, ignore_ttl: bool = False) -> Optional[Dict[str, float]]:
         entry = self._mids_cache.get(provider_name.strip().lower())
-        if entry and time.time() < entry[1]:
+        if entry and (ignore_ttl or time.time() < entry[1]):
             logger.debug("[CandleStore] [MIDS CACHE HIT] %s -> Serving %d mid prices from memory", provider_name.upper(), len(entry[0]))
             return dict(entry[0])
         return None
