@@ -610,14 +610,22 @@ def test_get_filtered_trades_filtering_and_metrics(tmp_path):
     assert res["pagination"]["total"] == 5
     assert len(res["trades"]) == 5
     assert res["metrics"]["trades"] == 5
+    assert res["metrics"]["total_tracked_trades"] == 5
+    assert res["metrics"]["total_closed_trades"] == 3
+    assert res["metrics"]["active_now"] == 1  # 1 TRADE_ACTIVE (ETH), 1 PENDING_RETRACE (BTC)
     assert res["metrics"]["completed"] == 2
     assert res["metrics"]["stopped"] == 1
     assert res["metrics"]["winrate"] == 66.7
+    assert res["metrics"]["win_rate_pct"] == 66.7
     assert res["metrics"]["net_pnl_r"] == 3.0  # 2.0 + 2.0 - 1.0
+    assert res["metrics"]["net_realized_r"] == 3.0
 
     # 2. Filter by symbol=BTC: 1 active pending + 2 history (1 win, 1 loss) = 3 total
     res_btc = tracker.get_filtered_trades(symbol="BTC")
     assert res_btc["pagination"]["total"] == 3
+    assert res_btc["metrics"]["total_tracked_trades"] == 3
+    assert res_btc["metrics"]["total_closed_trades"] == 2
+    assert res_btc["metrics"]["active_now"] == 0
     assert res_btc["metrics"]["completed"] == 1
     assert res_btc["metrics"]["stopped"] == 1
     assert res_btc["metrics"]["winrate"] == 50.0
@@ -626,6 +634,8 @@ def test_get_filtered_trades_filtering_and_metrics(tmp_path):
     # 3. Filter by state=TRADE_ACTIVE
     res_active = tracker.get_filtered_trades(state="TRADE_ACTIVE")
     assert res_active["pagination"]["total"] == 1
+    assert res_active["metrics"]["total_tracked_trades"] == 1
+    assert res_active["metrics"]["active_now"] == 1
     assert res_active["trades"][0]["symbol"] == "ETH"
 
     # 4. Filter by direction=Bearish

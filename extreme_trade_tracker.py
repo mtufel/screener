@@ -765,8 +765,11 @@ class ExtremeTradeTracker:
         # Metrics on the filtered subset
         completed = [t for t in all_trades if t.get("state") == "COMPLETED_TP"]
         stopped = [t for t in all_trades if t.get("state") == "STOPPED_OUT"]
-        win_rate = round(len(completed) / max(len(completed) + len(stopped), 1) * 100, 1) if (completed or stopped) else 0.0
-        net_pnl_r = round(sum(t.get("realized_r", 0.0) for t in (completed + stopped)), 2)
+        active = [t for t in all_trades if t.get("state") == "TRADE_ACTIVE"]
+        closed = completed + stopped
+        win_rate = round(len(completed) / max(len(closed), 1) * 100, 1) if closed else 0.0
+        net_pnl_r = round(sum(t.get("realized_r", 0.0) for t in closed), 2)
+        avg_mfe = round(sum(t.get("mfe_r", 0.0) for t in all_trades) / max(len(all_trades), 1), 2) if all_trades else 0.0
 
         # Pagination slice
         safe_page = max(1, page)
@@ -788,10 +791,17 @@ class ExtremeTradeTracker:
             },
             "metrics": {
                 "trades": total,
+                "total_tracked_trades": total,
+                "closed_trades": len(closed),
+                "total_closed_trades": len(closed),
                 "completed": len(completed),
                 "stopped": len(stopped),
+                "active_now": len(active),
                 "winrate": win_rate,
+                "win_rate_pct": win_rate,
                 "net_pnl_r": net_pnl_r,
+                "net_realized_r": net_pnl_r,
+                "avg_mfe_r": avg_mfe,
             },
             "summary": self.get_summary(),
             "trades": paginated_trades,

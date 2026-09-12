@@ -1569,17 +1569,18 @@
 
     function renderExtremeLiveHistory(data) {
       if (!data) return;
-      const sum = data.summary || {};
-      if (document.getElementById('liveHistTotal')) document.getElementById('liveHistTotal').innerText = sum.total_tracked_trades || 0;
-      if (document.getElementById('liveHistClosed')) document.getElementById('liveHistClosed').innerText = sum.total_closed_trades || 0;
-      if (document.getElementById('liveHistWinRate')) document.getElementById('liveHistWinRate').innerText = `${sum.win_rate_pct || 0}%`;
+      const m = data.metrics || data.summary || {};
+      if (document.getElementById('liveHistTotal')) document.getElementById('liveHistTotal').innerText = m.total_tracked_trades !== undefined ? m.total_tracked_trades : (m.trades !== undefined ? m.trades : 0);
+      if (document.getElementById('liveHistClosed')) document.getElementById('liveHistClosed').innerText = m.total_closed_trades !== undefined ? m.total_closed_trades : (m.closed_trades !== undefined ? m.closed_trades : 0);
+      const winRate = m.win_rate_pct !== undefined ? m.win_rate_pct : (m.winrate !== undefined ? m.winrate : 0);
+      if (document.getElementById('liveHistWinRate')) document.getElementById('liveHistWinRate').innerText = `${winRate}%`;
       if (document.getElementById('liveHistNetR')) {
-        const netR = sum.net_realized_r || 0;
+        const netR = m.net_realized_r !== undefined ? m.net_realized_r : (m.net_pnl_r !== undefined ? m.net_pnl_r : 0);
         document.getElementById('liveHistNetR').innerText = `${netR > 0 ? '+' : ''}${netR.toFixed(2)}R`;
         document.getElementById('liveHistNetR').className = `text-lg font-extrabold font-mono ${netR >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
       }
-      if (document.getElementById('liveHistActive')) document.getElementById('liveHistActive').innerText = sum.active_now || 0;
-      if (document.getElementById('liveHistAvgMfe')) document.getElementById('liveHistAvgMfe').innerText = `+${(sum.avg_mfe_r || 0).toFixed(2)}R`;
+      if (document.getElementById('liveHistActive')) document.getElementById('liveHistActive').innerText = m.active_now !== undefined ? m.active_now : 0;
+      if (document.getElementById('liveHistAvgMfe')) document.getElementById('liveHistAvgMfe').innerText = `+${(m.avg_mfe_r || 0).toFixed(2)}R`;
 
       const trades = (data.trades && data.trades.length > 0) ? data.trades : [...(data.active_trades || []), ...(data.history || [])];
 
