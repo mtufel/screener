@@ -1642,34 +1642,15 @@ async def api_extreme_live_history(
     per_page: int = Query(default=20, ge=1, le=100),
 ):
     from extreme_trade_tracker import extreme_trade_tracker
-    active = [t.to_dict() for t in extreme_trade_tracker.active_trades.values()]
-    hist = [t.to_dict() for t in extreme_trade_tracker.history]
-    all_trades = active + hist
-    # Filter
-    if state:
-        all_trades = [t for t in all_trades if t.get("state") == state]
-    if symbol:
-        all_trades = [t for t in all_trades if t.get("symbol") == symbol]
-    if direction:
-        all_trades = [t for t in all_trades if t.get("direction") == direction]
-    # Pagination
-    total = len(all_trades)
-    start = (page - 1) * per_page
-    paginated = all_trades[start:start + per_page]
-    # Dynamic metrics on filtered subset
-    completed = [t for t in paginated if t.get("state") == "COMPLETED_TP"]
-    stopped = [t for t in paginated if t.get("state") == "STOPPED_OUT"]
-    winrate = len(completed) / max(len(completed) + len(stopped), 1) if (completed or stopped) else 0.0
-    return JSONResponse(content={
-        "status": "success",
-        "filters": {"state": state, "symbol": symbol, "direction": direction},
-        "pagination": {"page": page, "per_page": per_page, "total": total, "pages": (total + per_page - 1)//per_page},
-        "metrics": {"winrate": round(winrate, 4), "trades": total},
-        "summary": extreme_trade_tracker.get_summary(),
-        "trades": paginated,
-        "active_trades": [t for t in paginated if t.get("state") in ("PENDING_RETRACE","TRADE_ACTIVE")],
-        "history": [t for t in paginated if t.get("state") not in ("PENDING_RETRACE","TRADE_ACTIVE")],
-    })
+    return JSONResponse(
+        content=extreme_trade_tracker.get_filtered_trades(
+            state=state,
+            symbol=symbol,
+            direction=direction,
+            page=page,
+            per_page=per_page,
+        )
+    )
 
 
 @app.post("/api/extreme/clear-live-history", summary="Clear Closed Live Trade History")

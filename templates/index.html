@@ -886,19 +886,23 @@
               </p>
             </div>
             <div class="flex items-center space-x-3" style="display:flex!important">
-              <select id="liveFilterState" onchange="fetchExtremeLiveHistory()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300">
+              <select id="liveFilterState" onchange="onLiveHistFilterChange()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300">
                 <option value="">All States</option>
                 <option value="PENDING_RETRACE">Pending</option>
                 <option value="TRADE_ACTIVE">Active</option>
                 <option value="COMPLETED_TP">Completed</option>
                 <option value="STOPPED_OUT">Stopped Out</option>
               </select>
-              <select id="liveFilterSymbol" onchange="fetchExtremeLiveHistory()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300">
+              <select id="liveFilterSymbol" onchange="onLiveHistFilterChange()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300">
                 <option value="">All Symbols</option>
                 <option value="BTC">BTC</option>
                 <option value="ETH">ETH</option>
+                <option value="SOL">SOL</option>
+                <option value="PAXG">PAXG</option>
+                <option value="GOLD">GOLD</option>
               </select>
-              <button onclick="fetchExtremeLiveHistory()" class="...">Refresh</button>
+              <button
+                onclick="fetchExtremeLiveHistory()"
                 class="px-3 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-750 text-slate-300 hover:text-white border border-dark-700 text-xs font-mono font-semibold flex items-center space-x-1.5 transition-all"
               >
                 <i class="fa-solid fa-rotate text-[11px]"></i>
@@ -1530,6 +1534,21 @@
     }
     setInterval(pollExtremeStatus, 10000);
 
+    let liveHistPage = 1;
+    const liveHistPerPage = 10;
+
+    function onLiveHistFilterChange() {
+      liveHistPage = 1;
+      fetchExtremeLiveHistory();
+    }
+
+    function changeLiveHistPage(delta) {
+      const newPage = Math.max(1, liveHistPage + delta);
+      if (newPage === liveHistPage) return;
+      liveHistPage = newPage;
+      fetchExtremeLiveHistory();
+    }
+
     async function fetchExtremeLiveHistory() {
       try {
         const state = document.getElementById('liveFilterState')?.value || '';
@@ -1546,14 +1565,6 @@
       } catch (err) {
         console.debug('Failed to fetch extreme live history:', err);
       }
-
-    let liveHistPage = 1;
-    const liveHistPerPage = 10;
-    function changeLiveHistPage(delta) {
-      const newPage = Math.max(1, liveHistPage + delta);
-      if (newPage === liveHistPage) return;
-      liveHistPage = newPage;
-      fetchExtremeLiveHistory();
     }
 
     function renderExtremeLiveHistory(data) {
@@ -1569,23 +1580,24 @@
       }
       if (document.getElementById('liveHistActive')) document.getElementById('liveHistActive').innerText = sum.active_now || 0;
       if (document.getElementById('liveHistAvgMfe')) document.getElementById('liveHistAvgMfe').innerText = `+${(sum.avg_mfe_r || 0).toFixed(2)}R`;
+
+      const trades = (data.trades && data.trades.length > 0) ? data.trades : [...(data.active_trades || []), ...(data.history || [])];
+
       // Pagination update
       const pagDiv = document.getElementById('liveHistPagination');
       const prevBtn = document.getElementById('liveHistPrev');
       const nextBtn = document.getElementById('liveHistNext');
       const infoSpan = document.getElementById('liveHistPageInfo');
-      const totalPages = Math.ceil((data.total || (trades ? trades.length : 0)) / liveHistPerPage) || 1;
+      const totalPages = (data.pagination && data.pagination.pages) ? data.pagination.pages : (Math.ceil(((data.pagination && data.pagination.total) || trades.length || 0) / liveHistPerPage) || 1);
       if (pagDiv) pagDiv.classList.remove('hidden');
       if (prevBtn) prevBtn.disabled = liveHistPage <= 1;
       if (nextBtn) nextBtn.disabled = liveHistPage >= totalPages;
       if (infoSpan) infoSpan.innerText = `Page ${liveHistPage} / ${totalPages}`;
-      // Reset to page 1 when filters change (simplified: if trades length < perPage and page>1, reset)
-      if (liveHistPage > totalPages && totalPages > 0) { liveHistPage = totalPages; fetchExtremeLiveHistory(); }
+      if (liveHistPage > totalPages && totalPages > 0) { liveHistPage = totalPages; fetchExtremeLiveHistory(); return; }
 
       const tbody = document.getElementById('extremeLiveHistoryTableBody');
       if (!tbody) return;
 
-      const trades = (data.trades && data.trades.length > 0) ? data.trades : [...(data.active_trades || []), ...(data.history || [])];
       if (!trades || trades.length === 0) {
         tbody.innerHTML = '<tr><td colspan="10" class="py-8 text-center text-slate-500 font-mono text-xs">No daemon trades recorded yet in this session. Active positions and closed trades will appear here automatically.</td></tr>';
         return;
