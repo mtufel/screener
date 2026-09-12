@@ -69,10 +69,8 @@ def _candle_low(c: Any) -> float:
 
 @dataclass
 class TrackedExtremeTrade:
-    trade_id: str
     symbol: str
     direction: str  # "Bullish" | "Bearish"
-    ltf_timeframe: str
     entry_price: float
     stop_loss: float
     risk_r: float
@@ -81,11 +79,13 @@ class TrackedExtremeTrade:
     tp_2r: float
     tp_3r: float
     completion_target: str
-    htf_anchor: Dict[str, Any]
-    ltf_fvg: Dict[str, Any]
-    state: str  # "PENDING_RETRACE" | "TRADE_ACTIVE" | "COMPLETED_TP" | "STOPPED_OUT" | "INVALIDATED"
-    status_detail: str
-    created_at_ist: str
+    trade_id: str = ""
+    ltf_timeframe: str = "15m"
+    htf_anchor: Dict[str, Any] = field(default_factory=dict)
+    ltf_fvg: Dict[str, Any] = field(default_factory=dict)
+    state: str = "PENDING_RETRACE"  # "PENDING_RETRACE" | "TRADE_ACTIVE" | "COMPLETED_TP" | "STOPPED_OUT" | "INVALIDATED"
+    status_detail: str = ""
+    created_at_ist: str = ""
     entry_filled_at_ist: Optional[str] = None
     closed_at_ist: Optional[str] = None
     realized_r: float = 0.0
@@ -96,6 +96,11 @@ class TrackedExtremeTrade:
     entry_timestamp: Optional[int] = None
     closed_timestamp: Optional[int] = None
     absent_cycles: int = 0
+
+    def __post_init__(self):
+        if not self.trade_id:
+            formed = self.ltf_fvg.get("formed_at", 0) if self.ltf_fvg else 0
+            self.trade_id = f"{self.symbol}:{formed}:{self.entry_price:.2f}"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -109,35 +114,29 @@ class ExtremeTradeTracker:
     def __init__(
         self,
         storage_path: str = PERSISTENCE_FILE,
-        session_filter: Optional[bool] = None,
-        weekday_filter: Optional[bool] = None,
-        entry_session_filter: Optional[bool] = None,
-        entry_weekday_filter: Optional[bool] = None,
+        session_filter: bool = False,
+        weekday_filter: bool = False,
+        entry_session_filter: bool = False,
+        entry_weekday_filter: bool = False,
     ):
         self.storage_path = Path(storage_path)
         self.active_trades: Dict[str, TrackedExtremeTrade] = {}
         self.history: List[TrackedExtremeTrade] = []
-        self.session_filter_enabled = (
-            session_filter
-            if session_filter is not None
-            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.weekday_filter_enabled = (
-            weekday_filter
-            if weekday_filter is not None
-            else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.entry_session_filter_enabled = (
-            entry_session_filter
-            if entry_session_filter is not None
-            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.entry_weekday_filter_enabled = (
-            entry_weekday_filter
-            if entry_weekday_filter is not None
-            else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
+        self.session_filter_enabled = bool(session_filter)
+        self.weekday_filter_enabled = bool(weekday_filter)
+        self.entry_session_filter_enabled = bool(entry_session_filter)
+        self.entry_weekday_filter_enabled = bool(entry_weekday_filter)
         self._load()
+
+    @classmethod
+    def from_env(cls) -> "ExtremeTradeTracker":
+        return cls(
+            storage_path=PERSISTENCE_FILE,
+            session_filter=os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+            weekday_filter=os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+            entry_session_filter=os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+            entry_weekday_filter=os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+        )
 
     def _load(self):
         try:
@@ -733,6 +732,73 @@ class ExtremeTradeTracker:
         self.history = []
         self._save()
 
+    def get_filtered_trades(
+        self,
+        state: Optional[str] = None,
+        symbol: Optional[str] = None,
+        direction: Optional[str] = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Filters and paginates tracked live trades (active + history).
+        Returns paginated records, pagination metadata, subset metrics, and global summary.
+        """
+        active_list = [t.to_dict() for t in self.active_trades.values()]
+        hist_list = [t.to_dict() for t in reversed(self.history)]
+        all_trades = active_list + hist_list
+
+        # Apply Filters
+        if state:
+            state_clean = state.strip().upper()
+            all_trades = [t for t in all_trades if t.get("state") == state_clean]
+        if symbol:
+            sym_clean = symbol.strip().upper()
+            all_trades = [t for t in all_trades if t.get("symbol", "").upper() == sym_clean]
+        if direction:
+            dir_clean = direction.strip().capitalize()
+            all_trades = [t for t in all_trades if t.get("direction") == dir_clean]
+
+        total = len(all_trades)
+        total_pages = max(1, (total + per_page - 1) // per_page) if per_page > 0 else 1
+
+        # Metrics on the filtered subset
+        completed = [t for t in all_trades if t.get("state") == "COMPLETED_TP"]
+        stopped = [t for t in all_trades if t.get("state") == "STOPPED_OUT"]
+        win_rate = round(len(completed) / max(len(completed) + len(stopped), 1) * 100, 1) if (completed or stopped) else 0.0
+        net_pnl_r = round(sum(t.get("realized_r", 0.0) for t in (completed + stopped)), 2)
+
+        # Pagination slice
+        safe_page = max(1, page)
+        start = (safe_page - 1) * per_page
+        paginated_trades = all_trades[start:start + per_page]
+
+        return {
+            "status": "success",
+            "filters": {
+                "state": state,
+                "symbol": symbol,
+                "direction": direction,
+            },
+            "pagination": {
+                "page": safe_page,
+                "per_page": per_page,
+                "total": total,
+                "pages": total_pages,
+            },
+            "metrics": {
+                "trades": total,
+                "completed": len(completed),
+                "stopped": len(stopped),
+                "winrate": win_rate,
+                "net_pnl_r": net_pnl_r,
+            },
+            "summary": self.get_summary(),
+            "trades": paginated_trades,
+            "active_trades": [t for t in paginated_trades if t.get("state") in ("PENDING_RETRACE", "TRADE_ACTIVE")],
+            "history": [t for t in paginated_trades if t.get("state") not in ("PENDING_RETRACE", "TRADE_ACTIVE")],
+        }
+
 
 # Singleton Instance
-extreme_trade_tracker = ExtremeTradeTracker()
+extreme_trade_tracker = ExtremeTradeTracker.from_env()

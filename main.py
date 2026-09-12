@@ -1631,19 +1631,26 @@ async def api_extreme_chart(
     return Response(content=img_bytes, media_type="image/png")
 
 
+from fastapi import Query
+
 @app.get("/api/extreme/live-history", summary="Get Tracked Live Trade History for Extreme Strategy")
-async def api_extreme_live_history():
+async def api_extreme_live_history(
+    state: Optional[str] = Query(default=None, description="Filter by state: PENDING_RETRACE, TRADE_ACTIVE, COMPLETED_TP, STOPPED_OUT"),
+    symbol: Optional[str] = Query(default=None),
+    direction: Optional[str] = Query(default=None, description="Bullish or Bearish"),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+):
     from extreme_trade_tracker import extreme_trade_tracker
-    active = [t.to_dict() for t in extreme_trade_tracker.active_trades.values()]
-    hist = [t.to_dict() for t in extreme_trade_tracker.history]
-    all_trades = active + hist
-    return JSONResponse(content={
-        "status": "success",
-        "summary": extreme_trade_tracker.get_summary(),
-        "trades": all_trades,
-        "active_trades": active,
-        "history": hist,
-    })
+    return JSONResponse(
+        content=extreme_trade_tracker.get_filtered_trades(
+            state=state,
+            symbol=symbol,
+            direction=direction,
+            page=page,
+            per_page=per_page,
+        )
+    )
 
 
 @app.post("/api/extreme/clear-live-history", summary="Clear Closed Live Trade History")

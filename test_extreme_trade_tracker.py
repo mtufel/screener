@@ -567,3 +567,119 @@ def test_tracker_entry_session_and_weekday_filters(tmp_path):
     assert trade.state == "TRADE_ACTIVE"
     assert trade.entry_timestamp == ts_mon_ny
 
+
+def test_get_filtered_trades_filtering_and_metrics(tmp_path):
+    """Verify filtering by state, symbol, direction and subset metrics calculation."""
+    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "filter_metrics_test.json"))
+
+    # Populate active trades
+    t_pending = TrackedExtremeTrade(
+        symbol="BTC", direction="Bullish", entry_price=60000.0, stop_loss=59000.0,
+        risk_r=1000.0, risk_pct=1.67, tp_1r=61000.0, tp_2r=62000.0, tp_3r=63000.0,
+        completion_target="2R", ltf_timeframe="15m", state="PENDING_RETRACE"
+    )
+    t_active = TrackedExtremeTrade(
+        symbol="ETH", direction="Bearish", entry_price=3000.0, stop_loss=3050.0,
+        risk_r=50.0, risk_pct=1.67, tp_1r=2950.0, tp_2r=2900.0, tp_3r=2850.0,
+        completion_target="2R", ltf_timeframe="15m", state="TRADE_ACTIVE"
+    )
+    tracker.active_trades["BTC:Bullish:60000"] = t_pending
+    tracker.active_trades["ETH:Bearish:3000"] = t_active
+
+    # Populate history
+    t_win1 = TrackedExtremeTrade(
+        symbol="BTC", direction="Bullish", entry_price=55000.0, stop_loss=54000.0,
+        risk_r=1000.0, risk_pct=1.8, tp_1r=56000.0, tp_2r=57000.0, tp_3r=58000.0,
+        completion_target="2R", ltf_timeframe="15m", state="COMPLETED_TP", realized_r=2.0
+    )
+    t_win2 = TrackedExtremeTrade(
+        symbol="SOL", direction="Bullish", entry_price=150.0, stop_loss=145.0,
+        risk_r=5.0, risk_pct=3.3, tp_1r=155.0, tp_2r=160.0, tp_3r=165.0,
+        completion_target="2R", ltf_timeframe="15m", state="COMPLETED_TP", realized_r=2.0
+    )
+    t_loss = TrackedExtremeTrade(
+        symbol="BTC", direction="Bearish", entry_price=58000.0, stop_loss=59000.0,
+        risk_r=1000.0, risk_pct=1.7, tp_1r=57000.0, tp_2r=56000.0, tp_3r=55000.0,
+        completion_target="2R", ltf_timeframe="15m", state="STOPPED_OUT", realized_r=-1.0
+    )
+    tracker.history = [t_win1, t_win2, t_loss]
+
+    # 1. No filters: total = 2 active + 3 history = 5
+    res = tracker.get_filtered_trades()
+    assert res["status"] == "success"
+    assert res["pagination"]["total"] == 5
+    assert len(res["trades"]) == 5
+    assert res["metrics"]["trades"] == 5
+    assert res["metrics"]["completed"] == 2
+    assert res["metrics"]["stopped"] == 1
+    assert res["metrics"]["winrate"] == 66.7
+    assert res["metrics"]["net_pnl_r"] == 3.0  # 2.0 + 2.0 - 1.0
+
+    # 2. Filter by symbol=BTC: 1 active pending + 2 history (1 win, 1 loss) = 3 total
+    res_btc = tracker.get_filtered_trades(symbol="BTC")
+    assert res_btc["pagination"]["total"] == 3
+    assert res_btc["metrics"]["completed"] == 1
+    assert res_btc["metrics"]["stopped"] == 1
+    assert res_btc["metrics"]["winrate"] == 50.0
+    assert res_btc["metrics"]["net_pnl_r"] == 1.0
+
+    # 3. Filter by state=TRADE_ACTIVE
+    res_active = tracker.get_filtered_trades(state="TRADE_ACTIVE")
+    assert res_active["pagination"]["total"] == 1
+    assert res_active["trades"][0]["symbol"] == "ETH"
+
+    # 4. Filter by direction=Bearish
+    res_bear = tracker.get_filtered_trades(direction="Bearish")
+    assert res_bear["pagination"]["total"] == 2
+    assert set(t["symbol"] for t in res_bear["trades"]) == {"ETH", "BTC"}
+
+
+def test_get_filtered_trades_pagination_slices(tmp_path):
+    """Verify pagination slices, page numbers, and total pages calculation."""
+    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "pagination_test.json"))
+
+    # Add 25 history trades
+    tracker.history = [
+        TrackedExtremeTrade(
+            symbol="BTC", direction="Bullish", entry_price=60000.0 + i, stop_loss=59000.0,
+            risk_r=1000.0, risk_pct=1.67, tp_1r=61000.0, tp_2r=62000.0, tp_3r=63000.0,
+            completion_target="2R", ltf_timeframe="15m", state="COMPLETED_TP", realized_r=2.0
+        )
+        for i in range(25)
+    ]
+
+    p1 = tracker.get_filtered_trades(page=1, per_page=10)
+    assert p1["pagination"]["page"] == 1
+    assert p1["pagination"]["per_page"] == 10
+    assert p1["pagination"]["total"] == 25
+    assert p1["pagination"]["pages"] == 3
+    assert len(p1["trades"]) == 10
+
+    p2 = tracker.get_filtered_trades(page=2, per_page=10)
+    assert p2["pagination"]["page"] == 2
+    assert len(p2["trades"]) == 10
+
+    p3 = tracker.get_filtered_trades(page=3, per_page=10)
+    assert p3["pagination"]["page"] == 3
+    assert len(p3["trades"]) == 5
+
+    p4 = tracker.get_filtered_trades(page=4, per_page=10)
+    assert p4["pagination"]["page"] == 4
+    assert len(p4["trades"]) == 0
+
+
+def test_api_extreme_live_history_endpoint(client):
+    """Integration test verifying GET /api/extreme/live-history returns expected schema."""
+    resp = client.get("/api/extreme/live-history?page=1&per_page=20")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "filters" in data
+    assert "pagination" in data
+    assert "metrics" in data
+    assert "summary" in data
+    assert "trades" in data
+    assert "active_trades" in data
+    assert "history" in data
+
+
