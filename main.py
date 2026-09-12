@@ -464,6 +464,16 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         except Exception as c_exc:
             logger.debug("Chart generation failed for event %s: %s", evt_type, c_exc)
 
+        # Position sizing snippet
+        pos_str = ""
+        try:
+            from position_sizing import PositionSizingEngine
+            pos_res = PositionSizingEngine.calculate(entry_price=tr.entry_price, stop_loss=tr.stop_loss, symbol=tr.symbol)
+            if pos_res:
+                pos_str = f"\n• <b>Position Size:</b> <code>{pos_res.quantity_formatted}</code> (${pos_res.notional_usd:,.2f} Notional @ ${pos_res.risk_usd:.2f} Risk)"
+        except Exception:
+            pos_str = ""
+
         if evt_type == "NEW_SETUP" and tr.state == "PENDING_RETRACE":
             dist = ((float(mids.get(tr.symbol, tr.entry_price)) - tr.entry_price) / tr.entry_price) * 100
             msg = (
@@ -474,7 +484,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"  └ <i>Formed:</i> {tr.ltf_fvg.get('formed_time_ist', '--')}\n"
                 f"• <b>Limit Order Entry:</b> <code>${tr.entry_price:,.2f}</code> ({dist:+.2f}% away)\n"
                 f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
-                f"• <b>Risk ($R$):</b> ${tr.risk_r:,.2f} ({tr.risk_pct:.2f}%)\n"
+                f"• <b>Risk ($R$):</b> ${tr.risk_r:,.2f} ({tr.risk_pct:.2f}%){pos_str}\n"
                 f"• <b>TP 1R:</b> ${tr.tp_1r:,.2f} | <b>TP 2R:</b> ${tr.tp_2r:,.2f} | <b>TP 3R:</b> ${tr.tp_3r:,.2f}\n"
                 f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
             )
@@ -492,7 +502,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"  └ <i>Formed:</i> {tr.htf_anchor.get('formed_time_ist', '--')} | <i>1st Touch:</i> {tr.htf_anchor.get('first_touch_time_ist', '--')}\n"
                 f"• <b>Filled At:</b> <code>${tr.entry_price:,.2f}</code>\n"
                 f"• <b>Fill Time:</b> {tr.entry_filled_at_ist or 'Live'}\n"
-                f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>\n"
+                f"• <b>Stop Loss:</b> <code>${tr.stop_loss:,.2f}</code>{pos_str}\n"
                 f"• <b>Primary Target ({tr.completion_target}):</b> <code>${primary_tp:,.2f}</code>\n"
                 f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
             )
