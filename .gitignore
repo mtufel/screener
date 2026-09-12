@@ -42,4 +42,11 @@ logs/
 .opencode/
 scratch/
 *.out
+*.log
 render_logs.json
+*.pre-repair
+
+# Generated Reports & Backtest HTML Artifacts (exclude templates/)
+/*.html
+backtest_summary.md
+verify_*.py

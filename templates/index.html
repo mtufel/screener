@@ -1296,6 +1296,12 @@
           ? `🚀 ACTIVE (${s.floating_r > 0 ? '+' : ''}${s.floating_r}R) · Filled: ${s.entry_time_ist || '--'}`
           : `⏳ PENDING RETRACE (${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%)`;
 
+        // Position sizing display
+        const pos = s.position_size;
+        const posHtml = pos
+          ? `<span class="text-amber-400 font-semibold ml-2"><i class="fa-solid fa-cube text-[9px] mr-0.5"></i>Qty: ${pos.quantity_formatted} ($${formatNumber(pos.notional_usd)} @ $${pos.risk_usd} risk)</span>`
+          : '';
+
         html += `
           <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700 shadow-xl space-y-4 hover:border-dark-600 transition-all ${isActive ? 'ring-1 ring-emerald-500/30' : ''}">
             <div class="flex items-center justify-between">
@@ -1356,7 +1362,7 @@
             <!-- Action Bar -->
             <div class="flex items-center justify-between pt-2 border-t border-dark-700/60">
               <div class="text-[11px] text-slate-400 font-mono">
-                Risk: <span class="text-slate-200 font-semibold">$${s.risk_r}</span> (${s.risk_pct}%)
+                Risk: <span class="text-slate-200 font-semibold">$${s.risk_r}</span> (${s.risk_pct}%)${posHtml}
               </div>
               <button
                 onclick="openExtremeLiveChart('${s.symbol}', '${s.direction}', '${s.ltf_timeframe}', ${s.entry_price}, ${s.stop_loss}, ${s.tp_1r}, ${s.tp_2r}, ${s.tp_3r}, ${s.anchor.bottom}, ${s.anchor.top}, ${s.target_fvg.bottom}, ${s.target_fvg.top}, ${s.target_fvg.formed_at || 0}, '${s.anchor.first_touch_time_ist || ''}', '${s.state}', ${s.floating_r}, ${s.entry_timestamp || 0})"
@@ -2154,6 +2160,16 @@
                     <span class="text-[10px] text-slate-400 font-normal ml-1">($${formatNumber(tp.sl_points || tp.risk_points)} pts)</span>
                   </div>
                 </div>
+
+                ${s.position_size ? `
+                <div class="flex items-center justify-between p-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                  <span class="text-amber-400 font-medium"><i class="fa-solid fa-cube text-[9px] mr-1"></i>Position Size</span>
+                  <div class="text-right font-mono font-semibold text-amber-300">
+                    <span>${s.position_size.quantity_formatted}</span>
+                    <span class="text-[10px] text-slate-400 block font-normal">$${formatNumber(s.position_size.notional_usd)} @ $${s.position_size.risk_usd} risk</span>
+                  </div>
+                </div>
+                ` : ''}
               </div>
             </div>
 

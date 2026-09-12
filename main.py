@@ -307,6 +307,9 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 floating_r = (active_trade.entry_price - curr_px) / risk_r
             dist_pct = ((curr_px - active_trade.entry_price) / active_trade.entry_price) * 100
 
+            from position_sizing import PositionSizingEngine
+            act_pos = PositionSizingEngine.calculate(entry_price=active_trade.entry_price, stop_loss=active_trade.stop_loss, symbol=sym)
+
             setups_out.append({
                 "symbol": sym,
                 "direction": active_trade.direction,
@@ -328,6 +331,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 "anchor": active_trade.htf_anchor,
                 "target_fvg": active_trade.ltf_fvg,
                 "unmitigated_count": 1,
+                "position_size": act_pos.to_dict() if act_pos else None,
             })
             continue
 
@@ -347,6 +351,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 if curr_px == 0.0:
                     curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
+                pos_res = setup.position_size
                 setup_dict = {
                     "symbol": sym,
                     "direction": setup.direction,
@@ -383,6 +388,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                         "formed_at": setup.ltf_fvg.formed_at,
                     },
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
+                    "position_size": pos_res.to_dict() if pos_res else None,
                 }
                 setups_out.append(setup_dict)
             await asyncio.sleep(0.1)
@@ -1205,6 +1211,9 @@ async def api_extreme_scan(
                 floating_r = (active_trade.entry_price - curr_px) / risk_r
             dist_pct = ((curr_px - active_trade.entry_price) / active_trade.entry_price) * 100
 
+            from position_sizing import PositionSizingEngine
+            act_pos = PositionSizingEngine.calculate(entry_price=active_trade.entry_price, stop_loss=active_trade.stop_loss, symbol=sym)
+
             setups_out.append({
                 "symbol": sym,
                 "direction": active_trade.direction,
@@ -1226,6 +1235,7 @@ async def api_extreme_scan(
                 "anchor": active_trade.htf_anchor,
                 "target_fvg": active_trade.ltf_fvg,
                 "unmitigated_count": 1,
+                "position_size": act_pos.to_dict() if act_pos else None,
             })
             continue
 
@@ -1245,6 +1255,7 @@ async def api_extreme_scan(
                 if curr_px == 0.0:
                     curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
                 dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
+                pos_res = setup.position_size
                 setups_out.append({
                     "symbol": sym,
                     "direction": setup.direction,
@@ -1281,6 +1292,7 @@ async def api_extreme_scan(
                         "formed_at": setup.ltf_fvg.formed_at,
                     },
                     "unmitigated_count": len(setup.all_unmitigated_fvgs),
+                    "position_size": pos_res.to_dict() if pos_res else None,
                 })
         except Exception as exc:
             logger.warning("Failed to get extreme setup for %s: %s", sym, exc)

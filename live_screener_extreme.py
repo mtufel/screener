@@ -175,6 +175,10 @@ class ExtremeLiveScanner:
             return  # Already notified
 
         # Alert 1: New Setup Formed (Pending Retrace)
+        pos_str = ""
+        if setup.position_size:
+            pos_str = f"\n• <b>Position Size:</b> <code>{setup.position_size.quantity_formatted}</code> (${setup.position_size.notional_usd:,.2f} Notional @ ${setup.position_size.risk_usd:.2f} Risk)"
+
         if curr_state == "PENDING_RETRACE" and last_state is None:
             dist_pct = ((current_price - setup.entry_price) / setup.entry_price) * 100
             msg = (
@@ -183,7 +187,7 @@ class ExtremeLiveScanner:
                 f"• <b>Target FVG:</b> [${setup.ltf_fvg.bottom:,.2f} - ${setup.ltf_fvg.top:,.2f}]\n"
                 f"• <b>Limit Order Entry:</b> <code>${setup.entry_price:,.2f}</code> ({dist_pct:+.2f}% away)\n"
                 f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
-                f"• <b>Risk ($R$):</b> ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%)\n"
+                f"• <b>Risk ($R$):</b> ${setup.risk_r:,.2f} ({setup.risk_pct:.2f}%){pos_str}\n"
                 f"• <b>TP 1R:</b> ${setup.tp_1r:,.2f} | <b>TP 2R:</b> ${setup.tp_2r:,.2f} | <b>TP 3R:</b> ${setup.tp_3r:,.2f}\n"
                 f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
             )
@@ -198,7 +202,7 @@ class ExtremeLiveScanner:
                 f"🚀 <b>[ENTRY FILLED] {setup.symbol} {side} IS NOW LIVE!</b>\n\n"
                 f"• <b>Filled At:</b> <code>${setup.entry_price:,.2f}</code>\n"
                 f"• <b>Time:</b> {setup.entry_time_ist}\n"
-                f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
+                f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>{pos_str}\n"
                 f"• <b>Primary Target ({self.completion_target}):</b> "
                 f"${setup.tp_2r:,.2f if self.completion_target == '2R' else setup.tp_1r:,.2f}\n"
                 f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
