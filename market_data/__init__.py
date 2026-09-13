@@ -8,7 +8,10 @@ from market_data.base import BaseMarketDataProvider
 from market_data.binance import BinanceProvider
 from market_data.oanda import OandaProvider, _oanda_rfc3339_to_ms
 from market_data.hyperliquid import HyperliquidProvider
-from market_data.ccxt_provider import CcxtProvider
+try:
+    from market_data.ccxt_provider import CcxtProvider
+except ImportError:
+    CcxtProvider = None
 
 __all__ = [
     "BaseMarketDataProvider",

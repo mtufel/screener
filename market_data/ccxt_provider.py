@@ -11,7 +11,13 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Set
 
-import ccxt.async_support as ccxt_async
+try:
+    import ccxt.async_support as ccxt_async
+    _HAS_CCXT = True
+except ImportError:
+    ccxt_async = None
+    _HAS_CCXT = False
+
 try:
     import ccxt.pro as ccxt_pro
     _HAS_CCXT_PRO = True
@@ -46,6 +52,11 @@ class CcxtProvider(BaseMarketDataProvider):
         fallback_provider: Optional[BaseMarketDataProvider] = None,
         exchange_config: Optional[Dict[str, Any]] = None,
     ):
+        if not _HAS_CCXT or ccxt_async is None:
+            raise RuntimeError(
+                "The 'ccxt' library is not installed. Please install it using 'pip install ccxt' or update requirements.txt."
+            )
+
         raw_id = (exchange_id or os.getenv("CCXT_EXCHANGE", "binance")).strip().lower()
         self.exchange_id = EXCHANGE_ALIASES.get(raw_id, raw_id)
         self.use_pro = use_pro and _HAS_CCXT_PRO

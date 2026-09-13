@@ -11,3 +11,4 @@
 - [x] 5. Implement automated unit and integration tests in `test_ccxt_provider.py` <!-- id: 8 -->
 - [x] 6. Run full test suite (`pytest -v`) and verify 100% pass rate <!-- id: 9 -->
 - [x] 7. Update OpenSpec checklist and walkthrough <!-- id: 10 -->
+- [x] 8. Add ccxt and websockets dependencies to requirements.txt and make ccxt imports resilient <!-- id: 11 -->
