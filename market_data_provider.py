@@ -17,6 +17,7 @@ from market_data.base import BaseMarketDataProvider
 from market_data.binance import BinanceProvider
 from market_data.oanda import OandaProvider, _oanda_rfc3339_to_ms
 from market_data.hyperliquid import HyperliquidProvider
+from market_data.ccxt_provider import CcxtProvider
 
 logger = logging.getLogger("market_data_provider")
 
@@ -57,6 +58,9 @@ def get_market_data_provider(
             fallback_inst = BinanceProvider(use_futures=False)
         elif fb_selected in ("oanda", "onda"):
             fallback_inst = OandaProvider()
+        elif fb_selected.startswith("ccxt"):
+            fb_ex = fb_selected[5:] if len(fb_selected) > 5 and fb_selected.startswith("ccxt_") else os.getenv("CCXT_EXCHANGE", "binance")
+            fallback_inst = CcxtProvider(exchange_id=fb_ex)
 
     if selected in ("binance", "binance_futures", "binance-futures"):
         provider = BinanceProvider(use_futures=True, fallback_provider=fallback_inst)
@@ -66,6 +70,9 @@ def get_market_data_provider(
         provider = OandaProvider(fallback_provider=fallback_inst)
     elif selected in ("hyperliquid", "hl"):
         provider = HyperliquidProvider()
+    elif selected == "ccxt" or selected.startswith("ccxt_"):
+        ex_id = selected[5:] if len(selected) > 5 and selected.startswith("ccxt_") else os.getenv("CCXT_EXCHANGE", "binance")
+        provider = CcxtProvider(exchange_id=ex_id, fallback_provider=fallback_inst)
     else:
         logger.warning("Unknown DATA_PROVIDER '%s'. Defaulting to Binance Futures with Hyperliquid fallback.", selected)
         provider = BinanceProvider(use_futures=True, fallback_provider=fallback_inst)
@@ -96,6 +103,7 @@ __all__ = [
     "BinanceProvider",
     "OandaProvider",
     "HyperliquidProvider",
+    "CcxtProvider",
     "_oanda_rfc3339_to_ms",
     "get_market_data_provider",
     "market_data_provider",
