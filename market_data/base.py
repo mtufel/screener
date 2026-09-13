@@ -3,21 +3,7 @@ Abstract Base Market Data Provider (market_data/base.py)
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
-
-
-def is_ws_open(ws: Any) -> bool:
-    """Safely determines if a websockets connection is currently open across websockets v10-v15+."""
-    if ws is None:
-        return False
-    state = getattr(ws, "state", None)
-    if state is not None:
-        return getattr(state, "name", "") == "OPEN" or state == 1
-    if hasattr(ws, "closed"):
-        return not ws.closed
-    if hasattr(ws, "open"):
-        return bool(ws.open)
-    return getattr(ws, "close_code", None) is None
+from typing import Any, Dict, List
 
 
 class BaseMarketDataProvider(ABC):
@@ -68,22 +54,4 @@ class BaseMarketDataProvider(ABC):
     @abstractmethod
     async def close(self):
         """Releases underlying HTTP client connections."""
-        pass
-
-    @property
-    def supports_websocket(self) -> bool:
-        """Indicates whether this provider supports real-time WebSocket streaming."""
-        return False
-
-    @property
-    def is_websocket_connected(self) -> bool:
-        """Returns True if the WebSocket connection is currently active."""
-        return False
-
-    async def start_websocket(self, symbols: Optional[List[str]] = None, timeframes: Optional[List[str]] = None) -> bool:
-        """Starts background WebSocket streaming if supported."""
-        return False
-
-    async def stop_websocket(self):
-        """Stops background WebSocket streaming."""
         pass

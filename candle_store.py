@@ -103,23 +103,16 @@ class CandleStore:
         )
         return merged
 
-    def get_cached_mids(self, provider_name: str, ignore_ttl: bool = False) -> Optional[Dict[str, float]]:
+    def get_cached_mids(self, provider_name: str) -> Optional[Dict[str, float]]:
         entry = self._mids_cache.get(provider_name.strip().lower())
-        if entry and (ignore_ttl or time.time() < entry[1]):
+        if entry and time.time() < entry[1]:
             logger.debug("[CandleStore] [MIDS CACHE HIT] %s -> Serving %d mid prices from memory", provider_name.upper(), len(entry[0]))
             return dict(entry[0])
         return None
 
-    def set_cached_mids(self, provider_name: str, mids: Dict[str, float], merge: bool = False):
-        p = provider_name.strip().lower()
-        if merge and p in self._mids_cache:
-            existing = dict(self._mids_cache[p][0])
-            existing.update(mids)
-            self._mids_cache[p] = (existing, time.time() + self.mids_ttl_seconds)
-            logger.debug("[CandleStore] [MIDS CACHE MERGED] %s -> Store now holds %d mid prices", provider_name.upper(), len(existing))
-        else:
-            self._mids_cache[p] = (dict(mids), time.time() + self.mids_ttl_seconds)
-            logger.info("[CandleStore] [MIDS CACHE UPDATED] %s -> Cached %d mid prices (TTL: %.1fs)", provider_name.upper(), len(mids), self.mids_ttl_seconds)
+    def set_cached_mids(self, provider_name: str, mids: Dict[str, float]):
+        self._mids_cache[provider_name.strip().lower()] = (dict(mids), time.time() + self.mids_ttl_seconds)
+        logger.info("[CandleStore] [MIDS CACHE UPDATED] %s -> Cached %d mid prices (TTL: %.1fs)", provider_name.upper(), len(mids), self.mids_ttl_seconds)
 
     def set_rate_limited(self, provider_name: str, cooldown_seconds: float = 60.0):
         target = time.time() + cooldown_seconds
