@@ -19,43 +19,16 @@ class HyperliquidProvider(BaseMarketDataProvider):
     ):
         self._client = client or hyperliquid_client
         self._store = store or candle_store
-        self._ws_client: Optional[Any] = None
 
     @property
     def name(self) -> str:
         return "hyperliquid"
 
-    @property
-    def supports_websocket(self) -> bool:
-        return True
-
-    @property
-    def is_websocket_connected(self) -> bool:
-        return self._ws_client is not None and getattr(self._ws_client, "is_connected", False)
-
-    async def start_websocket(self, symbols: Optional[List[str]] = None, timeframes: Optional[List[str]] = None) -> bool:
-        from market_data.hyperliquid_ws import HyperliquidWSClient
-        if self._ws_client is None:
-            self._ws_client = HyperliquidWSClient(
-                store=self._store,
-                symbols=symbols,
-                timeframes=timeframes,
-            )
-        elif symbols:
-            self._ws_client.update_subscriptions(symbols, timeframes)
-        await self._ws_client.start()
-        return True
-
-    async def stop_websocket(self):
-        if self._ws_client:
-            await self._ws_client.stop()
-            self._ws_client = None
-
     def resolve_symbol(self, raw_symbol: str) -> str:
         return resolve_symbol(raw_symbol)
 
     async def get_all_mids(self) -> Dict[str, float]:
-        cached = self._store.get_cached_mids(self.name, ignore_ttl=self.is_websocket_connected)
+        cached = self._store.get_cached_mids(self.name)
         if cached is not None:
             return cached
         mids = await self._client.get_all_mids()
@@ -70,7 +43,7 @@ class HyperliquidProvider(BaseMarketDataProvider):
         n: int = 200,
     ) -> List[Dict[str, Any]]:
         cached = self._store.get_candles(self.name, symbol, timeframe, n=n)
-        if cached and len(cached) >= min(n, 50) and (self.is_websocket_connected or self._store.is_fresh(self.name, symbol, timeframe)):
+        if cached and len(cached) >= min(n, 50) and self._store.is_fresh(self.name, symbol, timeframe):
             return cached
 
         has_bootstrapped = self._store.has_sufficient_candles(self.name, symbol, timeframe, min_count=min(n, 50))
@@ -96,5 +69,4 @@ class HyperliquidProvider(BaseMarketDataProvider):
         return await self._client.get_universe_coins(min_volume=min_volume)
 
     async def close(self):
-        await self.stop_websocket()
         await self._client.close()
