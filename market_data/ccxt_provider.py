@@ -402,9 +402,15 @@ class CcxtProvider(BaseMarketDataProvider):
         self._ws_running = True
         self._ws_connected = True
 
-        # Launch ticker watching task
-        t_task = asyncio.create_task(self._watch_tickers_loop())
-        self._ws_tasks.append(t_task)
+        # Launch ticker watching task(s)
+        has_watch_tickers = bool(getattr(self._pro_exchange, "has", {}).get("watchTickers"))
+        if has_watch_tickers:
+            t_task = asyncio.create_task(self._watch_tickers_loop())
+            self._ws_tasks.append(t_task)
+        else:
+            for sym in list(self._subscribed_symbols):
+                t_task = asyncio.create_task(self._watch_single_ticker_loop(sym))
+                self._ws_tasks.append(t_task)
 
         # Launch OHLCV watching tasks for each symbol & timeframe
         for sym in list(self._subscribed_symbols):
@@ -420,43 +426,57 @@ class CcxtProvider(BaseMarketDataProvider):
         return True
 
     async def _watch_tickers_loop(self):
-        """Background loop streaming ticker updates into CandleStore."""
+        """Background loop streaming ticker updates into CandleStore for exchanges supporting batch watchTickers."""
         while self._ws_running and self._pro_exchange:
             try:
                 resolved_symbols = [self.resolve_symbol(s) for s in self._subscribed_symbols]
-                if getattr(self._pro_exchange, "has", {}).get("watchTickers"):
-                    tickers = await self._pro_exchange.watch_tickers(resolved_symbols)
-                    mids: Dict[str, float] = {}
-                    for sym, ticker in tickers.items():
-                        px = ticker.get("last") or ticker.get("close") or ticker.get("bid")
-                        if px and px > 0:
-                            base = self.normalize_symbol_to_base(sym)
-                            mids[base] = float(px)
-                            mids[sym] = float(px)
-                            if base in ("PAXG", "XAU"):
-                                mids["GOLD"] = float(px)
-                                mids["XAU"] = float(px)
-                            elif base == "XAG":
-                                mids["SILVER"] = float(px)
-                    if mids:
-                        self._store.set_cached_mids(self.name, mids)
-                else:
-                    # Fallback to single ticker watch for first few symbols
-                    for s in resolved_symbols[:10]:
-                        ticker = await self._pro_exchange.watch_ticker(s)
-                        px = ticker.get("last") or ticker.get("close")
-                        if px and px > 0:
-                            base = self.normalize_symbol_to_base(s)
-                            mids = self._store.get_cached_mids(self.name) or {}
-                            mids[base] = float(px)
-                            mids[s] = float(px)
-                            self._store.set_cached_mids(self.name, mids)
+                tickers = await self._pro_exchange.watch_tickers(resolved_symbols)
+                mids: Dict[str, float] = {}
+                for sym, ticker in tickers.items():
+                    px = ticker.get("last") or ticker.get("close") or ticker.get("bid")
+                    if px and px > 0:
+                        base = self.normalize_symbol_to_base(sym)
+                        mids[base] = float(px)
+                        mids[sym] = float(px)
+                        if base in ("PAXG", "XAU"):
+                            mids["GOLD"] = float(px)
+                            mids["XAU"] = float(px)
+                        elif base == "XAG":
+                            mids["SILVER"] = float(px)
+                if mids:
+                    self._store.set_cached_mids(self.name, mids)
                 self._ws_connected = True
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self._ws_connected = False
                 logger.warning("[CcxtProvider] Error in watch_tickers loop: %s. Reconnecting in 2s...", exc)
+                await asyncio.sleep(2.0)
+
+    async def _watch_single_ticker_loop(self, symbol: str):
+        """Background loop streaming ticker updates for a single symbol (for exchanges like BingX without batch watchTickers)."""
+        ccxt_sym = self.resolve_symbol(symbol)
+        base_sym = self.normalize_symbol_to_base(ccxt_sym)
+        while self._ws_running and self._pro_exchange:
+            try:
+                ticker = await self._pro_exchange.watch_ticker(ccxt_sym)
+                px = ticker.get("last") or ticker.get("close") or ticker.get("bid")
+                if px and px > 0:
+                    mids = self._store.get_cached_mids(self.name, ignore_ttl=True) or {}
+                    mids[base_sym] = float(px)
+                    mids[ccxt_sym] = float(px)
+                    if base_sym in ("PAXG", "XAU"):
+                        mids["GOLD"] = float(px)
+                        mids["XAU"] = float(px)
+                    elif base_sym == "XAG":
+                        mids["SILVER"] = float(px)
+                    self._store.set_cached_mids(self.name, mids)
+                self._ws_connected = True
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self._ws_connected = False
+                logger.debug("[CcxtProvider] Error in watch_ticker loop for %s: %s. Reconnecting in 2s...", ccxt_sym, exc)
                 await asyncio.sleep(2.0)
 
     async def _watch_ohlcv_loop(self, symbol: str, timeframe: str):
