@@ -58,6 +58,9 @@ class CcxtProvider(BaseMarketDataProvider):
             "enableRateLimit": self.enable_rate_limit,
             "timeout": 15000,
         }
+        proxy = os.getenv("CCXT_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+        if proxy:
+            cfg["proxy"] = proxy
         if exchange_config:
             cfg.update(exchange_config)
 
