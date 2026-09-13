@@ -162,6 +162,82 @@ def format_alert_message(setups: List[SetupResult]) -> List[str]:
     return messages
 
 
+_LINKED_DISCUSSION_CACHE: Dict[str, Optional[int]] = {}
+
+
+async def get_linked_discussion_chat_id(chat_id: Optional[str] = None, bot_token: Optional[str] = None) -> Optional[int]:
+    """
+    Resolves and caches the linked discussion group chat_id for a channel.
+    Returns None if chat is not a channel or has no linked discussion group.
+    """
+    token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
+    c_id = _resolve_chat_id(chat_id)
+    if not token or not c_id:
+        return None
+    if c_id in _LINKED_DISCUSSION_CACHE:
+        return _LINKED_DISCUSSION_CACHE[c_id]
+
+    try:
+        timeout_cfg = httpx.Timeout(10.0, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+            url = f"{TELEGRAM_API_BASE}/bot{token}/getChat?chat_id={c_id}"
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                linked = resp.json().get("result", {}).get("linked_chat_id")
+                if linked:
+                    _LINKED_DISCUSSION_CACHE[c_id] = int(linked)
+                    logger.info("Discovered linked discussion group %d for channel %s", linked, c_id)
+                    return int(linked)
+    except Exception as exc:
+        logger.debug("Could not resolve linked discussion group for %s: %s", c_id, exc)
+
+    _LINKED_DISCUSSION_CACHE[c_id] = None
+    return None
+
+
+async def resolve_discussion_thread_id(
+    channel_chat_id: str,
+    channel_message_id: int,
+    discussion_chat_id: int,
+    bot_token: Optional[str] = None,
+    max_attempts: int = 6,
+    interval_sec: float = 0.5,
+) -> Optional[int]:
+    """
+    Polls getUpdates to detect the automatic forward of a channel post into the linked discussion group.
+    Returns the discussion message_id (which acts as the message_thread_id for comments).
+    """
+    token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
+    if not token or not channel_message_id or not discussion_chat_id:
+        return None
+
+    timeout_cfg = httpx.Timeout(10.0, connect=4.0)
+    for attempt in range(max_attempts):
+        await asyncio.sleep(interval_sec)
+        try:
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                url = f"{TELEGRAM_API_BASE}/bot{token}/getUpdates?offset=-30"
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    updates = resp.json().get("result", [])
+                    for u in reversed(updates):
+                        m = u.get("message", {})
+                        if m.get("chat", {}).get("id") == discussion_chat_id:
+                            fwd_id = m.get("forward_from_message_id") or m.get("forward_origin", {}).get("message_id")
+                            if fwd_id == channel_message_id:
+                                disc_msg_id = m.get("message_id")
+                                logger.info(
+                                    "Resolved channel post %d -> discussion thread ID %d (attempt %d)",
+                                    channel_message_id, disc_msg_id, attempt + 1
+                                )
+                                return disc_msg_id
+        except Exception as exc:
+            logger.debug("Error checking getUpdates for discussion thread: %s", exc)
+
+    logger.debug("Could not auto-resolve discussion thread ID for channel post %d after %d attempts", channel_message_id, max_attempts)
+    return None
+
+
 async def send_telegram_alert(
     text: str,
     bot_token: Optional[str] = None,
@@ -169,6 +245,7 @@ async def send_telegram_alert(
     retries: int = 3,
     reply_to_message_id: Optional[int] = None,
     return_message_id: bool = False,
+    message_thread_id: Optional[int] = None,
 ) -> Union[bool, Tuple[bool, Optional[int]]]:
     """
     Sends a single text message to Telegram with automatic retries and exponential backoff.
@@ -196,6 +273,8 @@ async def send_telegram_alert(
     if reply_to_message_id is not None:
         payload["reply_to_message_id"] = int(reply_to_message_id)
         payload["allow_sending_without_reply"] = True
+    if message_thread_id is not None:
+        payload["message_thread_id"] = int(message_thread_id)
 
     timeout_cfg = httpx.Timeout(15.0, connect=5.0)
     for attempt in range(1, retries + 1):
@@ -241,6 +320,7 @@ async def send_telegram_photo(
     retries: int = 3,
     reply_to_message_id: Optional[int] = None,
     return_message_id: bool = False,
+    message_thread_id: Optional[int] = None,
 ) -> Union[bool, Tuple[bool, Optional[int]]]:
     """
     Sends a photo with caption to Telegram with automatic retries, falling back to text.
@@ -266,6 +346,8 @@ async def send_telegram_photo(
     if reply_to_message_id is not None:
         data["reply_to_message_id"] = str(reply_to_message_id)
         data["allow_sending_without_reply"] = "true"
+    if message_thread_id is not None:
+        data["message_thread_id"] = str(message_thread_id)
 
     timeout_cfg = httpx.Timeout(20.0, connect=6.0)
     for attempt in range(1, retries + 1):
@@ -310,6 +392,7 @@ async def send_telegram_photo(
         retries=retries,
         reply_to_message_id=reply_to_message_id,
         return_message_id=return_message_id,
+        message_thread_id=message_thread_id,
     )
 
 

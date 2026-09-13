@@ -16,6 +16,12 @@
   - [x] 4.1 Write comprehensive unit tests in `test_telegram_threading.py`.
   - [x] 4.2 Verify message threading, reply payload format, and return value backwards compatibility.
   - [x] 4.3 Run full test suite with `pytest -v` and verify 100% pass rate.
+- [x] 6. Channel Discussion Group Comment Threading <!-- id: 6 -->
+  - [x] 6.1 Implement `get_linked_discussion_chat_id()` and `resolve_discussion_thread_id()` in `telegram_client.py`.
+  - [x] 6.2 Update `send_telegram_alert()` to accept `message_thread_id: Optional[int] = None`.
+  - [x] 6.3 Add `telegram_discussion_thread_id: Optional[int] = None` to `TrackedExtremeTrade` and `TrackedTrade`.
+  - [x] 6.4 Update `main.py` to auto-resolve discussion thread ID on `NEW_SETUP` and route subsequent alerts to `discussion_id` with `message_thread_id`.
+  - [x] 6.5 Add unit/integration tests and verify with `pytest -v`.
 - [x] 5. Documentation & Wrap-up <!-- id: 5 -->
   - [x] 5.1 Update `walkthrough.md`.
   - [ ] 5.2 Commit and push to `feat/telegram-alert-threading`.

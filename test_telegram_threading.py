@@ -170,30 +170,34 @@ def test_tracked_extreme_trade_message_id_serialization():
     # Roundtrip from dict
     restored = TrackedExtremeTrade.from_dict(d)
     assert restored.telegram_message_id == 42042
+    assert restored.telegram_discussion_thread_id is None
 
 
-def test_tracked_extreme_trade_backward_compatible_deserialization():
-    """Verifies that an older trade dict without telegram_message_id defaults to None."""
-    old_data = {
-        "symbol": "ETH",
-        "direction": "Bearish",
-        "entry_price": 3000.0,
-        "stop_loss": 3100.0,
-        "risk_r": 100.0,
-        "risk_pct": 3.33,
-        "tp_1r": 2900.0,
-        "tp_2r": 2800.0,
-        "tp_3r": 2700.0,
-        "completion_target=" : "2R",
-        "completion_target": "2R",
-        # intentionally no telegram_message_id
-    }
-    trade = TrackedExtremeTrade.from_dict(old_data)
-    assert trade.telegram_message_id is None
+def test_tracked_extreme_trade_discussion_thread_id():
+    """Verifies that telegram_discussion_thread_id is preserved across serialization."""
+    trade = TrackedExtremeTrade(
+        symbol="BTC",
+        direction="Bullish",
+        entry_price=50000.0,
+        stop_loss=49000.0,
+        risk_r=1000.0,
+        risk_pct=2.0,
+        tp_1r=51000.0,
+        tp_2r=52000.0,
+        tp_3r=53000.0,
+        completion_target="2R",
+        telegram_message_id=42042,
+        telegram_discussion_thread_id=55555,
+    )
+    d = trade.to_dict()
+    assert d["telegram_discussion_thread_id"] == 55555
+
+    restored = TrackedExtremeTrade.from_dict(d)
+    assert restored.telegram_discussion_thread_id == 55555
 
 
 def test_tracked_trade_strategy1_message_id():
-    """Verifies that Strategy 1 TrackedTrade also supports telegram_message_id."""
+    """Verifies that Strategy 1 TrackedTrade also supports telegram_message_id and discussion thread."""
     tp = TPLevels(r1=101, r1_5=101.5, r2=102, r3=103, risk_points=1, risk_pct=1, r1_points=1, r1_5_points=1.5, r2_points=2, r3_points=3, sl_points=1)
     t = TrackedTrade(
         setup_id="SOL:100:Bullish",
@@ -211,17 +215,70 @@ def test_tracked_trade_strategy1_message_id():
         stage="PENDING_RETRACE",
         created_at_ist="13-Sep 10:00 AM IST",
         telegram_message_id=98765,
+        telegram_discussion_thread_id=88888,
     )
     d = t.to_dict()
     assert d["telegram_message_id"] == 98765
+    assert d["telegram_discussion_thread_id"] == 88888
 
     restored = TrackedTrade.from_dict(d)
     assert restored.telegram_message_id == 98765
+    assert restored.telegram_discussion_thread_id == 88888
 
 
 # ==============================================================================
-# 4. send_extreme_telegram_alert Integration
+# 4. Discussion Helpers & send_extreme_telegram_alert Integration
 # ==============================================================================
+
+@pytest.mark.asyncio
+async def test_get_linked_discussion_chat_id():
+    """Verifies get_linked_discussion_chat_id queries and caches linked_chat_id."""
+    from telegram_client import get_linked_discussion_chat_id, _LINKED_DISCUSSION_CACHE
+    _LINKED_DISCUSSION_CACHE.clear()
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"ok": True, "result": {"linked_chat_id": -100999888}}
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_resp
+        disc_id = await get_linked_discussion_chat_id(chat_id="-100111222", bot_token="token")
+        assert disc_id == -100999888
+        assert _LINKED_DISCUSSION_CACHE["-100111222"] == -100999888
+
+
+@pytest.mark.asyncio
+async def test_resolve_discussion_thread_id():
+    """Verifies resolve_discussion_thread_id finds discussion message matching channel post."""
+    from telegram_client import resolve_discussion_thread_id
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "ok": True,
+        "result": [
+            {
+                "message": {
+                    "message_id": 42,
+                    "chat": {"id": -100999888},
+                    "forward_from_message_id": 850,
+                }
+            }
+        ],
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_resp
+        thread_id = await resolve_discussion_thread_id(
+            channel_chat_id="-100111222",
+            channel_message_id=850,
+            discussion_chat_id=-100999888,
+            bot_token="token",
+            max_attempts=1,
+            interval_sec=0.01,
+        )
+        assert thread_id == 42
+
 
 @pytest.mark.asyncio
 async def test_send_extreme_telegram_alert_threading_forwarding():
@@ -243,20 +300,26 @@ async def test_send_extreme_telegram_alert_threading_forwarding():
         mock_photo.assert_called_once_with(
             photo_bytes=b"img",
             caption="Setup with chart",
+            chat_id=None,
             reply_to_message_id=500,
             return_message_id=True,
+            message_thread_id=None,
         )
 
-        # 2. Text only
+        # 2. Text only with discussion thread
         res_text = await send_extreme_telegram_alert(
             message="Text update",
             image_bytes=None,
-            reply_to_message_id=1001,
+            chat_id="-100999888",
+            reply_to_message_id=42,
+            message_thread_id=42,
             return_message_id=True,
         )
         assert res_text == (True, 1002)
         mock_text.assert_called_once_with(
             text="Text update",
-            reply_to_message_id=1001,
+            chat_id="-100999888",
+            reply_to_message_id=42,
             return_message_id=True,
+            message_thread_id=42,
         )

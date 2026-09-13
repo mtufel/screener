@@ -97,6 +97,7 @@ class TrackedExtremeTrade:
     closed_timestamp: Optional[int] = None
     absent_cycles: int = 0
     telegram_message_id: Optional[int] = None
+    telegram_discussion_thread_id: Optional[int] = None
 
     def __post_init__(self):
         if not self.trade_id:
