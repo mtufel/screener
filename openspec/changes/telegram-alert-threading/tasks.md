@@ -1,0 +1,21 @@
+# Tasks: Telegram Alert Threading for Trade Lifecycles
+
+- [x] 1. Update `telegram_client.py` <!-- id: 1 -->
+  - [x] 1.1 Update `send_telegram_alert()` to accept `reply_to_message_id: Optional[int] = None` and `return_message_id: bool = False`.
+  - [x] 1.2 Update `send_telegram_photo()` to accept `reply_to_message_id: Optional[int] = None` and `return_message_id: bool = False`.
+  - [x] 1.3 Ensure `allow_sending_without_reply: true` is included in all reply payloads.
+  - [x] 1.4 Ensure fallback in `send_telegram_photo` preserves reply options.
+- [x] 2. Update `extreme_trade_tracker.py` <!-- id: 2 -->
+  - [x] 2.1 Add `telegram_message_id: Optional[int] = None` to `TrackedExtremeTrade`.
+  - [x] 2.2 Ensure serialization (`to_dict`) and deserialization (`from_dict`) handle `telegram_message_id`.
+- [x] 3. Update `main.py` Screener Daemon <!-- id: 3 -->
+  - [x] 3.1 Update `send_extreme_telegram_alert()` to accept `reply_to_message_id` and `return_message_id`.
+  - [x] 3.2 Capture and store `telegram_message_id` on `NEW_SETUP` alerts and trigger `_save()`.
+  - [x] 3.3 Pass `reply_to_message_id=tr.telegram_message_id` on `ENTRY_FILLED`, `TP_HIT`, and `SL_HIT`.
+- [x] 4. Automated Testing & Verification <!-- id: 4 -->
+  - [x] 4.1 Write comprehensive unit tests in `test_telegram_threading.py`.
+  - [x] 4.2 Verify message threading, reply payload format, and return value backwards compatibility.
+  - [x] 4.3 Run full test suite with `pytest -v` and verify 100% pass rate.
+- [x] 5. Documentation & Wrap-up <!-- id: 5 -->
+  - [x] 5.1 Update `walkthrough.md`.
+  - [ ] 5.2 Commit and push to `feat/telegram-alert-threading`.

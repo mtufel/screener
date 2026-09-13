@@ -96,6 +96,7 @@ class TrackedExtremeTrade:
     entry_timestamp: Optional[int] = None
     closed_timestamp: Optional[int] = None
     absent_cycles: int = 0
+    telegram_message_id: Optional[int] = None
 
     def __post_init__(self):
         if not self.trade_id:
@@ -107,7 +108,8 @@ class TrackedExtremeTrade:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TrackedExtremeTrade":
-        return cls(**d)
+        valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in d.items() if k in valid_keys})
 
 
 class ExtremeTradeTracker:

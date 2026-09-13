@@ -11,7 +11,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import httpx
 from dotenv import load_dotenv
 
@@ -167,18 +167,23 @@ async def send_telegram_alert(
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
     retries: int = 3,
-) -> bool:
-    """Sends a single text message to Telegram with automatic retries and exponential backoff."""
+    reply_to_message_id: Optional[int] = None,
+    return_message_id: bool = False,
+) -> Union[bool, Tuple[bool, Optional[int]]]:
+    """
+    Sends a single text message to Telegram with automatic retries and exponential backoff.
+    Optionally threads as a reply to reply_to_message_id and returns (success, message_id).
+    """
     if not TELEGRAM_ENABLED:
         logger.info("Telegram alerting is disabled (TELEGRAM_ENABLED=false). Skipping alert.")
-        return False
+        return (False, None) if return_message_id else False
 
     token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
     chat = _resolve_chat_id(chat_id)
 
     if not token or not chat:
         logger.debug("Telegram credentials not configured. Skipping alert.")
-        return False
+        return (False, None) if return_message_id else False
 
     formatted_text = _apply_env_tag(text)
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
@@ -188,6 +193,9 @@ async def send_telegram_alert(
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+    if reply_to_message_id is not None:
+        payload["reply_to_message_id"] = int(reply_to_message_id)
+        payload["allow_sending_without_reply"] = True
 
     timeout_cfg = httpx.Timeout(15.0, connect=5.0)
     for attempt in range(1, retries + 1):
@@ -195,8 +203,14 @@ async def send_telegram_alert(
             async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 response = await client.post(url, json=payload)
                 if response.status_code == 200:
-                    logger.info("Telegram message successfully sent to chat %s.", chat)
-                    return True
+                    sent_msg_id = None
+                    try:
+                        resp_json = response.json()
+                        sent_msg_id = resp_json.get("result", {}).get("message_id")
+                    except Exception:
+                        pass
+                    logger.info("Telegram message successfully sent to chat %s (message_id=%s).", chat, sent_msg_id)
+                    return (True, sent_msg_id) if return_message_id else True
                 elif response.status_code == 429:
                     retry_after = 2.0 * attempt
                     try:
@@ -216,7 +230,7 @@ async def send_telegram_alert(
                 await asyncio.sleep(1.0 * attempt)
 
     logger.error("Failed to send Telegram message after %d attempts.", retries)
-    return False
+    return (False, None) if return_message_id else False
 
 
 async def send_telegram_photo(
@@ -225,17 +239,22 @@ async def send_telegram_photo(
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
     retries: int = 3,
-) -> bool:
-    """Sends a photo with caption to Telegram with automatic retries, falling back to text."""
+    reply_to_message_id: Optional[int] = None,
+    return_message_id: bool = False,
+) -> Union[bool, Tuple[bool, Optional[int]]]:
+    """
+    Sends a photo with caption to Telegram with automatic retries, falling back to text.
+    Optionally threads as a reply to reply_to_message_id and returns (success, message_id).
+    """
     if not TELEGRAM_ENABLED:
         logger.info("Telegram alerting is disabled (TELEGRAM_ENABLED=false). Skipping photo alert.")
-        return False
+        return (False, None) if return_message_id else False
 
     token = (bot_token or TELEGRAM_BOT_TOKEN).strip()
     chat = _resolve_chat_id(chat_id)
 
     if not token or not chat:
-        return False
+        return (False, None) if return_message_id else False
 
     formatted_caption = _apply_env_tag(caption)
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendPhoto"
@@ -244,6 +263,9 @@ async def send_telegram_photo(
         "caption": formatted_caption[:1024],  # Telegram caption max 1024 chars
         "parse_mode": "HTML",
     }
+    if reply_to_message_id is not None:
+        data["reply_to_message_id"] = str(reply_to_message_id)
+        data["allow_sending_without_reply"] = "true"
 
     timeout_cfg = httpx.Timeout(20.0, connect=6.0)
     for attempt in range(1, retries + 1):
@@ -254,8 +276,14 @@ async def send_telegram_photo(
             async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 response = await client.post(url, data=data, files=files)
                 if response.status_code == 200:
-                    logger.info("Telegram chart photo successfully sent to chat %s.", chat)
-                    return True
+                    sent_msg_id = None
+                    try:
+                        resp_json = response.json()
+                        sent_msg_id = resp_json.get("result", {}).get("message_id")
+                    except Exception:
+                        pass
+                    logger.info("Telegram chart photo successfully sent to chat %s (message_id=%s).", chat, sent_msg_id)
+                    return (True, sent_msg_id) if return_message_id else True
                 elif response.status_code == 429:
                     retry_after = 2.0 * attempt
                     try:
@@ -275,7 +303,14 @@ async def send_telegram_photo(
                 await asyncio.sleep(1.0 * attempt)
 
     logger.warning("Photo send exhausted retries. Falling back to text alert.")
-    return await send_telegram_alert(caption, bot_token=token, chat_id=chat, retries=retries)
+    return await send_telegram_alert(
+        caption,
+        bot_token=token,
+        chat_id=chat,
+        retries=retries,
+        reply_to_message_id=reply_to_message_id,
+        return_message_id=return_message_id,
+    )
 
 
 async def broadcast_trade_updates(updates: List[str]) -> int:
@@ -316,13 +351,24 @@ async def broadcast_setups_stateful(
         if not should_alert or not alert_text:
             continue
 
+        setup_id = trade_tracker.get_setup_id(setup)
+        trade_obj = trade_tracker.trades.get(setup_id)
+        reply_id = trade_obj.telegram_message_id if trade_obj else None
+
         if chart_bytes and len(chart_bytes) > 0:
-            success = await send_telegram_photo(chart_bytes, alert_text)
+            success, sent_id = await send_telegram_photo(
+                chart_bytes, alert_text, reply_to_message_id=reply_id, return_message_id=True
+            )
         else:
-            success = await send_telegram_alert(alert_text)
+            success, sent_id = await send_telegram_alert(
+                alert_text, reply_to_message_id=reply_id, return_message_id=True
+            )
 
         if success:
             sent_count += 1
+            if trade_obj and not trade_obj.telegram_message_id and sent_id:
+                trade_obj.telegram_message_id = sent_id
+                trade_tracker.save_state_to_disk()
 
         await asyncio.sleep(0.6)
 

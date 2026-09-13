@@ -51,6 +51,7 @@ class TrackedTrade:
     tp2_alert_sent: bool = False
     tp3_alert_sent: bool = False
     chart_image_path: Optional[str] = None
+    telegram_message_id: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -97,6 +98,7 @@ class TrackedTrade:
             tp2_alert_sent=bool(data.get("tp2_alert_sent", False)),
             tp3_alert_sent=bool(data.get("tp3_alert_sent", False)),
             chart_image_path=data.get("chart_image_path"),
+            telegram_message_id=data.get("telegram_message_id"),
         )
 
 
