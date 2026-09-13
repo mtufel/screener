@@ -17,3 +17,9 @@
 - **REQ-3.1**: When a `NEW_SETUP` event fires and the Telegram setup alert is sent successfully, the returned Telegram message ID MUST be stored in `tr.telegram_message_id` and saved immediately.
 - **REQ-3.2**: When subsequent events (`ENTRY_FILLED`, `TP_HIT`, `SL_HIT`) fire for that trade, `send_extreme_telegram_alert` MUST pass `reply_to_message_id=tr.telegram_message_id`.
 - **REQ-3.3**: If `tr.telegram_message_id` is `None` (e.g. setup alert failed or pre-dates threading), subsequent events MUST be sent as top-level messages without error.
+
+## 4. Configurable Thread vs Reply Mode
+- **REQ-4.1**: The system MUST support `TELEGRAM_REPLY_MODE` configuration with supported values `'thread'` (or `'comment'`) and `'reply'`.
+- **REQ-4.2**: When `TELEGRAM_REPLY_MODE='thread'`, the screener MUST discover the linked discussion group post and route lifecycle updates (`ENTRY_FILLED`, `TP_HIT`, `SL_HIT`) into the discussion comment thread.
+- **REQ-4.3**: When `TELEGRAM_REPLY_MODE='reply'`, the screener MUST skip discussion group resolution and deliver lifecycle updates directly into the primary channel or chat feed with `reply_to_message_id`.
+- **REQ-4.4**: `TELEGRAM_REPLY_MODE` MUST default to `'thread'` if unspecified.

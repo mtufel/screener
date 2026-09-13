@@ -22,6 +22,9 @@
   - [x] 6.3 Add `telegram_discussion_thread_id: Optional[int] = None` to `TrackedExtremeTrade` and `TrackedTrade`.
   - [x] 6.4 Update `main.py` to auto-resolve discussion thread ID on `NEW_SETUP` and route subsequent alerts to `discussion_id` with `message_thread_id`.
   - [x] 6.5 Add unit/integration tests and verify with `pytest -v`.
-- [x] 5. Documentation & Wrap-up <!-- id: 5 -->
-  - [x] 5.1 Update `walkthrough.md`.
-  - [ ] 5.2 Commit and push to `feat/telegram-alert-threading`.
+- [x] 7. Configurable Thread vs Reply Mode <!-- id: 7 -->
+  - [x] 7.1 Add `TELEGRAM_REPLY_MODE` and `is_telegram_thread_mode()` to `telegram_client.py`.
+  - [x] 7.2 Update `main.py` to route to discussion comments only when `is_telegram_thread_mode()` is True, falling back to direct reply when False.
+  - [x] 7.3 Update `.env.example` and `.env` documentation.
+  - [x] 7.4 Add tests in `test_telegram_threading.py` for `TELEGRAM_REPLY_MODE` switching.
+  - [x] 7.5 Run `pytest -v` (100% pass rate) and push to `feat/telegram-alert-threading`.

@@ -323,3 +323,87 @@ async def test_send_extreme_telegram_alert_threading_forwarding():
             return_message_id=True,
             message_thread_id=42,
         )
+
+
+# ==============================================================================
+# 5. Configuration Mode Tests (reply vs thread)
+# ==============================================================================
+
+def test_is_telegram_thread_mode_configuration():
+    """Verifies that is_telegram_thread_mode correctly parses environment settings."""
+    import os
+    from telegram_client import is_telegram_thread_mode
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "thread"}):
+        assert is_telegram_thread_mode() is True
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "THREAD"}):
+        assert is_telegram_thread_mode() is True
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "comment"}):
+        assert is_telegram_thread_mode() is True
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "comments"}):
+        assert is_telegram_thread_mode() is True
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "reply"}):
+        assert is_telegram_thread_mode() is False
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "REPLY"}):
+        assert is_telegram_thread_mode() is False
+
+    with patch.dict(os.environ, {}, clear=True):
+        # Default should be True (thread mode)
+        assert is_telegram_thread_mode() is True
+
+
+@pytest.mark.asyncio
+async def test_screener_lifecycle_in_reply_mode():
+    """Verifies that in reply mode, lifecycle alerts reply directly to channel post without discussion routing."""
+    import os
+    from extreme_trade_tracker import TrackedExtremeTrade
+
+    trade = TrackedExtremeTrade(
+        symbol="SOL",
+        direction="Bullish",
+        entry_price=103.0,
+        stop_loss=101.0,
+        risk_r=2.0,
+        risk_pct=1.94,
+        tp_1r=105.0,
+        tp_2r=107.0,
+        tp_3r=109.0,
+        completion_target="2R",
+        telegram_message_id=888,
+        telegram_discussion_thread_id=999,
+    )
+
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "reply"}):
+        from telegram_client import is_telegram_thread_mode
+        assert is_telegram_thread_mode() is False
+
+
+@pytest.mark.asyncio
+async def test_broadcast_setups_stateful_thread_vs_reply_mode():
+    """Verifies broadcast_setups_stateful respects is_telegram_thread_mode."""
+    import os
+    from telegram_client import broadcast_setups_stateful
+
+    dummy_setup = MagicMock()
+    dummy_setup.symbol = "ETH"
+
+    # 1. Test in reply mode
+    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "reply"}), \
+         patch("trade_tracker.trade_tracker.register_or_update_setup") as mock_reg, \
+         patch("trade_tracker.trade_tracker.get_setup_id", return_value="ETH_BULL"), \
+         patch.dict("trade_tracker.trade_tracker.trades", {}), \
+         patch("telegram_client.send_telegram_photo", new_callable=AsyncMock) as mock_photo, \
+         patch("telegram_client.resolve_discussion_thread_id", new_callable=AsyncMock) as mock_resolve:
+        
+        mock_reg.return_value = (True, "ETH Setup Alert", b"chart_bytes")
+        mock_photo.return_value = (True, 555)
+
+        count = await broadcast_setups_stateful([dummy_setup])
+        assert count == 1
+        # In reply mode, resolve_discussion_thread_id should NOT be called
+        mock_resolve.assert_not_called()

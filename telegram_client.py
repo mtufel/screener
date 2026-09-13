@@ -33,6 +33,16 @@ APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).strip().lower(
 IS_PRODUCTION = APP_ENV in ("production", "prod", "server")
 TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "true").strip().lower() in ("true", "1", "yes")
 TELEGRAM_DEV_CHAT_ID = os.getenv("TELEGRAM_DEV_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID_DEV", os.getenv("TELEGRAM_CHAT_ID_LOCAL", ""))).strip()
+TELEGRAM_REPLY_MODE = os.getenv("TELEGRAM_REPLY_MODE", "thread").strip().lower()
+
+
+def is_telegram_thread_mode() -> bool:
+    """
+    Returns True if lifecycle alerts should route to discussion comment threads ('thread').
+    Returns False if configured as direct channel/chat replies ('reply').
+    """
+    mode = os.getenv("TELEGRAM_REPLY_MODE", TELEGRAM_REPLY_MODE).strip().lower()
+    return mode in ("thread", "threads", "comment", "comments")
 
 
 def _apply_env_tag(text: str) -> str:
@@ -437,20 +447,50 @@ async def broadcast_setups_stateful(
         setup_id = trade_tracker.get_setup_id(setup)
         trade_obj = trade_tracker.trades.get(setup_id)
         reply_id = trade_obj.telegram_message_id if trade_obj else None
+        target_chat_id = None
+        thread_id = None
+
+        if trade_obj and trade_obj.telegram_message_id and is_telegram_thread_mode() and trade_obj.telegram_discussion_thread_id:
+            chan_chat_id = _resolve_chat_id()
+            disc_chat_id = await get_linked_discussion_chat_id(chan_chat_id)
+            if disc_chat_id:
+                target_chat_id = str(disc_chat_id)
+                reply_id = trade_obj.telegram_discussion_thread_id
+                thread_id = trade_obj.telegram_discussion_thread_id
 
         if chart_bytes and len(chart_bytes) > 0:
             success, sent_id = await send_telegram_photo(
-                chart_bytes, alert_text, reply_to_message_id=reply_id, return_message_id=True
+                chart_bytes,
+                alert_text,
+                chat_id=target_chat_id,
+                reply_to_message_id=reply_id,
+                message_thread_id=thread_id,
+                return_message_id=True,
             )
         else:
             success, sent_id = await send_telegram_alert(
-                alert_text, reply_to_message_id=reply_id, return_message_id=True
+                alert_text,
+                chat_id=target_chat_id,
+                reply_to_message_id=reply_id,
+                message_thread_id=thread_id,
+                return_message_id=True,
             )
 
         if success:
             sent_count += 1
             if trade_obj and not trade_obj.telegram_message_id and sent_id:
                 trade_obj.telegram_message_id = sent_id
+                if is_telegram_thread_mode():
+                    chan_chat_id = _resolve_chat_id()
+                    disc_chat_id = await get_linked_discussion_chat_id(chan_chat_id)
+                    if disc_chat_id:
+                        disc_thread_id = await resolve_discussion_thread_id(
+                            channel_chat_id=chan_chat_id,
+                            channel_message_id=sent_id,
+                            discussion_chat_id=disc_chat_id,
+                        )
+                        if disc_thread_id:
+                            trade_obj.telegram_discussion_thread_id = disc_thread_id
                 trade_tracker.save_state_to_disk()
 
         await asyncio.sleep(0.6)
