@@ -454,7 +454,7 @@ class CcxtProvider(BaseMarketDataProvider):
                         elif base == "XAG":
                             mids["SILVER"] = float(px)
                 if mids:
-                    self._store.set_cached_mids(self.name, mids)
+                    self._store.set_cached_mids(self.name, mids, merge=True)
                 self._ws_connected = True
             except asyncio.CancelledError:
                 break
@@ -472,15 +472,13 @@ class CcxtProvider(BaseMarketDataProvider):
                 ticker = await self._pro_exchange.watch_ticker(ccxt_sym)
                 px = ticker.get("last") or ticker.get("close") or ticker.get("bid")
                 if px and px > 0:
-                    mids = self._store.get_cached_mids(self.name, ignore_ttl=True) or {}
-                    mids[base_sym] = float(px)
-                    mids[ccxt_sym] = float(px)
+                    delta = {base_sym: float(px), ccxt_sym: float(px)}
                     if base_sym in ("PAXG", "XAU"):
-                        mids["GOLD"] = float(px)
-                        mids["XAU"] = float(px)
+                        delta["GOLD"] = float(px)
+                        delta["XAU"] = float(px)
                     elif base_sym == "XAG":
-                        mids["SILVER"] = float(px)
-                    self._store.set_cached_mids(self.name, mids)
+                        delta["SILVER"] = float(px)
+                    self._store.set_cached_mids(self.name, delta, merge=True)
                 self._ws_connected = True
             except asyncio.CancelledError:
                 break
