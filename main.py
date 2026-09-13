@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -279,12 +279,32 @@ async def screener_background_worker():
 # ==============================================================================
 # EXTREME LTF BACKGROUND SCREENER DAEMON (STEP 6)
 # ==============================================================================
-async def send_extreme_telegram_alert(message: str, image_bytes: Optional[bytes] = None) -> bool:
-    """Dispatches HTML alert (with optional high-res chart photo) to configured Telegram chat with retries."""
+async def send_extreme_telegram_alert(
+    message: str,
+    image_bytes: Optional[bytes] = None,
+    reply_to_message_id: Optional[int] = None,
+    return_message_id: bool = False,
+    chat_id: Optional[str] = None,
+    message_thread_id: Optional[int] = None,
+) -> Union[bool, Tuple[bool, Optional[int]]]:
+    """Dispatches HTML alert (with optional high-res chart photo) to configured Telegram chat with retries and optional threading."""
     from telegram_client import send_telegram_alert, send_telegram_photo
     if image_bytes:
-        return await send_telegram_photo(photo_bytes=image_bytes, caption=message)
-    return await send_telegram_alert(text=message)
+        return await send_telegram_photo(
+            photo_bytes=image_bytes,
+            caption=message,
+            chat_id=chat_id,
+            reply_to_message_id=reply_to_message_id,
+            return_message_id=return_message_id,
+            message_thread_id=message_thread_id,
+        )
+    return await send_telegram_alert(
+        text=message,
+        chat_id=chat_id,
+        reply_to_message_id=reply_to_message_id,
+        return_message_id=return_message_id,
+        message_thread_id=message_thread_id,
+    )
 
 
 async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
@@ -499,7 +519,24 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"• <b>Status:</b> ⏳ WAITING FOR RETRACE"
             )
             logger.info("Fired Telegram Setup Alert for %s %s (with chart)", tr.symbol, side)
-            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            success, sent_msg_id = await send_extreme_telegram_alert(msg, image_bytes=chart_img, return_message_id=True)
+            if success and sent_msg_id:
+                tr.telegram_message_id = sent_msg_id
+                from telegram_client import is_telegram_thread_mode
+                if is_telegram_thread_mode():
+                    from telegram_client import get_linked_discussion_chat_id, resolve_discussion_thread_id, _resolve_chat_id
+                    chan_chat_id = _resolve_chat_id()
+                    disc_chat_id = await get_linked_discussion_chat_id(chan_chat_id)
+                    if disc_chat_id:
+                        disc_thread_id = await resolve_discussion_thread_id(
+                            channel_chat_id=chan_chat_id,
+                            channel_message_id=sent_msg_id,
+                            discussion_chat_id=disc_chat_id,
+                        )
+                        if disc_thread_id:
+                            tr.telegram_discussion_thread_id = disc_thread_id
+                from extreme_trade_tracker import extreme_trade_tracker
+                extreme_trade_tracker._save()
             await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         elif evt_type == "ENTRY_FILLED":
@@ -516,8 +553,21 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"• <b>Primary Target ({tr.completion_target}):</b> <code>${primary_tp:,.2f}</code>\n"
                 f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
             )
-            logger.info("Fired Telegram Entry Alert for %s %s (with chart)", tr.symbol, side)
-            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            from telegram_client import is_telegram_thread_mode, get_linked_discussion_chat_id, _resolve_chat_id
+            use_thread = is_telegram_thread_mode()
+            disc_chat_id = await get_linked_discussion_chat_id(_resolve_chat_id()) if use_thread else None
+            if use_thread and disc_chat_id and tr.telegram_discussion_thread_id:
+                logger.info("Fired Telegram Entry Alert for %s %s into discussion comment thread %s", tr.symbol, side, tr.telegram_discussion_thread_id)
+                await send_extreme_telegram_alert(
+                    msg,
+                    image_bytes=chart_img,
+                    chat_id=str(disc_chat_id),
+                    reply_to_message_id=tr.telegram_discussion_thread_id,
+                    message_thread_id=tr.telegram_discussion_thread_id,
+                )
+            else:
+                logger.info("Fired Telegram Entry Alert for %s %s (with chart, reply_to=%s)", tr.symbol, side, tr.telegram_message_id)
+                await send_extreme_telegram_alert(msg, image_bytes=chart_img, reply_to_message_id=tr.telegram_message_id)
             await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         elif evt_type == "TP_HIT":
@@ -531,8 +581,21 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"• <b>Max MFE:</b> +{tr.mfe_r:.2f}R\n"
                 f"• <b>Status:</b> 🏆 TRADE WON"
             )
-            logger.info("Fired Telegram TP Hit Alert for %s %s", tr.symbol, side)
-            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            from telegram_client import is_telegram_thread_mode, get_linked_discussion_chat_id, _resolve_chat_id
+            use_thread = is_telegram_thread_mode()
+            disc_chat_id = await get_linked_discussion_chat_id(_resolve_chat_id()) if use_thread else None
+            if use_thread and disc_chat_id and tr.telegram_discussion_thread_id:
+                logger.info("Fired Telegram TP Hit Alert for %s %s into discussion comment thread %s", tr.symbol, side, tr.telegram_discussion_thread_id)
+                await send_extreme_telegram_alert(
+                    msg,
+                    image_bytes=chart_img,
+                    chat_id=str(disc_chat_id),
+                    reply_to_message_id=tr.telegram_discussion_thread_id,
+                    message_thread_id=tr.telegram_discussion_thread_id,
+                )
+            else:
+                logger.info("Fired Telegram TP Hit Alert for %s %s (reply_to=%s)", tr.symbol, side, tr.telegram_message_id)
+                await send_extreme_telegram_alert(msg, image_bytes=chart_img, reply_to_message_id=tr.telegram_message_id)
             await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         elif evt_type == "SL_HIT":
@@ -546,8 +609,21 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 f"• <b>Max MFE:</b> +{tr.mfe_r:.2f}R\n"
                 f"• <b>Status:</b> ❌ STOPPED OUT"
             )
-            logger.info("Fired Telegram SL Hit Alert for %s %s", tr.symbol, side)
-            await send_extreme_telegram_alert(msg, image_bytes=chart_img)
+            from telegram_client import is_telegram_thread_mode, get_linked_discussion_chat_id, _resolve_chat_id
+            use_thread = is_telegram_thread_mode()
+            disc_chat_id = await get_linked_discussion_chat_id(_resolve_chat_id()) if use_thread else None
+            if use_thread and disc_chat_id and tr.telegram_discussion_thread_id:
+                logger.info("Fired Telegram SL Hit Alert for %s %s into discussion comment thread %s", tr.symbol, side, tr.telegram_discussion_thread_id)
+                await send_extreme_telegram_alert(
+                    msg,
+                    image_bytes=chart_img,
+                    chat_id=str(disc_chat_id),
+                    reply_to_message_id=tr.telegram_discussion_thread_id,
+                    message_thread_id=tr.telegram_discussion_thread_id,
+                )
+            else:
+                logger.info("Fired Telegram SL Hit Alert for %s %s (reply_to=%s)", tr.symbol, side, tr.telegram_message_id)
+                await send_extreme_telegram_alert(msg, image_bytes=chart_img, reply_to_message_id=tr.telegram_message_id)
             await redis_client.mark_alert_sent(tr.symbol, evt_type, tr.trade_id)
 
         try:

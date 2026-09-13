@@ -1,0 +1,30 @@
+# Tasks: Telegram Alert Threading for Trade Lifecycles
+
+- [x] 1. Update `telegram_client.py` <!-- id: 1 -->
+  - [x] 1.1 Update `send_telegram_alert()` to accept `reply_to_message_id: Optional[int] = None` and `return_message_id: bool = False`.
+  - [x] 1.2 Update `send_telegram_photo()` to accept `reply_to_message_id: Optional[int] = None` and `return_message_id: bool = False`.
+  - [x] 1.3 Ensure `allow_sending_without_reply: true` is included in all reply payloads.
+  - [x] 1.4 Ensure fallback in `send_telegram_photo` preserves reply options.
+- [x] 2. Update `extreme_trade_tracker.py` <!-- id: 2 -->
+  - [x] 2.1 Add `telegram_message_id: Optional[int] = None` to `TrackedExtremeTrade`.
+  - [x] 2.2 Ensure serialization (`to_dict`) and deserialization (`from_dict`) handle `telegram_message_id`.
+- [x] 3. Update `main.py` Screener Daemon <!-- id: 3 -->
+  - [x] 3.1 Update `send_extreme_telegram_alert()` to accept `reply_to_message_id` and `return_message_id`.
+  - [x] 3.2 Capture and store `telegram_message_id` on `NEW_SETUP` alerts and trigger `_save()`.
+  - [x] 3.3 Pass `reply_to_message_id=tr.telegram_message_id` on `ENTRY_FILLED`, `TP_HIT`, and `SL_HIT`.
+- [x] 4. Automated Testing & Verification <!-- id: 4 -->
+  - [x] 4.1 Write comprehensive unit tests in `test_telegram_threading.py`.
+  - [x] 4.2 Verify message threading, reply payload format, and return value backwards compatibility.
+  - [x] 4.3 Run full test suite with `pytest -v` and verify 100% pass rate.
+- [x] 6. Channel Discussion Group Comment Threading <!-- id: 6 -->
+  - [x] 6.1 Implement `get_linked_discussion_chat_id()` and `resolve_discussion_thread_id()` in `telegram_client.py`.
+  - [x] 6.2 Update `send_telegram_alert()` to accept `message_thread_id: Optional[int] = None`.
+  - [x] 6.3 Add `telegram_discussion_thread_id: Optional[int] = None` to `TrackedExtremeTrade` and `TrackedTrade`.
+  - [x] 6.4 Update `main.py` to auto-resolve discussion thread ID on `NEW_SETUP` and route subsequent alerts to `discussion_id` with `message_thread_id`.
+  - [x] 6.5 Add unit/integration tests and verify with `pytest -v`.
+- [x] 7. Configurable Thread vs Reply Mode <!-- id: 7 -->
+  - [x] 7.1 Add `TELEGRAM_REPLY_MODE` and `is_telegram_thread_mode()` to `telegram_client.py`.
+  - [x] 7.2 Update `main.py` to route to discussion comments only when `is_telegram_thread_mode()` is True, falling back to direct reply when False.
+  - [x] 7.3 Update `.env.example` and `.env` documentation.
+  - [x] 7.4 Add tests in `test_telegram_threading.py` for `TELEGRAM_REPLY_MODE` switching.
+  - [x] 7.5 Run `pytest -v` (100% pass rate) and push to `feat/telegram-alert-threading`.
