@@ -25,6 +25,12 @@ from candle_store import CandleStore, candle_store, TIMEFRAME_MS
 logger = logging.getLogger("market_data.ccxt")
 
 
+EXCHANGE_ALIASES: Dict[str, str] = {
+    "gateio": "gate",
+    "huobi": "htx",
+}
+
+
 class CcxtProvider(BaseMarketDataProvider):
     """
     Unified multi-exchange Market Data Provider backed by CCXT & CCXT Pro.
@@ -40,7 +46,8 @@ class CcxtProvider(BaseMarketDataProvider):
         fallback_provider: Optional[BaseMarketDataProvider] = None,
         exchange_config: Optional[Dict[str, Any]] = None,
     ):
-        self.exchange_id = (exchange_id or os.getenv("CCXT_EXCHANGE", "binance")).strip().lower()
+        raw_id = (exchange_id or os.getenv("CCXT_EXCHANGE", "binance")).strip().lower()
+        self.exchange_id = EXCHANGE_ALIASES.get(raw_id, raw_id)
         self.use_pro = use_pro and _HAS_CCXT_PRO
         self.enable_rate_limit = enable_rate_limit
         self._store = store or candle_store
