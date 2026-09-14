@@ -929,6 +929,32 @@ class ExtremeTradeSetup:
         dur = TIMEFRAME_MS.get(self.ltf_timeframe, 5 * 60 * 1000)
         return datetime.fromtimestamp((self.entry_timestamp + dur) / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
 
+    @property
+    def position_size(self) -> Any:
+        """Returns calculated PositionSizeResult based on environment config."""
+        try:
+            from position_sizing import PositionSizingEngine
+            return PositionSizingEngine.calculate(
+                entry_price=self.entry_price,
+                stop_loss=self.stop_loss,
+                symbol=self.symbol,
+            )
+        except Exception:
+            return None
+
+    def calculate_position_size(self, config: Any = None) -> Any:
+        """Returns calculated PositionSizeResult for a specific configuration."""
+        try:
+            from position_sizing import PositionSizingEngine
+            return PositionSizingEngine.calculate(
+                entry_price=self.entry_price,
+                stop_loss=self.stop_loss,
+                symbol=self.symbol,
+                config=config,
+            )
+        except Exception:
+            return None
+
 
 def evaluate_ltf_setup_lifecycle(
     ltf_fvg: FVG,
