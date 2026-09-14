@@ -209,10 +209,10 @@ async def test_ccxt_websocket_streaming_lifecycle():
 
         started = await provider.start_websocket(symbols=["BTC"], timeframes=["5m"])
         assert started is True
-        assert provider.is_websocket_connected is True
 
         # Let streaming task process one iteration
         await asyncio.sleep(0.05)
+        assert provider.is_websocket_connected is True
 
         # Mids should be cached in CandleStore
         mids = store.get_cached_mids(provider.name)

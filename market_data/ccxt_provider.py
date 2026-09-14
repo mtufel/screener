@@ -421,7 +421,7 @@ class CcxtProvider(BaseMarketDataProvider):
             return True
 
         self._ws_running = True
-        self._ws_connected = True
+        self._ws_connected = False
 
         # Launch ticker watching task(s)
         has_watch_tickers = bool(getattr(self._pro_exchange, "has", {}).get("watchTickers"))
