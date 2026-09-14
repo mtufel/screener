@@ -7,3 +7,4 @@
 - [x] Task 5: Fix Bug 6 — Implement non-blocking concurrent broadcast with timeout in `DashboardWSManager` in `main.py`
 - [x] Task 6: Implement comprehensive automated test suite `test_realtime_ws_fixes.py`
 - [x] Task 7: Run test suite and full pytest regression suite to ensure 100% pass rate
+- [x] Task 8: Update Binance Futures WebSocket endpoint to /market/ws for split architecture compatibility and verify with live QA runner
