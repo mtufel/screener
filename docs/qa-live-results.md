@@ -96,6 +96,28 @@ OUTSTANDING and is precisely what causes the observed real-time exit delay — u
 ```
 Live WS smoke test and full pytest regression were also run (270 passed).
 
-## 5. Clean-up note
-The harness writes simulated trades to `data/extreme_live_trades_local.json` (untracked);
-reset it to empty after a run. Done for this report.
+## 5. Live Multi-Exchange WebSocket QA Suite (Real Network & Exchange Data)
+
+Executed end-to-end live testing against real exchange WebSockets (`wss://api.hyperliquid.xyz/ws` and `wss://fstream.binance.com/market/ws`) via `scratch/live_qa_runner.py`.
+
+### Test Summary:
+| Scenario | Target | Live Observation | Verdict |
+|---|---|---|---|
+| **Scenario 1: Live Streaming** | Hyperliquid + Binance Futures | Hyperliquid streamed 1065 mids; Binance Futures streamed 400+ tickers & 5m/15m klines. | **PASS** |
+| **Scenario 2: Binance Ticker Merge** | `BinanceWSClient` partial updates | Ticker batch updates merged into `CandleStore` without clobbering unmentioned coins. | **PASS** |
+| **Scenario 3: Auto-Reconnect** | Network disconnect recovery | Connection drop forced; backoff loop re-established connection and resubscribed streams. | **PASS** |
+| **Scenario 4: Live Screener Cycle** | `main.execute_extreme_screener_cycle` | Ingested live klines and mids for BTC, ETH, SOL. Finished cycle in 33.26s. | **PASS** |
+| **Scenario 5: Slow Client Pruning** | `DashboardWSManager` concurrency | 3 clients connected (2 fast, 1 stalling for 6s). Broadcast timed out at 2.0s; stalled client pruned. | **PASS** |
+| **Scenario 6: Live Price Exits & Bug 2** | `ExtremeTradeTracker` real-time exits | Instantaneous live price triggering TP/SL fires immediately (`TP_HIT` at +2.0R). Wick inside open bar that retraces is verified deferred until bar closes (Bug 2). | **PASS** |
+
+### Critical Live Environment Finding (Binance Futures URL Split):
+- **Observation:** `wss://fstream.binance.com/ws` acknowledged `SUBSCRIBE` with `{"result":null,"id":1}` but delivered **0** `!miniTicker@arr` messages.
+- **Root Cause:** Binance migrated futures market data streams to a split endpoint architecture. Market-wide streams like `!miniTicker@arr` are now served on `wss://fstream.binance.com/market/ws`.
+- **Fix:** Updated `BinanceWSClient.url` to `wss://fstream.binance.com/market/ws` when `use_futures=True`. Ticker and kline feeds immediately flowed continuously.
+
+---
+
+## 6. Verification Summary
+- **Synthetic Unit & Integration Tests:** 270 / 270 passed (`pytest -v`).
+- **QA Harness Scenarios:** 127 / 127 passed (`qa_harness/runner.py`).
+- **Live Exchange Scenarios:** 6 / 6 passed in 93.87s with real network feeds (`scratch/live_qa_runner.py`).

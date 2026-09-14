@@ -37,7 +37,7 @@ class BinanceWSClient:
         self.use_futures = use_futures
         self.provider_name = "binance_futures" if use_futures else "binance_spot"
         self.url = (
-            "wss://fstream.binance.com/ws"
+            "wss://fstream.binance.com/market/ws"
             if use_futures
             else "wss://stream.binance.com:9443/ws"
         )
