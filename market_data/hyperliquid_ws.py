@@ -64,6 +64,8 @@ class HyperliquidWSClient:
         self._task: Optional[asyncio.Task] = None
         self._ping_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self._background_tasks: Set[asyncio.Task] = set()
 
     @property
     def is_connected(self) -> bool:
@@ -77,7 +79,9 @@ class HyperliquidWSClient:
             for tf in timeframes:
                 self.timeframes.add(tf.strip().lower())
         if self.is_connected:
-            asyncio.create_task(self._send_subscriptions())
+            task = asyncio.create_task(self._send_subscriptions())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def start(self):
         """Starts the persistent background WebSocket connection loop."""
@@ -93,6 +97,10 @@ class HyperliquidWSClient:
         async with self._lock:
             self._running = False
             self._connected = False
+            for bg_task in list(self._background_tasks):
+                if not bg_task.done():
+                    bg_task.cancel()
+            self._background_tasks.clear()
             if self._ping_task and not self._ping_task.done():
                 self._ping_task.cancel()
             if self._ws:
@@ -107,41 +115,47 @@ class HyperliquidWSClient:
 
     async def _send_subscriptions(self):
         """Dispatches subscription JSON messages to Hyperliquid WebSocket."""
-        if not self.is_connected:
-            return
+        async with self._send_lock:
+            if not self.is_connected or not self._ws:
+                return
 
-        try:
-            # 1. Subscribe to allMids
-            await self._ws.send(json.dumps({
-                "method": "subscribe",
-                "subscription": {"type": "allMids"}
-            }))
-            logger.debug("HyperliquidWS: Subscribed to allMids")
+            try:
+                # 1. Subscribe to allMids
+                await self._ws.send(json.dumps({
+                    "method": "subscribe",
+                    "subscription": {"type": "allMids"}
+                }))
+                logger.debug("HyperliquidWS: Subscribed to allMids")
 
-            # 2. Subscribe to candle streams for configured symbols and timeframes
-            for sym in self.symbols:
-                raw_sym = resolve_symbol(sym)
-                for tf in self.timeframes:
-                    sub_msg = {
-                        "method": "subscribe",
-                        "subscription": {
-                            "type": "candle",
-                            "coin": raw_sym,
-                            "interval": tf,
+                # 2. Subscribe to candle streams for configured symbols and timeframes
+                for sym in self.symbols:
+                    if not self.is_connected or not self._ws:
+                        break
+                    raw_sym = resolve_symbol(sym)
+                    for tf in self.timeframes:
+                        if not self.is_connected or not self._ws:
+                            break
+                        sub_msg = {
+                            "method": "subscribe",
+                            "subscription": {
+                                "type": "candle",
+                                "coin": raw_sym,
+                                "interval": tf,
+                            }
                         }
-                    }
-                    await self._ws.send(json.dumps(sub_msg))
-                    logger.debug("HyperliquidWS: Subscribed to candle %s %s", raw_sym, tf)
-        except Exception as exc:
-            logger.warning("Failed sending subscriptions to Hyperliquid WS: %s", exc)
+                        await self._ws.send(json.dumps(sub_msg))
+                        logger.debug("HyperliquidWS: Subscribed to candle %s %s", raw_sym, tf)
+            except Exception as exc:
+                logger.warning("Failed sending subscriptions to Hyperliquid WS: %s", exc)
 
     async def _ping_loop(self):
         """Periodic keepalive ping to Hyperliquid."""
         while self._running and self.is_connected:
             try:
                 await asyncio.sleep(30)
-                if self.is_connected:
-                    await self._ws.send(json.dumps({"method": "ping"}))
+                if self.is_connected and self._ws:
+                    async with self._send_lock:
+                        await self._ws.send(json.dumps({"method": "ping"}))
             except asyncio.CancelledError:
                 break
             except Exception as exc:

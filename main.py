@@ -35,13 +35,19 @@ class DashboardWSManager:
         self.active_connections.discard(websocket)
 
     async def broadcast(self, message: Dict[str, Any]):
+        if not self.active_connections:
+            return
         dead = set()
-        for ws in list(self.active_connections):
+
+        async def _send(ws: WebSocket):
             try:
-                await ws.send_json(message)
+                await asyncio.wait_for(ws.send_json(message), timeout=2.0)
             except Exception:
                 dead.add(ws)
-        self.active_connections.difference_update(dead)
+
+        await asyncio.gather(*[_send(ws) for ws in list(self.active_connections)], return_exceptions=True)
+        if dead:
+            self.active_connections.difference_update(dead)
 
 
 dashboard_ws_manager = DashboardWSManager()
@@ -452,7 +458,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 if earliest_ts > 0 and dur_ms > 0:
                     needed = int((now_ms - earliest_ts) / dur_ms) + 10
                     n_candles = max(50, min(500, needed))
-            c_list = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=n_candles)
+            c_list = await get_last_n_candles(symbol=raw_sym, timeframe=ltf, n=n_candles, client=provider)
             recent_candles_map[sym] = c_list
             await asyncio.sleep(0.1)
         except Exception as c_err:
@@ -481,7 +487,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         try:
             candles_ltf = recent_candles_map.get(tr.symbol)
             if not candles_ltf:
-                candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=tr.ltf_timeframe, n=60)
+                candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=tr.ltf_timeframe, n=60, client=provider)
             chart_img = generate_extreme_setup_chart(
                 symbol=tr.symbol,
                 direction=tr.direction,

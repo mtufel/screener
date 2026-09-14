@@ -52,6 +52,8 @@ class BinanceWSClient:
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self._background_tasks: Set[asyncio.Task] = set()
 
     @property
     def is_connected(self) -> bool:
@@ -65,7 +67,9 @@ class BinanceWSClient:
             for tf in timeframes:
                 self.timeframes.add(tf.strip().lower())
         if self.is_connected:
-            asyncio.create_task(self._send_subscriptions())
+            task = asyncio.create_task(self._send_subscriptions())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def start(self):
         """Starts the background WebSocket connection loop."""
@@ -81,6 +85,10 @@ class BinanceWSClient:
         async with self._lock:
             self._running = False
             self._connected = False
+            for bg_task in list(self._background_tasks):
+                if not bg_task.done():
+                    bg_task.cancel()
+            self._background_tasks.clear()
             if self._ws:
                 try:
                     await self._ws.close()
@@ -93,37 +101,40 @@ class BinanceWSClient:
 
     async def _send_subscriptions(self):
         """Sends subscription requests to Binance WS."""
-        if not self.is_connected:
-            return
+        async with self._send_lock:
+            if not self.is_connected or not self._ws:
+                return
 
-        params = []
-        # 1. MiniTicker array for all mids
-        if self.use_futures:
-            params.append("!miniTicker@arr")
+            params = []
+            # 1. MiniTicker array for all mids
+            if self.use_futures:
+                params.append("!miniTicker@arr")
 
-        # 2. Individual kline streams for watchlist
-        for sym in self.symbols:
-            pair = self.resolve_symbol_func(sym) if self.resolve_symbol_func else f"{sym}USDT"
-            clean_pair = pair.lower().replace("-perp", "")
-            for tf in self.timeframes:
-                params.append(f"{clean_pair}@kline_{tf}")
+            # 2. Individual kline streams for watchlist
+            for sym in self.symbols:
+                pair = self.resolve_symbol_func(sym) if self.resolve_symbol_func else f"{sym}USDT"
+                clean_pair = pair.lower().replace("-perp", "")
+                for tf in self.timeframes:
+                    params.append(f"{clean_pair}@kline_{tf}")
 
-        if not params:
-            return
+            if not params:
+                return
 
-        # Binance allows up to 200 streams per subscribe call
-        for i in range(0, len(params), 100):
-            chunk = params[i:i + 100]
-            sub_payload = {
-                "method": "SUBSCRIBE",
-                "params": chunk,
-                "id": random.randint(1, 100000),
-            }
-            try:
-                await self._ws.send(json.dumps(sub_payload))
-                logger.debug("BinanceWS subscribed: %s", chunk[:3])
-            except Exception as exc:
-                logger.warning("Failed to subscribe to Binance WS chunk: %s", exc)
+            # Binance allows up to 200 streams per subscribe call
+            for i in range(0, len(params), 100):
+                if not self.is_connected or not self._ws:
+                    break
+                chunk = params[i:i + 100]
+                sub_payload = {
+                    "method": "SUBSCRIBE",
+                    "params": chunk,
+                    "id": random.randint(1, 100000),
+                }
+                try:
+                    await self._ws.send(json.dumps(sub_payload))
+                    logger.debug("BinanceWS subscribed: %s", chunk[:3])
+                except Exception as exc:
+                    logger.warning("Failed to subscribe to Binance WS chunk: %s", exc)
 
     def handle_message(self, message: str):
         """Parses and ingests Binance WebSocket frames."""
@@ -147,7 +158,7 @@ class BinanceWSClient:
                             continue
 
                 if mids:
-                    self.store.set_cached_mids(self.provider_name, mids)
+                    self.store.set_cached_mids(self.provider_name, mids, merge=True)
                     if self.on_price_update:
                         try:
                             self.on_price_update(mids)
