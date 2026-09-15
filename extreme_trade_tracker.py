@@ -748,8 +748,10 @@ class ExtremeTradeTracker:
         Returns paginated records, pagination metadata, subset metrics, and global summary.
         """
         active_list = [t.to_dict() for t in self.active_trades.values()]
-        hist_list = [t.to_dict() for t in reversed(self.history)]
+        hist_list = [t.to_dict() for t in self.history]
         all_trades = active_list + hist_list
+        # Sort combined trades latest first (by entry timestamp or FVG formation time)
+        all_trades.sort(key=lambda x: x.get("entry_timestamp") or x.get("ltf_fvg", {}).get("formed_at", 0), reverse=True)
 
         # Apply Filters
         if state:
