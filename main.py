@@ -320,7 +320,8 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     from chart_generator import generate_extreme_setup_chart
 
     start_time_ist = datetime.now(IST)
-    whitelist_raw = state.get("coins_whitelist", COINS_WHITELIST).strip()
+    whitelist_raw = os.getenv("COINS_WHITELIST", state.get("coins_whitelist", COINS_WHITELIST)).strip()
+    state["coins_whitelist"] = whitelist_raw
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
     ltf = state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME)
     target = state.get("extreme_target", EXTREME_COMPLETION_TARGET)
