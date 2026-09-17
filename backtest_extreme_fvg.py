@@ -37,10 +37,14 @@ from strategy_extreme_fvg import (
     find_unmitigated_ltf_fvgs,
     select_extreme_ltf_fvg,
     build_extreme_trade_setup,
-    is_in_ny_session,
-    is_weekday,
     HTF_CANDLE_DURATION_MS,
     TIMEFRAME_MS,
+)
+from session_filter import (
+    SessionFilterConfig,
+    is_in_ny_session,
+    is_in_session,
+    is_weekday,
 )
 
 load_dotenv()
@@ -188,6 +192,8 @@ class ExtremeBacktestReport:
     weekday_filter_enabled: bool = False
     entry_session_filter_enabled: bool = False
     entry_weekday_filter_enabled: bool = False
+    fvg_sessions: str = "ALL"
+    entry_sessions: str = "ALL"
     trades_filtered_out: int = 0
     trades: List[ExtremeHistoricalTrade] = field(default_factory=list)
 
@@ -328,11 +334,24 @@ async def run_extreme_backtest(
     weekday_filter: bool = False,
     entry_session_filter: bool = False,
     entry_weekday_filter: bool = False,
+    sessions: Optional[str] = None,
+    entry_sessions: Optional[str] = None,
+    session_config: Optional[SessionFilterConfig] = None,
     client: Optional[Any] = None,
 ) -> ExtremeBacktestReport:
     """
     Executes a complete historical backtest over the specified number of days.
     """
+    if session_config is None:
+        session_config = SessionFilterConfig.from_legacy(
+            session_filter=session_filter,
+            weekday_filter=weekday_filter,
+            entry_session_filter=entry_session_filter,
+            entry_weekday_filter=entry_weekday_filter,
+            sessions=sessions,
+            entry_sessions=entry_sessions,
+        )
+
     prov = client or market_data_provider
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - (days * 24 * 3600 * 1000)
@@ -359,10 +378,12 @@ async def run_extreme_backtest(
             ltf_timeframe=ltf_timeframe,
             invalidation_mode="close" if use_close_invalidation else "wick",
             min_gap_pct=min_gap_pct,
-            session_filter_enabled=session_filter,
-            weekday_filter_enabled=weekday_filter,
-            entry_session_filter_enabled=entry_session_filter,
-            entry_weekday_filter_enabled=entry_weekday_filter,
+            session_filter_enabled=(session_config.fvg_sessions.strip().upper() != "ALL"),
+            weekday_filter_enabled=session_config.fvg_weekdays_only,
+            entry_session_filter_enabled=(session_config.entry_sessions.strip().upper() != "ALL"),
+            entry_weekday_filter_enabled=session_config.entry_weekdays_only,
+            fvg_sessions=session_config.fvg_sessions,
+            entry_sessions=session_config.entry_sessions,
             total_trades=0,
             wins_1r=0,
             wins_2r=0,
@@ -584,12 +605,7 @@ async def run_extreme_backtest(
 
         # Filters
         c3_close_ts = best_ltf.close_timestamp
-        if session_filter and not is_in_ny_session(c3_close_ts):
-            trades_filtered_out += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
-            fvg_ptr += 1
-            continue
-        if weekday_filter and not is_weekday(c3_close_ts):
+        if not session_config.is_fvg_valid(c3_close_ts):
             trades_filtered_out += 1
             entered_fvg_timestamps.add(best_ltf.formed_at)
             fvg_ptr += 1
@@ -622,12 +638,7 @@ async def run_extreme_backtest(
         if entry_triggered:
             entry_ts = candles_ltf[k].timestamp
 
-            if entry_session_filter and not is_in_ny_session(entry_ts):
-                trades_filtered_out += 1
-                entered_fvg_timestamps.add(best_ltf.formed_at)
-                fvg_ptr += 1
-                continue
-            if entry_weekday_filter and not is_weekday(entry_ts):
+            if not session_config.is_entry_valid(entry_ts):
                 trades_filtered_out += 1
                 entered_fvg_timestamps.add(best_ltf.formed_at)
                 fvg_ptr += 1
@@ -697,10 +708,12 @@ async def run_extreme_backtest(
         ltf_timeframe=ltf_timeframe,
         invalidation_mode="close" if use_close_invalidation else "wick",
         min_gap_pct=min_gap_pct,
-        session_filter_enabled=session_filter,
-        weekday_filter_enabled=weekday_filter,
-        entry_session_filter_enabled=entry_session_filter,
-        entry_weekday_filter_enabled=entry_weekday_filter,
+        session_filter_enabled=(session_config.fvg_sessions.strip().upper() != "ALL"),
+        weekday_filter_enabled=session_config.fvg_weekdays_only,
+        entry_session_filter_enabled=(session_config.entry_sessions.strip().upper() != "ALL"),
+        entry_weekday_filter_enabled=session_config.entry_weekdays_only,
+        fvg_sessions=session_config.fvg_sessions,
+        entry_sessions=session_config.entry_sessions,
         trades_filtered_out=trades_filtered_out,
         total_trades=total_trades,
         wins_1r=wins_1r,
@@ -731,9 +744,9 @@ def print_backtest_report(report: ExtremeBacktestReport):
     print(f"  • Lower Timeframe:      {report.ltf_timeframe}")
     print(f"  • Invalidation Mode:    {report.invalidation_mode.upper()}")
     print(f"  • Min Gap Size:         {report.min_gap_pct:.2f}%")
-    fvg_sess_state = "NY (13:00-22:00 UTC) [ENABLED]" if report.session_filter_enabled else "[DISABLED]"
+    fvg_sess_state = f"{report.fvg_sessions} [ENABLED]" if report.session_filter_enabled else "[DISABLED]"
     fvg_wkday_state = "Mon-Fri [ENABLED]" if report.weekday_filter_enabled else "[DISABLED]"
-    entry_sess_state = "NY (13:00-22:00 UTC) [ENABLED]" if report.entry_session_filter_enabled else "[DISABLED]"
+    entry_sess_state = f"{report.entry_sessions} [ENABLED]" if report.entry_session_filter_enabled else "[DISABLED]"
     entry_wkday_state = "Mon-Fri [ENABLED]" if report.entry_weekday_filter_enabled else "[DISABLED]"
     print(f"  • FVG Session Filter:   {fvg_sess_state}")
     print(f"  • FVG Weekday Filter:   {fvg_wkday_state}")
@@ -783,6 +796,8 @@ async def main():
     parser.add_argument("--weekday-filter", action="store_true", default=None, help="Only include FVGs formed on weekdays (Mon-Fri UTC)")
     parser.add_argument("--entry-session-filter", action="store_true", default=None, help="Only execute trades with entry filled during NY session (13:00-22:00 UTC)")
     parser.add_argument("--entry-weekday-filter", action="store_true", default=None, help="Only execute trades with entry filled on weekdays (Mon-Fri UTC)")
+    parser.add_argument("--sessions", default=None, help="Trading sessions for FVG formation (e.g. NY, LONDON, LONDON,NY, or custom UTC ranges)")
+    parser.add_argument("--entry-sessions", default=None, help="Trading sessions for entry fill (e.g. NY, LONDON, LONDON,NY, or custom UTC ranges)")
     args = parser.parse_args()
 
     # CLI args override env vars; env vars override False defaults
@@ -790,6 +805,8 @@ async def main():
     weekday_filter = args.weekday_filter if args.weekday_filter is not None else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").lower() == "true"
     entry_session_filter = args.entry_session_filter if args.entry_session_filter is not None else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").lower() == "true"
     entry_weekday_filter = args.entry_weekday_filter if args.entry_weekday_filter is not None else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").lower() == "true"
+    sessions = args.sessions or os.getenv("EXTREME_SESSIONS")
+    entry_sessions = args.entry_sessions or os.getenv("EXTREME_ENTRY_SESSIONS")
 
     use_close = (args.invalidation == "close")
     report = await run_extreme_backtest(
@@ -802,6 +819,8 @@ async def main():
         weekday_filter=weekday_filter,
         entry_session_filter=entry_session_filter,
         entry_weekday_filter=entry_weekday_filter,
+        sessions=sessions,
+        entry_sessions=entry_sessions,
     )
     print_backtest_report(report)
 

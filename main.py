@@ -97,6 +97,10 @@ EXTREME_SESSION_FILTER_ENABLED = os.getenv("EXTREME_SESSION_FILTER_ENABLED", "fa
 EXTREME_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_ENTRY_SESSION_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_SESSIONS = os.getenv("EXTREME_SESSIONS", "NY").strip()
+EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "NY").strip()
+
+from session_filter import SessionFilterConfig
 
 state: Dict[str, Any] = {
     "strategy_1_enabled": ENABLE_STRATEGY_1,
@@ -132,6 +136,8 @@ state: Dict[str, Any] = {
     "extreme_weekday_filter": EXTREME_WEEKDAY_FILTER_ENABLED,
     "extreme_entry_session_filter": EXTREME_ENTRY_SESSION_FILTER_ENABLED,
     "extreme_entry_weekday_filter": EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
+    "extreme_sessions": EXTREME_SESSIONS,
+    "extreme_entry_sessions": EXTREME_ENTRY_SESSIONS,
     "extreme_last_scan_time_ist": None,
     "extreme_setups": [],
     "extreme_active_count": 0,
@@ -330,6 +336,17 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     wkday_filter = state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED)
     entry_sess_filter = state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED)
     entry_wkday_filter = state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED)
+    sessions_str = state.get("extreme_sessions", EXTREME_SESSIONS)
+    entry_sessions_str = state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS)
+
+    session_config = SessionFilterConfig.from_legacy(
+        session_filter=sess_filter,
+        weekday_filter=wkday_filter,
+        entry_session_filter=entry_sess_filter,
+        entry_weekday_filter=entry_wkday_filter,
+        sessions=sessions_str,
+        entry_sessions=entry_sessions_str,
+    )
 
     from extreme_trade_tracker import extreme_trade_tracker
 
@@ -392,6 +409,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 use_close_invalidation=use_close,
                 min_gap_pct=min_gap,
                 completion_target=target,
+                session_config=session_config,
                 session_filter=sess_filter,
                 weekday_filter=wkday_filter,
             )
@@ -469,6 +487,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         setups_out,
         mids,
         recent_candles_map=recent_candles_map,
+        session_config=session_config,
         session_filter=sess_filter,
         weekday_filter=wkday_filter,
         entry_session_filter=entry_sess_filter,
@@ -735,10 +754,25 @@ async def lifespan(app: FastAPI):
                     state["extreme_entry_session_filter"] = bool(saved_cfg["entry_session_filter_enabled"])
                 if "entry_weekday_filter_enabled" in saved_cfg:
                     state["extreme_entry_weekday_filter"] = bool(saved_cfg["entry_weekday_filter_enabled"])
+                if "sessions" in saved_cfg:
+                    state["extreme_sessions"] = str(saved_cfg["sessions"]).strip()
+                if "entry_sessions" in saved_cfg:
+                    state["extreme_entry_sessions"] = str(saved_cfg["entry_sessions"]).strip()
                 if "coins_whitelist" in saved_cfg:
                     state["coins_whitelist"] = str(saved_cfg["coins_whitelist"])
                 if "data_provider" in saved_cfg:
                     state["data_provider"] = str(saved_cfg["data_provider"]).strip().lower()
+                from extreme_trade_tracker import extreme_trade_tracker
+                extreme_trade_tracker.update_session_config(
+                    SessionFilterConfig.from_legacy(
+                        session_filter=state["extreme_session_filter"],
+                        weekday_filter=state["extreme_weekday_filter"],
+                        entry_session_filter=state["extreme_entry_session_filter"],
+                        entry_weekday_filter=state["extreme_entry_weekday_filter"],
+                        sessions=state["extreme_sessions"],
+                        entry_sessions=state["extreme_entry_sessions"],
+                    )
+                )
                 logger.info("Restored runtime configuration from Redis ('%s').", cfg_key)
     except Exception as exc:
         logger.warning("Failed to restore initial state from Redis: %s", exc)
@@ -1325,6 +1359,7 @@ async def api_extreme_scan(
     target: Optional[str] = Query(default=None, pattern="^(1R|2R|3R)$", description="Completion target"),
     session_filter: Optional[bool] = Query(default=None, description="FVG formation NY session filter (13:00-22:00 UTC)"),
     weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter (Mon-Fri UTC)"),
+    sessions: Optional[str] = Query(default=None, description="FVG formation session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
 ):
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
     from hyperliquid_client import SYMBOL_ALIASES
@@ -1335,8 +1370,21 @@ async def api_extreme_scan(
     min_gap_to_use = min_gap_pct if min_gap_pct is not None else state.get("extreme_min_gap", 0.05)
     inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
     use_close = (inval_to_use == "close")
-    sess_filter = session_filter if session_filter is not None else state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED)
-    wkday_filter = weekday_filter if weekday_filter is not None else state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED)
+    sessions_str = sessions if sessions is not None else state.get("extreme_sessions", EXTREME_SESSIONS)
+    sess_filter = (
+        session_filter
+        if session_filter is not None
+        else (
+            (sessions_str.strip().upper() != "ALL")
+            if (sessions_str and sessions_str.strip())
+            else state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED)
+        )
+    )
+    session_config = SessionFilterConfig.from_legacy(
+        session_filter=sess_filter,
+        weekday_filter=wkday_filter,
+        sessions=sessions_str,
+    )
 
     whitelist_raw = symbols or state.get("coins_whitelist") or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL")
     coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
@@ -1394,6 +1442,7 @@ async def api_extreme_scan(
                 use_close_invalidation=use_close,
                 min_gap_pct=min_gap_to_use,
                 completion_target=target_to_use,
+                session_config=session_config,
                 session_filter=sess_filter,
                 weekday_filter=wkday_filter,
             )
@@ -1455,6 +1504,8 @@ async def api_extreme_backtest(
     weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter (Mon-Fri UTC)"),
     entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill NY session filter (13:00-22:00 UTC)"),
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter (Mon-Fri UTC)"),
+    sessions: Optional[str] = Query(default=None, description="FVG formation session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
+    entry_sessions: Optional[str] = Query(default=None, description="Entry fill session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
 ):
     import math
     from backtest_extreme_fvg import run_extreme_backtest
@@ -1473,7 +1524,11 @@ async def api_extreme_backtest(
         sess_filter = (
             session_filter
             if session_filter is not None
-            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            else (
+                (sessions.strip().upper() != "ALL")
+                if (sessions and sessions.strip())
+                else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            )
         )
         wkday_filter = (
             weekday_filter
@@ -1483,12 +1538,25 @@ async def api_extreme_backtest(
         entry_sess_filter = (
             entry_session_filter
             if entry_session_filter is not None
-            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            else (
+                (entry_sessions.strip().upper() != "ALL")
+                if (entry_sessions and entry_sessions.strip())
+                else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            )
         )
         entry_wkday_filter = (
             entry_weekday_filter
             if entry_weekday_filter is not None
             else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+
+        session_config = SessionFilterConfig.from_legacy(
+            session_filter=sess_filter,
+            weekday_filter=wkday_filter,
+            entry_session_filter=entry_sess_filter,
+            entry_weekday_filter=entry_wkday_filter,
+            sessions=sessions,
+            entry_sessions=entry_sessions,
         )
 
         provider = get_market_data_provider(state.get("data_provider"))
@@ -1498,10 +1566,13 @@ async def api_extreme_backtest(
             ltf_timeframe=ltf,
             use_close_invalidation=use_close,
             min_gap_pct=min_gap_pct,
+            session_config=session_config,
             session_filter=sess_filter,
             weekday_filter=wkday_filter,
             entry_session_filter=entry_sess_filter,
             entry_weekday_filter=entry_wkday_filter,
+            sessions=sessions,
+            entry_sessions=entry_sessions,
             client=provider,
         )
         return JSONResponse(content={
@@ -1515,6 +1586,8 @@ async def api_extreme_backtest(
             "weekday_filter_enabled": report.weekday_filter_enabled,
             "entry_session_filter_enabled": report.entry_session_filter_enabled,
             "entry_weekday_filter_enabled": report.entry_weekday_filter_enabled,
+            "sessions": report.fvg_sessions,
+            "entry_sessions": report.entry_sessions,
             "trades_filtered_out": report.trades_filtered_out,
             "total_trades": report.total_trades,
             "wins_1r": report.wins_1r,
@@ -1559,6 +1632,8 @@ async def api_extreme_status():
         "weekday_filter_enabled": state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED),
         "entry_session_filter_enabled": state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED),
         "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
+        "sessions": state.get("extreme_sessions", EXTREME_SESSIONS),
+        "entry_sessions": state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "data_provider": state.get("data_provider", "binance"),
         "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
@@ -1608,6 +1683,8 @@ async def api_extreme_config(
     weekday_filter: Optional[bool] = Query(default=None, description="FVG formation Weekday filter"),
     entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill NY session filter"),
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter"),
+    sessions: Optional[str] = Query(default=None, description="FVG formation session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
+    entry_sessions: Optional[str] = Query(default=None, description="Entry fill session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
     provider: Optional[str] = Query(default=None, pattern="^(binance|binance_futures|binance_spot|oanda|hyperliquid)$", description="Market data provider"),
     fallback_provider: Optional[str] = Query(default=None, pattern="^(hyperliquid|binance|binance_futures|binance_spot|oanda|none)$", description="Fallback market data provider"),
@@ -1623,12 +1700,29 @@ async def api_extreme_config(
         state["extreme_min_gap"] = min_gap_pct
     if invalidation is not None:
         state["extreme_use_close"] = (invalidation == "close")
-    if session_filter is not None:
+
+    if sessions is not None and sessions.strip():
+        state["extreme_sessions"] = sessions.strip()
+        state["extreme_session_filter"] = (sessions.strip().upper() != "ALL")
+    elif session_filter is not None:
         state["extreme_session_filter"] = session_filter
+        if not session_filter:
+            state["extreme_sessions"] = "ALL"
+        elif state.get("extreme_sessions", "ALL").upper() == "ALL":
+            state["extreme_sessions"] = "NY"
+
+    if entry_sessions is not None and entry_sessions.strip():
+        state["extreme_entry_sessions"] = entry_sessions.strip()
+        state["extreme_entry_session_filter"] = (entry_sessions.strip().upper() != "ALL")
+    elif entry_session_filter is not None:
+        state["extreme_entry_session_filter"] = entry_session_filter
+        if not entry_session_filter:
+            state["extreme_entry_sessions"] = "ALL"
+        elif state.get("extreme_entry_sessions", "ALL").upper() == "ALL":
+            state["extreme_entry_sessions"] = "NY"
+
     if weekday_filter is not None:
         state["extreme_weekday_filter"] = weekday_filter
-    if entry_session_filter is not None:
-        state["extreme_entry_session_filter"] = entry_session_filter
     if entry_weekday_filter is not None:
         state["extreme_entry_weekday_filter"] = entry_weekday_filter
     if symbols is not None and symbols.strip():
@@ -1640,6 +1734,18 @@ async def api_extreme_config(
         state["fallback_data_provider"] = fallback_provider.strip().lower()
         logger.info("Switched active fallback data provider to '%s'", state["fallback_data_provider"])
 
+    from extreme_trade_tracker import extreme_trade_tracker
+    extreme_trade_tracker.update_session_config(
+        SessionFilterConfig.from_legacy(
+            session_filter=state["extreme_session_filter"],
+            weekday_filter=state["extreme_weekday_filter"],
+            entry_session_filter=state["extreme_entry_session_filter"],
+            entry_weekday_filter=state["extreme_entry_weekday_filter"],
+            sessions=state["extreme_sessions"],
+            entry_sessions=state["extreme_entry_sessions"],
+        )
+    )
+
     cfg_payload = {
         "interval_seconds": state["extreme_interval_seconds"],
         "ltf_timeframe": state["extreme_ltf"],
@@ -1650,6 +1756,8 @@ async def api_extreme_config(
         "weekday_filter_enabled": state["extreme_weekday_filter"],
         "entry_session_filter_enabled": state["extreme_entry_session_filter"],
         "entry_weekday_filter_enabled": state["extreme_entry_weekday_filter"],
+        "sessions": state["extreme_sessions"],
+        "entry_sessions": state["extreme_entry_sessions"],
         "coins_whitelist": state["coins_whitelist"],
         "data_provider": state.get("data_provider", "binance"),
         "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),

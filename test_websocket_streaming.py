@@ -228,3 +228,45 @@ def test_is_ws_open_and_client_connection_compatibility(test_store):
     modern_conn.state = State.OPEN
     assert hl_client.is_connected is True
 
+
+def test_binance_ws_kline_symbol_normalization_and_fallback(test_store):
+    """Verifies BinanceWSClient stores klines under base coin and CandleStore fallback handles USDT suffix."""
+    client = BinanceWSClient(use_futures=True, store=test_store)
+    raw_payload = {
+        "e": "kline",
+        "E": 1788000300000,
+        "s": "ETHUSDT",
+        "k": {
+            "t": 1788000000000,
+            "T": 1788000300000,
+            "s": "ETHUSDT",
+            "i": "5m",
+            "o": "3100.0",
+            "c": "3150.0",
+            "h": "3160.0",
+            "l": "3090.0",
+            "v": "100.0",
+            "x": False,
+        }
+    }
+    client.handle_message(json.dumps(raw_payload))
+
+    # Should be stored under canonical base coin ETH
+    candles_eth = test_store.get_candles("binance_futures", "ETH", "5m")
+    assert candles_eth is not None
+    assert len(candles_eth) == 1
+    assert candles_eth[0]["c"] == 3150.0
+
+    # ETHUSDT key should NOT exist directly in store (no dual storage)
+    assert "binance_futures:ETHUSDT:5m" not in test_store._candles
+
+    # Querying ETHUSDT transparently falls back to ETH
+    candles_usdt = test_store.get_candles("binance_futures", "ETHUSDT", "5m")
+    assert candles_usdt is not None
+    assert len(candles_usdt) == 1
+    assert candles_usdt[0]["c"] == 3150.0
+
+    assert test_store.has_sufficient_candles("binance_futures", "ETHUSDT", "5m", min_count=1) is True
+    assert test_store.is_fresh("binance_futures", "ETHUSDT", "5m", max_age_seconds=60.0) is True
+
+

@@ -84,3 +84,35 @@ def test_strategy_enablement_flags():
     assert "strategy_1_enabled" in e_data
     assert "strategy_2_enabled" in e_data
 
+
+def test_api_extreme_session_config():
+    client = TestClient(app)
+    # Check status endpoint contains sessions and entry_sessions
+    status_resp = client.get("/api/extreme/status")
+    assert status_resp.status_code == 200
+    s_data = status_resp.json()
+    assert "sessions" in s_data
+    assert "entry_sessions" in s_data
+
+    # Update session configuration via POST /api/extreme/config
+    resp = client.post("/api/extreme/config?sessions=LONDON,NY&entry_sessions=NY")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["config"]["sessions"] == "LONDON,NY"
+    assert data["config"]["entry_sessions"] == "NY"
+    assert data["config"]["session_filter_enabled"] is True
+    assert data["config"]["entry_session_filter_enabled"] is True
+    assert state["extreme_sessions"] == "LONDON,NY"
+    assert state["extreme_entry_sessions"] == "NY"
+
+    # Reset back to ALL
+    reset_resp = client.post("/api/extreme/config?sessions=ALL&entry_sessions=ALL")
+    assert reset_resp.status_code == 200
+    reset_data = reset_resp.json()
+    assert reset_data["config"]["sessions"] == "ALL"
+    assert reset_data["config"]["entry_sessions"] == "ALL"
+    assert reset_data["config"]["session_filter_enabled"] is False
+    assert reset_data["config"]["entry_session_filter_enabled"] is False
+
+

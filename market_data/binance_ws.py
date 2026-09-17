@@ -179,9 +179,8 @@ class BinanceWSClient:
                         "c": float(k["c"]),
                         "v": float(k.get("v", 0.0)),
                     }
-                    self.store.merge_candles(self.provider_name, sym, interval, [candle])
-                    if sym.endswith("USDT"):
-                        self.store.merge_candles(self.provider_name, sym[:-4], interval, [candle])
+                    target_sym = sym[:-4] if sym.endswith("USDT") else sym
+                    self.store.merge_candles(self.provider_name, target_sym, interval, [candle])
 
         except Exception as exc:
             logger.debug("Error parsing Binance WS message: %s", exc)

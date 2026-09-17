@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from strategy_extreme_fvg import is_in_ny_session, is_weekday
+from session_filter import SessionFilterConfig, is_in_ny_session, is_weekday
 
 logger = logging.getLogger("extreme_trade_tracker")
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -121,15 +121,39 @@ class ExtremeTradeTracker:
         weekday_filter: bool = False,
         entry_session_filter: bool = False,
         entry_weekday_filter: bool = False,
+        sessions: Optional[str] = None,
+        entry_sessions: Optional[str] = None,
+        session_config: Optional[SessionFilterConfig] = None,
     ):
         self.storage_path = Path(storage_path)
         self.active_trades: Dict[str, TrackedExtremeTrade] = {}
         self.history: List[TrackedExtremeTrade] = []
-        self.session_filter_enabled = bool(session_filter)
-        self.weekday_filter_enabled = bool(weekday_filter)
-        self.entry_session_filter_enabled = bool(entry_session_filter)
-        self.entry_weekday_filter_enabled = bool(entry_weekday_filter)
+
+        if session_config is not None:
+            self.session_config = session_config
+        else:
+            self.session_config = SessionFilterConfig.from_legacy(
+                session_filter=session_filter,
+                weekday_filter=weekday_filter,
+                entry_session_filter=entry_session_filter,
+                entry_weekday_filter=entry_weekday_filter,
+                sessions=sessions,
+                entry_sessions=entry_sessions,
+            )
+
+        # Legacy backward-compatible attributes
+        self.session_filter_enabled = self.session_config.fvg_sessions.strip().upper() != "ALL"
+        self.weekday_filter_enabled = self.session_config.fvg_weekdays_only
+        self.entry_session_filter_enabled = self.session_config.entry_sessions.strip().upper() != "ALL"
+        self.entry_weekday_filter_enabled = self.session_config.entry_weekdays_only
         self._load()
+
+    def update_session_config(self, session_config: SessionFilterConfig) -> None:
+        self.session_config = session_config
+        self.session_filter_enabled = self.session_config.fvg_sessions.strip().upper() != "ALL"
+        self.weekday_filter_enabled = self.session_config.fvg_weekdays_only
+        self.entry_session_filter_enabled = self.session_config.entry_sessions.strip().upper() != "ALL"
+        self.entry_weekday_filter_enabled = self.session_config.entry_weekdays_only
 
     @classmethod
     def from_env(cls) -> "ExtremeTradeTracker":
@@ -139,6 +163,8 @@ class ExtremeTradeTracker:
             weekday_filter=os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
             entry_session_filter=os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
             entry_weekday_filter=os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+            sessions=os.getenv("EXTREME_SESSIONS", "NY"),
+            entry_sessions=os.getenv("EXTREME_ENTRY_SESSIONS", "NY"),
         )
 
     def _load(self):
@@ -273,6 +299,9 @@ class ExtremeTradeTracker:
         weekday_filter: Optional[bool] = None,
         entry_session_filter: Optional[bool] = None,
         entry_weekday_filter: Optional[bool] = None,
+        sessions: Optional[str] = None,
+        entry_sessions: Optional[str] = None,
+        session_config: Optional[SessionFilterConfig] = None,
     ) -> List[Tuple[str, TrackedExtremeTrade]]:
         """
         Ingests live scanner setups, tracks new entries, monitors open positions,
@@ -284,10 +313,18 @@ class ExtremeTradeTracker:
         now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
         now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-        use_sess_filter = session_filter if session_filter is not None else self.session_filter_enabled
-        use_wkday_filter = weekday_filter if weekday_filter is not None else self.weekday_filter_enabled
-        use_entry_sess_filter = entry_session_filter if entry_session_filter is not None else self.entry_session_filter_enabled
-        use_entry_wkday_filter = entry_weekday_filter if entry_weekday_filter is not None else self.entry_weekday_filter_enabled
+        if session_config is None:
+            if any(x is not None for x in (session_filter, weekday_filter, entry_session_filter, entry_weekday_filter, sessions, entry_sessions)):
+                session_config = SessionFilterConfig.from_legacy(
+                    session_filter=session_filter if session_filter is not None else (self.session_config.fvg_sessions.strip().upper() != "ALL"),
+                    weekday_filter=weekday_filter if weekday_filter is not None else self.session_config.fvg_weekdays_only,
+                    entry_session_filter=entry_session_filter if entry_session_filter is not None else (self.session_config.entry_sessions.strip().upper() != "ALL"),
+                    entry_weekday_filter=entry_weekday_filter if entry_weekday_filter is not None else self.session_config.entry_weekdays_only,
+                    sessions=sessions or self.session_config.fvg_sessions,
+                    entry_sessions=entry_sessions or self.session_config.entry_sessions,
+                )
+            else:
+                session_config = self.session_config
 
         # 1. Ingest/Update setups from scanner
         seen_symbols = set()
@@ -309,9 +346,7 @@ class ExtremeTradeTracker:
             # Check FVG formation session/weekday filters
             dur_ms = TIMEFRAME_MS.get(s.get("ltf_timeframe", "15m"), 15 * 60 * 1000)
             fvg_close_ts = fvg_formed_at + dur_ms if fvg_formed_at else now_ts
-            if use_sess_filter and not is_in_ny_session(fvg_close_ts):
-                continue
-            if use_wkday_filter and not is_weekday(fvg_close_ts):
+            if not session_config.is_fvg_valid(fvg_close_ts):
                 continue
 
             existing_pending = self.get_pending_trade_for_symbol(sym)
@@ -359,7 +394,7 @@ class ExtremeTradeTracker:
                 is_active = (s.get("state") == "TRADE_ACTIVE")
                 if is_active:
                     entry_ts_eval = s.get("entry_timestamp") or now_ts
-                    if (use_entry_sess_filter and not is_in_ny_session(entry_ts_eval)) or (use_entry_wkday_filter and not is_weekday(entry_ts_eval)):
+                    if not session_config.is_entry_valid(entry_ts_eval):
                         # If entry occurred outside allowed window, don't ingest as active
                         is_active = False
 
@@ -405,7 +440,7 @@ class ExtremeTradeTracker:
                 # Check if transitioned to active
                 if old_state == "PENDING_RETRACE" and new_state == "TRADE_ACTIVE":
                     entry_ts_eval = s.get("entry_timestamp") or now_ts
-                    if (use_entry_sess_filter and not is_in_ny_session(entry_ts_eval)) or (use_entry_wkday_filter and not is_weekday(entry_ts_eval)):
+                    if not session_config.is_entry_valid(entry_ts_eval):
                         # Suppress fill outside allowed window
                         pass
                     else:
@@ -455,7 +490,7 @@ class ExtremeTradeTracker:
                                     break
                             # Check Fill
                             if c_low <= trade.entry_price:
-                                if (use_entry_sess_filter and not is_in_ny_session(c_ts)) or (use_entry_wkday_filter and not is_weekday(c_ts)):
+                                if not session_config.is_entry_valid(c_ts):
                                     # Entry fill occurred outside allowed session/weekday - ignore fill
                                     pass
                                 else:
@@ -475,7 +510,7 @@ class ExtremeTradeTracker:
                                     break
                             # Check Fill
                             if c_high >= trade.entry_price:
-                                if (use_entry_sess_filter and not is_in_ny_session(c_ts)) or (use_entry_wkday_filter and not is_weekday(c_ts)):
+                                if not session_config.is_entry_valid(c_ts):
                                     # Entry fill occurred outside allowed session/weekday - ignore fill
                                     pass
                                 else:
