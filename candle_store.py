@@ -66,16 +66,23 @@ class CandleStore:
 
     def is_fresh(self, provider_name: str, symbol: str, timeframe: str, max_age_seconds: Optional[float] = None) -> bool:
         key = self._key(provider_name, symbol, timeframe)
+        if key not in self._last_sync and symbol.strip().upper().endswith("USDT"):
+            key = self._key(provider_name, symbol.strip().upper()[:-4], timeframe)
         max_age = max_age_seconds if max_age_seconds is not None else self.default_ttl_seconds
         return (time.time() - self._last_sync.get(key, 0.0)) < max_age
 
     def has_sufficient_candles(self, provider_name: str, symbol: str, timeframe: str, min_count: int = 50) -> bool:
         key = self._key(provider_name, symbol, timeframe)
+        if key not in self._candles and symbol.strip().upper().endswith("USDT"):
+            key = self._key(provider_name, symbol.strip().upper()[:-4], timeframe)
         return len(self._candles.get(key, [])) >= min_count
 
     def get_candles(self, provider_name: str, symbol: str, timeframe: str, n: int = 200) -> Optional[List[Dict[str, Any]]]:
         key = self._key(provider_name, symbol, timeframe)
         series = self._candles.get(key)
+        if not series and symbol.strip().upper().endswith("USDT"):
+            key = self._key(provider_name, symbol.strip().upper()[:-4], timeframe)
+            series = self._candles.get(key)
         if not series:
             return None
         return list(series[-n:]) if n > 0 else list(series)
@@ -97,7 +104,7 @@ class CandleStore:
         
         latest_c = merged[-1] if merged else {}
         latest_ts_str = datetime.fromtimestamp(latest_c.get("t", 0) / 1000.0, tz=IST).strftime("%Y-%m-%d %I:%M:%S %p IST") if "t" in latest_c else "N/A"
-        logger.info(
+        logger.debug(
             "[CandleStore] [%s:%s:%s] Merged %d incoming candle(s) -> Store holds %d bars (Latest Bar: %s, Close: %.4f)",
             provider_name.upper(), symbol.upper(), timeframe, len(new_candles), len(merged), latest_ts_str, float(latest_c.get("c", 0.0))
         )
