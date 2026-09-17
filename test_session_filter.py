@@ -133,3 +133,26 @@ def test_backward_compatibility_is_in_ny_session():
     assert is_in_ny_session(make_ts(hour=4)) is False
     # 22:00 UTC is outside (exclusive)
     assert is_in_ny_session(make_ts(hour=22)) is False
+
+
+def test_from_legacy_session_string_precedence():
+    # Explicit sessions string takes precedence over session_filter=False (e.g. from default kwargs)
+    c1 = SessionFilterConfig.from_legacy(session_filter=False, sessions="LONDON")
+    assert c1.fvg_sessions == "LONDON"
+
+    c2 = SessionFilterConfig.from_legacy(entry_session_filter=False, entry_sessions="NY")
+    assert c2.entry_sessions == "NY"
+
+    c3 = SessionFilterConfig.from_legacy(
+        session_filter=False,
+        sessions="LONDON",
+        entry_session_filter=False,
+        entry_sessions="NY",
+    )
+    assert c3.fvg_sessions == "LONDON"
+    assert c3.entry_sessions == "NY"
+
+    # sessions='ALL' explicitly preserves ALL
+    c4 = SessionFilterConfig.from_legacy(session_filter=False, sessions="ALL")
+    assert c4.fvg_sessions == "ALL"
+

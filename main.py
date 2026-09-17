@@ -1370,9 +1370,16 @@ async def api_extreme_scan(
     min_gap_to_use = min_gap_pct if min_gap_pct is not None else state.get("extreme_min_gap", 0.05)
     inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
     use_close = (inval_to_use == "close")
-    sess_filter = session_filter if session_filter is not None else state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED)
-    wkday_filter = weekday_filter if weekday_filter is not None else state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED)
     sessions_str = sessions if sessions is not None else state.get("extreme_sessions", EXTREME_SESSIONS)
+    sess_filter = (
+        session_filter
+        if session_filter is not None
+        else (
+            (sessions_str.strip().upper() != "ALL")
+            if (sessions_str and sessions_str.strip())
+            else state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED)
+        )
+    )
     session_config = SessionFilterConfig.from_legacy(
         session_filter=sess_filter,
         weekday_filter=wkday_filter,
@@ -1517,7 +1524,11 @@ async def api_extreme_backtest(
         sess_filter = (
             session_filter
             if session_filter is not None
-            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            else (
+                (sessions.strip().upper() != "ALL")
+                if (sessions and sessions.strip())
+                else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            )
         )
         wkday_filter = (
             weekday_filter
@@ -1527,7 +1538,11 @@ async def api_extreme_backtest(
         entry_sess_filter = (
             entry_session_filter
             if entry_session_filter is not None
-            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            else (
+                (entry_sessions.strip().upper() != "ALL")
+                if (entry_sessions and entry_sessions.strip())
+                else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+            )
         )
         entry_wkday_filter = (
             entry_weekday_filter

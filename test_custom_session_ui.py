@@ -93,3 +93,58 @@ def test_api_extreme_config_custom_sessions():
     data = status_resp.json()
     assert data["sessions"] == "13:30-20:00"
     assert data["entry_sessions"] == "08:00-11:30"
+
+
+def test_api_extreme_backtest_session_parameters_forwarding():
+    from unittest.mock import AsyncMock, patch
+    from backtest_extreme_fvg import ExtremeBacktestReport
+
+    fake_report = ExtremeBacktestReport(
+        symbol="BTC",
+        days=30,
+        ltf_timeframe="5m",
+        invalidation_mode="close",
+        min_gap_pct=0.05,
+        session_filter_enabled=True,
+        weekday_filter_enabled=False,
+        entry_session_filter_enabled=True,
+        entry_weekday_filter_enabled=False,
+        fvg_sessions="LONDON",
+        entry_sessions="NY",
+        total_trades=10,
+        wins_1r=7,
+        wins_2r=5,
+        wins_3r=3,
+        losses=3,
+        win_rate_1r=70.0,
+        win_rate_2r=50.0,
+        win_rate_3r=30.0,
+        net_pnl_1r=4.0,
+        net_pnl_2r=7.0,
+        net_pnl_3r=6.0,
+        profit_factor_1r=2.33,
+        profit_factor_2r=3.33,
+        profit_factor_3r=3.0,
+        max_drawdown_r=2.0,
+        avg_trade_duration_min=45.0,
+        avg_mfe_r=2.5,
+        trades=[],
+    )
+
+    client = TestClient(app)
+    with patch("backtest_extreme_fvg.run_extreme_backtest", new_callable=AsyncMock) as mock_backtest:
+        mock_backtest.return_value = fake_report
+
+        resp = client.get("/api/extreme/backtest?symbol=BTC&days=30&sessions=LONDON&entry_sessions=NY")
+        assert resp.status_code == 200
+        mock_backtest.assert_called_once()
+        kwargs = mock_backtest.call_args.kwargs
+
+        # Verify session_config passed to backtest engine
+        session_cfg = kwargs.get("session_config")
+        assert session_cfg is not None
+        assert session_cfg.fvg_sessions == "LONDON"
+        assert session_cfg.entry_sessions == "NY"
+        assert kwargs.get("session_filter") is True
+        assert kwargs.get("entry_session_filter") is True
+

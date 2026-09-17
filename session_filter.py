@@ -189,20 +189,20 @@ class SessionFilterConfig:
         into a clean, unified SessionFilterConfig instance.
         """
         # Resolve FVG session
-        if session_filter is False:
-            resolved_fvg = "ALL"
+        if sessions is not None and sessions.strip() and sessions.strip().upper() != "ALL":
+            resolved_fvg = sessions.strip()
         elif session_filter is True:
-            resolved_fvg = sessions.strip() if (sessions and sessions.strip() and sessions.strip().upper() != "ALL") else default_session
+            resolved_fvg = default_session
         else:
-            resolved_fvg = sessions.strip() if (sessions and sessions.strip()) else "ALL"
+            resolved_fvg = "ALL"
 
         # Resolve Entry session
-        if entry_session_filter is False:
-            resolved_entry = "ALL"
+        if entry_sessions is not None and entry_sessions.strip() and entry_sessions.strip().upper() != "ALL":
+            resolved_entry = entry_sessions.strip()
         elif entry_session_filter is True:
-            resolved_entry = entry_sessions.strip() if (entry_sessions and entry_sessions.strip() and entry_sessions.strip().upper() != "ALL") else default_session
+            resolved_entry = default_session
         else:
-            resolved_entry = entry_sessions.strip() if (entry_sessions and entry_sessions.strip()) else "ALL"
+            resolved_entry = "ALL"
 
         return cls(
             fvg_sessions=resolved_fvg,
