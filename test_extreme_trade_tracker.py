@@ -693,3 +693,47 @@ def test_api_extreme_live_history_endpoint(client):
     assert "history" in data
 
 
+def test_tracker_session_filter_config(tmp_path):
+    """Verify that ExtremeTradeTracker cleanly uses SessionFilterConfig directly."""
+    from datetime import datetime, timezone
+    from session_filter import SessionFilterConfig
+
+    # London session config
+    cfg = SessionFilterConfig(fvg_sessions="LONDON", entry_sessions="LONDON")
+    tracker = ExtremeTradeTracker(storage_path=str(tmp_path / "cfg_test.json"), session_config=cfg)
+
+    # Tuesday 08:00 UTC (London session: 07:00 - 16:00 UTC)
+    dt_lon = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+    ts_lon = int(dt_lon.timestamp() * 1000)
+
+    setup_lon = {
+        "symbol": "BTC",
+        "direction": "Bullish",
+        "state": "PENDING_RETRACE",
+        "entry_price": 100.0,
+        "stop_loss": 95.0,
+        "risk_r": 5.0,
+        "risk_pct": 5.0,
+        "tp_1r": 105.0,
+        "tp_2r": 110.0,
+        "tp_3r": 115.0,
+        "floating_r": 0.0,
+        "completion_target": "2R",
+        "ltf_timeframe": "15m",
+        "anchor": {"bottom": 90.0, "top": 105.0},
+        "target_fvg": {"bottom": 98.0, "top": 100.0, "formed_at": ts_lon},
+    }
+
+    # Setup should be accepted under London config
+    events = tracker.process_live_setups([setup_lon], {"BTC": 102.0}, session_config=cfg)
+    assert len(events) == 1
+    assert events[0][0] == "NEW_SETUP"
+
+    # Now with NY-only config
+    ny_cfg = SessionFilterConfig(fvg_sessions="NY", entry_sessions="NY")
+    tracker_ny = ExtremeTradeTracker(storage_path=str(tmp_path / "cfg_ny_test.json"), session_config=ny_cfg)
+    events_ny = tracker_ny.process_live_setups([setup_lon], {"BTC": 102.0}, session_config=ny_cfg)
+    assert len(events_ny) == 0
+
+
+

@@ -39,6 +39,7 @@ from strategy_extreme_fvg import (
     is_weekday,
     TIMEFRAME_MS,
 )
+from session_filter import SessionFilterConfig
 
 load_dotenv()
 
@@ -72,6 +73,9 @@ class ExtremeLiveScanner:
         weekday_filter: Optional[bool] = None,
         entry_session_filter: Optional[bool] = None,
         entry_weekday_filter: Optional[bool] = None,
+        sessions: Optional[str] = None,
+        entry_sessions: Optional[str] = None,
+        session_config: Optional[SessionFilterConfig] = None,
     ):
         self.symbols = symbols
         self.ltf_timeframe = ltf_timeframe
@@ -80,26 +84,22 @@ class ExtremeLiveScanner:
         self.completion_target = completion_target
         self.poll_interval = poll_interval_seconds
         self.enable_telegram = enable_telegram
-        self.session_filter = (
-            session_filter
-            if session_filter is not None
-            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.weekday_filter = (
-            weekday_filter
-            if weekday_filter is not None
-            else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.entry_session_filter = (
-            entry_session_filter
-            if entry_session_filter is not None
-            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
-        self.entry_weekday_filter = (
-            entry_weekday_filter
-            if entry_weekday_filter is not None
-            else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-        )
+
+        if session_config is not None:
+            self.session_config = session_config
+        else:
+            self.session_config = SessionFilterConfig.from_legacy(
+                session_filter=session_filter,
+                weekday_filter=weekday_filter,
+                entry_session_filter=entry_session_filter,
+                entry_weekday_filter=entry_weekday_filter,
+                sessions=sessions or os.getenv("EXTREME_SESSIONS"),
+                entry_sessions=entry_sessions or os.getenv("EXTREME_ENTRY_SESSIONS"),
+            )
+        self.session_filter = self.session_config.fvg_sessions.strip().upper() != "ALL"
+        self.weekday_filter = self.session_config.fvg_weekdays_only
+        self.entry_session_filter = self.session_config.entry_sessions.strip().upper() != "ALL"
+        self.entry_weekday_filter = self.session_config.entry_weekdays_only
 
         # State tracking: symbol -> last known state ("PENDING_RETRACE", "TRADE_ACTIVE", etc.)
         self.active_setups: Dict[str, ExtremeTradeSetup] = {}
@@ -150,9 +150,7 @@ class ExtremeLiveScanner:
             return None
 
         # Apply FVG formation session/weekday filters
-        if self.session_filter and not is_in_ny_session(best_ltf.close_timestamp):
-            return None
-        if self.weekday_filter and not is_weekday(best_ltf.close_timestamp):
+        if not self.session_config.is_fvg_valid(best_ltf.close_timestamp):
             return None
 
         return build_extreme_trade_setup(

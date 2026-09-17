@@ -36,23 +36,12 @@ TIMEFRAME_MS: Dict[str, int] = {
 }
 DEFAULT_LTF_TIMEFRAME: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 
-
-def is_in_ny_session(timestamp_ms: int) -> bool:
-    """Return True if the UTC hour of timestamp_ms is within NY session 13:00-22:00 UTC."""
-    try:
-        dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
-        return 13 <= dt.hour < 22
-    except (ValueError, OSError):
-        return False
-
-
-def is_weekday(timestamp_ms: int) -> bool:
-    """Return True if timestamp_ms falls on Monday-Friday (UTC)."""
-    try:
-        dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
-        return dt.weekday() < 5
-    except (ValueError, OSError):
-        return False
+from session_filter import (
+    SessionFilterConfig,
+    is_in_ny_session,
+    is_in_session,
+    is_weekday,
+)
 
 
 @dataclass
@@ -1230,6 +1219,8 @@ async def get_extreme_setup_for_symbol(
     completion_target: Literal["1R", "2R", "3R"] = "2R",
     session_filter: bool = False,
     weekday_filter: bool = False,
+    sessions: Optional[str] = None,
+    session_config: Optional[SessionFilterConfig] = None,
     candles_4h: Optional[List[Candle]] = None,
     candles_ltf: Optional[List[Candle]] = None,
 ) -> Optional[ExtremeTradeSetup]:
@@ -1241,6 +1232,13 @@ async def get_extreme_setup_for_symbol(
     4. Applies optional formation session/weekday filters on candidate FVG completion time.
     5. Computes Entry, SL, and 1R/2R/3R targets.
     """
+    if session_config is None:
+        session_config = SessionFilterConfig.from_legacy(
+            session_filter=session_filter,
+            weekday_filter=weekday_filter,
+            sessions=sessions,
+        )
+
     cli = client or market_data_provider
 
     # Fetch LTF candles once if not provided
@@ -1293,12 +1291,8 @@ async def get_extreme_setup_for_symbol(
         symbol, best_ltf.direction, best_ltf.bottom, best_ltf.top, best_ltf.width, best_ltf.gap_pct, best_ltf.formed_time_ist
     )
 
-    if session_filter and not is_in_ny_session(best_ltf.close_timestamp):
-        logger.info("[ExtremeStrategy] [%s] Setup rejected by NY Session filter (formed at %s)", symbol, best_ltf.formed_time_ist)
-        return None
-
-    if weekday_filter and not is_weekday(best_ltf.close_timestamp):
-        logger.info("[ExtremeStrategy] [%s] Setup rejected by Weekday filter (formed at %s)", symbol, best_ltf.formed_time_ist)
+    if not session_config.is_fvg_valid(best_ltf.close_timestamp):
+        logger.info("[ExtremeStrategy] [%s] Setup rejected by Session/Weekday filter (formed at %s)", symbol, best_ltf.formed_time_ist)
         return None
 
     setup = build_extreme_trade_setup(
