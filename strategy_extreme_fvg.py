@@ -1325,3 +1325,7 @@ async def get_extreme_setup_for_symbol(
     )
     return setup
 
+from strategy_extreme_fvg import Candle, FVG, get_last_n_candles  # preserved re-export
+from models import Candle, FVG, IST, TIMEFRAME_MS  # Phase 1 re-export
+from models import Candle, FVG, IST, TIMEFRAME_MS; from strategy_extreme_fvg import get_last_n_candles  # Phase 1 re-export fixed
+# Re-export: from models import Candle, FVG

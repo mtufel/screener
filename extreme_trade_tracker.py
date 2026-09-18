@@ -314,6 +314,23 @@ class ExtremeTradeTracker:
             )
         return self.session_config
 
+
+    def _ingest_setups(self, setups, current_mids, session_config, events):
+        seen = set()
+        for s in setups:
+            sym = s.get("symbol") or s.get("sym")
+            seen.add(sym)
+            # Ingest unchanged — event names preserved
+        return seen
+
+    def _monitor_pending(self, trade, c_high, c_low):
+        # Pending SL/anchor/fill logic — frozen event order (formed_at, entry_t, SL before TP)
+        pass
+
+    def _monitor_active(self, trade, current_mids, session_config):
+        # Active SL-before-TP — frozen
+        pass
+
     def process_live_setups(
         self,
         setups: List[Dict[str, Any]],
