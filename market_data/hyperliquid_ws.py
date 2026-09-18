@@ -18,17 +18,10 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import websockets
 
 from candle_store import CandleStore, candle_store
-from hyperliquid_client import resolve_symbol
+from hyperliquid_client import REVERSE_ALIASES, expand_mids_with_aliases, resolve_symbol
 from market_data.base import is_ws_open
 
 logger = logging.getLogger("market_data.hyperliquid_ws")
-
-
-REVERSE_ALIASES: Dict[str, List[str]] = {
-    "PAXG": ["GOLD", "XAU", "XAUUSD", "PAXGOLD"],
-    "SILVER": ["XAG", "XAGUSD"],
-    "WTIOIL": ["OIL", "CRUDE"],
-}
 
 
 class HyperliquidWSClient:
@@ -173,21 +166,13 @@ class HyperliquidWSClient:
             if channel == "allMids":
                 mids_dict = data.get("data", {}).get("mids", {})
                 if mids_dict:
-                    normalized_mids = {}
+                    raw_mids = {}
                     for k, v in mids_dict.items():
                         try:
-                            price = float(v)
-                            normalized_mids[k] = price
-                            norm_k = resolve_symbol(k)
-                            if norm_k != k:
-                                normalized_mids[norm_k] = price
-                            for alias in REVERSE_ALIASES.get(k, []):
-                                normalized_mids[alias] = price
-                            for alias in REVERSE_ALIASES.get(norm_k, []):
-                                normalized_mids[alias] = price
+                            raw_mids[k] = float(v)
                         except (ValueError, TypeError):
                             continue
-
+                    normalized_mids = expand_mids_with_aliases(raw_mids)
                     self.store.set_cached_mids("hyperliquid", normalized_mids)
                     if self.on_price_update:
                         try:

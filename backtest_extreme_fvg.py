@@ -670,7 +670,7 @@ async def run_extreme_backtest(
     wins_1r = sum(1 for t in executed_trades if t.hit_1r)
     wins_2r = sum(1 for t in executed_trades if t.hit_2r)
     wins_3r = sum(1 for t in executed_trades if t.hit_3r)
-    losses = sum(1 for t in executed_trades if t.exit_reason == "STOPPED_OUT")
+    losses = sum(1 for t in executed_trades if t.exit_reason == "STOPPED_OUT" and not t.hit_1r)
 
     win_rate_1r = (wins_1r / total_trades * 100) if total_trades > 0 else 0.0
     win_rate_2r = (wins_2r / total_trades * 100) if total_trades > 0 else 0.0

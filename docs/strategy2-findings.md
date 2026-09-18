@@ -1,5 +1,9 @@
 # Strategy 2 (Extreme LTF FVG) — Findings & Bug Analysis
 
+> **Superseded for current bugs:** see `docs/bug-findings-2026-09-18.md`.
+> Several items below were fixed after this write-up; do not treat this file
+> as the live defect list.
+>
 > Generated: 2026-09-04
 > Scope: **Strategy 2 only** (Extreme LTF FVG engine, live daemon, trade ledger,
 > backtester, live scanner, and related endpoints/charts).

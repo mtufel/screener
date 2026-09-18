@@ -163,8 +163,8 @@ class ExtremeTradeTracker:
             weekday_filter=os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
             entry_session_filter=os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
             entry_weekday_filter=os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
-            sessions=os.getenv("EXTREME_SESSIONS", "NY"),
-            entry_sessions=os.getenv("EXTREME_ENTRY_SESSIONS", "NY"),
+            sessions=os.getenv("EXTREME_SESSIONS", "ALL"),
+            entry_sessions=os.getenv("EXTREME_ENTRY_SESSIONS", "ALL"),
         )
 
     def _load(self):
@@ -309,6 +309,8 @@ class ExtremeTradeTracker:
         Returns a list of event tuples: (event_type, trade)
         e.g. ("NEW_SETUP", trade), ("ENTRY_FILLED", trade), ("TP_HIT", trade), ("SL_HIT", trade)
         """
+        from hyperliquid_client import lookup_mid
+
         events = []
         now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
         now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -330,7 +332,7 @@ class ExtremeTradeTracker:
         seen_symbols = set()
         for s in setups:
             sym = s["symbol"].strip().upper()
-            curr_px = float(current_mids.get(sym, s.get("current_price", s["entry_price"])))
+            curr_px = lookup_mid(current_mids, sym, float(s.get("current_price", s["entry_price"])))
 
             # If symbol already has an ACTIVE trade in the ledger, its entry price is LOCKED.
             existing_active = self.get_active_trade_for_symbol(sym)
@@ -455,7 +457,7 @@ class ExtremeTradeTracker:
         to_close = []
         for trade_id, trade in list(self.active_trades.items()):
             raw_sym = SYMBOL_ALIASES.get(trade.symbol.strip().upper(), trade.symbol.strip().upper())
-            curr_px = float(current_mids.get(raw_sym, current_mids.get(trade.symbol, trade.entry_price)))
+            curr_px = lookup_mid(current_mids, trade.symbol, trade.entry_price)
             risk_r = trade.risk_r if trade.risk_r > 0 else (trade.entry_price * 0.001)
 
             candles = (recent_candles_map.get(raw_sym) or recent_candles_map.get(trade.symbol) or []) if recent_candles_map else []
@@ -478,16 +480,21 @@ class ExtremeTradeTracker:
                     c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
                     if not filled:
                         if trade.direction == "Bullish":
-                            # Check SL/Anchor breach before fill
-                            if c_low <= trade.stop_loss or c_low < htf_bottom:
-                                if c_low <= trade.stop_loss and c_high < trade.entry_price:
-                                    trade.state = "INVALIDATED"
-                                    trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                                    trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                    trade.closed_timestamp = c_ts
-                                    to_close.append((trade_id, "SETUP_INVALIDATED", trade))
-                                    resolved = True
-                                    break
+                            sl_before_entry = c_low <= trade.stop_loss and c_high < trade.entry_price
+                            anchor_before_entry = (
+                                "bottom" in trade.htf_anchor
+                                and trade.htf_anchor.get("bottom") is not None
+                                and c_low < float(trade.htf_anchor["bottom"])
+                                and c_high < trade.entry_price
+                            )
+                            if sl_before_entry or anchor_before_entry:
+                                trade.state = "INVALIDATED"
+                                trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
+                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
+                                trade.closed_timestamp = c_ts
+                                to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                                resolved = True
+                                break
                             # Check Fill
                             if c_low <= trade.entry_price:
                                 if not session_config.is_entry_valid(c_ts):
@@ -499,15 +506,21 @@ class ExtremeTradeTracker:
                                     trade.entry_timestamp = fill_ts
                                     trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
                         else:  # Bearish
-                            if c_high >= trade.stop_loss or c_high > htf_top:
-                                if c_high >= trade.stop_loss and c_low > trade.entry_price:
-                                    trade.state = "INVALIDATED"
-                                    trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                                    trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                    trade.closed_timestamp = c_ts
-                                    to_close.append((trade_id, "SETUP_INVALIDATED", trade))
-                                    resolved = True
-                                    break
+                            sl_before_entry = c_high >= trade.stop_loss and c_low > trade.entry_price
+                            anchor_before_entry = (
+                                "top" in trade.htf_anchor
+                                and trade.htf_anchor.get("top") is not None
+                                and c_high > float(trade.htf_anchor["top"])
+                                and c_low > trade.entry_price
+                            )
+                            if sl_before_entry or anchor_before_entry:
+                                trade.state = "INVALIDATED"
+                                trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
+                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
+                                trade.closed_timestamp = c_ts
+                                to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                                resolved = True
+                                break
                             # Check Fill
                             if c_high >= trade.entry_price:
                                 if not session_config.is_entry_valid(c_ts):
