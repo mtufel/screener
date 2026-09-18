@@ -33,7 +33,7 @@ def test_simulate_trade_hitting_all_tps():
     c1 = make_candle(0, 85, 95, 80, 92)
     c2 = make_candle(1000, 92, 115, 91, 114)
     c3 = make_candle(2000, 114, 120, 100, 118)
-    ltf_fvg = FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=100, bottom=95, formed_at=2000, direction="Bullish", gap_pct=0.0)
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Subsequent candles:
@@ -70,7 +70,7 @@ def _bullish_fvg():
     c1 = make_candle(0, 85, 95, 80, 92)
     c2 = make_candle(1000, 92, 115, 91, 114)
     c3 = make_candle(2000, 114, 120, 100, 118)
-    return FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
+    return FVG(top=100, bottom=95, formed_at=2000, direction="Bullish", gap_pct=0.0)
 
 
 def test_simulate_trade_hitting_1r_then_stopped_out():
@@ -78,7 +78,7 @@ def test_simulate_trade_hitting_1r_then_stopped_out():
     c1 = make_candle(0, 85, 95, 80, 92)
     c2 = make_candle(1000, 92, 115, 91, 114)
     c3 = make_candle(2000, 114, 120, 100, 118)
-    ltf_fvg = FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=100, bottom=95, formed_at=2000, direction="Bullish", gap_pct=0.0)
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Bar 1 reaches 112 (hits 1R 110)
@@ -111,7 +111,7 @@ def test_simulate_trade_hitting_sl_directly_bearish():
     c1 = make_candle(0, 115, 120, 105, 108)
     c2 = make_candle(1000, 108, 109, 85, 87)
     c3 = make_candle(2000, 87, 95, 84, 86)
-    ltf_fvg = FVG("Bearish", 105, 100, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=105, bottom=100, formed_at=2000, direction="Bearish", gap_pct=0.0)
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Bar 1 rallies straight to 112 (hits SL 110 directly)
@@ -237,7 +237,7 @@ def test_simulate_trade_sl_precedence_on_shared_candle_bearish():
     c1 = make_candle(0, 115, 120, 105, 108)
     c2 = make_candle(1000, 108, 109, 85, 87)
     c3 = make_candle(2000, 87, 95, 84, 86)
-    ltf_fvg = FVG("Bearish", 105, 100, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=105, bottom=100, formed_at=2000, direction="Bearish", gap_pct=0.0)
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Entry 100, SL 110, TP1 90, TP2 80, TP3 70
@@ -592,3 +592,5 @@ async def test_run_extreme_backtest_with_sessions_string_filtering():
 
 
 
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+🤖 Generated with Claude Code

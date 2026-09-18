@@ -10,3 +10,5 @@ What:
 Constraints: No public API change; SOT tests untouched; SL/TP order preserved; session resolution frozen.
 Co-Authored-By: Claude Code <noreply@anthropic.com>
 Co-Authored-By: Claude Code <noreply@anthropic.com>
+🤖 Generated with Claude Code
+🤖 Generated with Claude Code

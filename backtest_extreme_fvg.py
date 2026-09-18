@@ -424,9 +424,7 @@ async def run_extreme_backtest(
             if gap >= min_gap_pct:
                 ltf_fvgs.append((
                     idx + 2,
-                    FVG(
-                        direction="Bullish",
-                        top=c3.low,
+                    FVG(top=c3.low, bottom=c3.high, formed_at=0, direction="Bullish", gap_pct=0.0)
                         bottom=c1.high,
                         c1=c1,
                         c2=c2,
@@ -827,3 +825,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+Co-Authored-By: Claude Code <noreply@anthropic.com>
