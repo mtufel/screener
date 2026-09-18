@@ -24,6 +24,7 @@ RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "3.0"))  # Sustained requests
 
 # Symbol aliases for commodities and alternative naming
 SYMBOL_ALIASES: Dict[str, str] = {
+    "GOLD": "PAXG",
     "XAU": "PAXG",
     "XAUUSD": "PAXG",
     "PAXGOLD": "PAXG",
@@ -34,11 +35,53 @@ SYMBOL_ALIASES: Dict[str, str] = {
     "CRUDE": "WTIOIL",
 }
 
+# Canonical Hyperliquid coin -> user-facing aliases (REST and WS mids must both expand these)
+REVERSE_ALIASES: Dict[str, List[str]] = {
+    "PAXG": ["GOLD", "XAU", "XAUUSD", "PAXGOLD"],
+    "SILVER": ["XAG", "XAGUSD"],
+    "WTIOIL": ["OIL", "CRUDE"],
+}
+
 
 def resolve_symbol(symbol: str) -> str:
     """Normalizes symbol by stripping PERP/USDT and applying commodity aliases."""
     clean = symbol.strip().upper().replace("-PERP", "").replace("USDT", "").replace("USD", "")
     return SYMBOL_ALIASES.get(symbol.strip().upper(), SYMBOL_ALIASES.get(clean, clean))
+
+
+def expand_mids_with_aliases(mids: Dict[str, float]) -> Dict[str, float]:
+    """Copies exchange mids onto canonical names and user aliases (GOLD, OIL, …)."""
+    if not mids:
+        return {}
+    expanded: Dict[str, float] = {}
+    for key, price in mids.items():
+        try:
+            px = float(price)
+        except (TypeError, ValueError):
+            continue
+        raw = str(key)
+        expanded[raw] = px
+        canon = resolve_symbol(raw)
+        expanded[canon] = px
+        for alias in REVERSE_ALIASES.get(raw.upper(), []) + REVERSE_ALIASES.get(canon, []):
+            expanded[alias] = px
+    return expanded
+
+
+def lookup_mid(mids: Dict[str, float], symbol: str, fallback: float = 0.0) -> float:
+    """Resolves a mid price from whitelist names, aliases, or canonical coins."""
+    if not mids or not symbol:
+        return float(fallback)
+    key = symbol.strip().upper()
+    if key in mids:
+        return float(mids[key])
+    canon = resolve_symbol(key)
+    if canon in mids:
+        return float(mids[canon])
+    for alias in REVERSE_ALIASES.get(canon, []):
+        if alias in mids:
+            return float(mids[alias])
+    return float(fallback)
 
 
 class AsyncRateLimiter:
@@ -259,7 +302,9 @@ class HyperliquidClient:
         try:
             data = await self._post_info({"type": "allMids"})
             if isinstance(data, dict):
-                return {k: float(v) for k, v in data.items() if v is not None}
+                return expand_mids_with_aliases(
+                    {k: float(v) for k, v in data.items() if v is not None}
+                )
             return {}
         except Exception as exc:
             logger.error("Failed to fetch allMids from Hyperliquid: %s", exc)
@@ -275,9 +320,9 @@ class HyperliquidClient:
         Returns:
             Optional[float]: Price or None if unavailable.
         """
-        resolved_sym = SYMBOL_ALIASES.get(symbol.upper(), symbol)
         all_mids = await self.get_all_mids()
-        return all_mids.get(resolved_sym) or all_mids.get(symbol)
+        px = lookup_mid(all_mids, symbol, 0.0)
+        return px if px > 0 else None
 
     async def fetch_fallback_historical_klines(
         self,

@@ -97,8 +97,8 @@ EXTREME_SESSION_FILTER_ENABLED = os.getenv("EXTREME_SESSION_FILTER_ENABLED", "fa
 EXTREME_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_ENTRY_SESSION_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
-EXTREME_SESSIONS = os.getenv("EXTREME_SESSIONS", "NY").strip()
-EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "NY").strip()
+EXTREME_SESSIONS = os.getenv("EXTREME_SESSIONS", "ALL").strip()
+EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "ALL").strip()
 
 from session_filter import SessionFilterConfig
 
@@ -322,7 +322,7 @@ async def send_extreme_telegram_alert(
 async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     """Runs a single background scan across whitelisted coins for Extreme LTF setups."""
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
-    from hyperliquid_client import SYMBOL_ALIASES
+    from hyperliquid_client import lookup_mid
     from chart_generator import generate_extreme_setup_chart
 
     start_time_ist = datetime.now(IST)
@@ -361,7 +361,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
 
     for sym in coin_list:
         raw_sym = provider.resolve_symbol(sym)
-        curr_px = float(mids.get(raw_sym, mids.get(sym, 0.0)))
+        curr_px = lookup_mid(mids, sym, float(mids.get(raw_sym, 0.0)))
 
         # 1. LEDGER CHECK: Is there an existing open TRADE_ACTIVE position?
         active_trade = extreme_trade_tracker.get_active_trade_for_symbol(sym)
@@ -467,7 +467,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         symbols_to_fetch.add(tr.symbol.strip().upper())
 
     for sym in symbols_to_fetch:
-        raw_sym = SYMBOL_ALIASES.get(sym, sym)
+        raw_sym = provider.resolve_symbol(sym)
         try:
             active_tr = extreme_trade_tracker.get_active_trade_for_symbol(sym) or extreme_trade_tracker.get_pending_trade_for_symbol(sym)
             n_candles = 50
@@ -500,11 +500,11 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             logger.info("Skipping already sent alert: %s %s (%s)", tr.symbol, evt_type, tr.trade_id)
             continue
 
-        raw_sym = SYMBOL_ALIASES.get(tr.symbol, tr.symbol)
+        raw_sym = provider.resolve_symbol(tr.symbol)
         side = "LONG" if tr.direction == "Bullish" else "SHORT"
         chart_img = None
         try:
-            candles_ltf = recent_candles_map.get(tr.symbol)
+            candles_ltf = recent_candles_map.get(tr.symbol) or recent_candles_map.get(raw_sym)
             if not candles_ltf:
                 candles_ltf = await get_last_n_candles(symbol=raw_sym, timeframe=tr.ltf_timeframe, n=60, client=provider)
             chart_img = generate_extreme_setup_chart(
@@ -540,7 +540,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
             pos_str = ""
 
         if evt_type == "NEW_SETUP" and tr.state == "PENDING_RETRACE":
-            dist = ((float(mids.get(tr.symbol, tr.entry_price)) - tr.entry_price) / tr.entry_price) * 100
+            dist = ((lookup_mid(mids, tr.symbol, tr.entry_price) - tr.entry_price) / tr.entry_price) * 100
             msg = (
                 f"🔔 <b>[NEW SETUP] {tr.symbol} {side} ({tr.ltf_timeframe})</b>\n\n"
                 f"• <b>4H Anchor:</b> {tr.htf_anchor.get('direction', '')} [${tr.htf_anchor.get('bottom', 0):,.2f} - ${tr.htf_anchor.get('top', 0):,.2f}]\n"
@@ -1362,7 +1362,7 @@ async def api_extreme_scan(
     sessions: Optional[str] = Query(default=None, description="FVG formation session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
 ):
     from strategy_extreme_fvg import get_extreme_setup_for_symbol
-    from hyperliquid_client import SYMBOL_ALIASES
+    from hyperliquid_client import lookup_mid
     from extreme_trade_tracker import extreme_trade_tracker
 
     ltf_to_use = ltf or state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME)
@@ -1395,7 +1395,7 @@ async def api_extreme_scan(
 
     for sym in coin_list:
         raw_sym = provider.resolve_symbol(sym)
-        curr_px = float(mids.get(raw_sym, mids.get(sym, 0.0)))
+        curr_px = lookup_mid(mids, sym, float(mids.get(raw_sym, 0.0)))
 
         # 1. Check ledger for active trade (IMMUTABLE entry price, SL, targets)
         active_trade = extreme_trade_tracker.get_active_trade_for_symbol(sym)

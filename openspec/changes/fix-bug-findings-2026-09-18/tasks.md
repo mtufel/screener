@@ -1,0 +1,22 @@
+# Tasks: Bug Findings Resolution (2026-09-18)
+
+- [x] 1. Session Environment Defaults
+  - [x] 1.1 Update `main.py` default `EXTREME_SESSIONS` and `EXTREME_ENTRY_SESSIONS` from `"NY"` to `"ALL"`.
+  - [x] 1.2 Update `extreme_trade_tracker.py` `from_env()` default sessions to `"ALL"`.
+- [x] 2. Pending 4H Anchor Breach Invalidation
+  - [x] 2.1 Decouple 4H anchor check (`c_low < htf_bottom` / `c_high > htf_top`) from LTF SL check in `extreme_trade_tracker.py`.
+  - [x] 2.2 Verify pending trade transitions to `INVALIDATED` upon anchor breach.
+- [x] 3. Hyperliquid Aliases & Mid-Price Resolution
+  - [x] 3.1 Add `"GOLD": "PAXG"` to `SYMBOL_ALIASES` in `hyperliquid_client.py`.
+  - [x] 3.2 Implement `REVERSE_ALIASES`, `expand_mids_with_aliases()`, and `lookup_mid()` in `hyperliquid_client.py`.
+  - [x] 3.3 Apply `expand_mids_with_aliases()` in REST `get_all_mids()`.
+  - [x] 3.4 Re-use `expand_mids_with_aliases()` in `market_data/hyperliquid_ws.py`.
+- [x] 4. Provider-Aware screener alerts and chart lookups
+  - [x] 4.1 Use `provider.resolve_symbol()` and `lookup_mid()` in `main.py` cycle runner and Telegram alerts.
+- [x] 5. Dashboard Session Preset Labels
+  - [x] 5.1 Update Asia label to `00:00 - 09:00 UTC` and NY Killzone label to `13:00 - 16:00 UTC` in `templates/index.html`.
+- [x] 6. Backtest Headline Loss Accounting
+  - [x] 6.1 Update `backtest_extreme_fvg.py` headline losses calculation to exclude `hit_1r` trades.
+- [x] 7. Automated Testing & Verification
+  - [x] 7.1 Implement regression suite `test_bug_findings_2026_09_18.py` covering all 7 bugs.
+  - [x] 7.2 Run full test suite (`pytest -v`) to guarantee 100% pass rate.
