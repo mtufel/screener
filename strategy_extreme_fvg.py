@@ -27,13 +27,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 HTF_TIMEFRAME = "4h"
 HTF_CANDLE_DURATION_MS = 4 * 3600 * 1000
 
-TIMEFRAME_MS: Dict[str, int] = {
-    "1m": 60 * 1000,
-    "5m": 5 * 60 * 1000,
-    "15m": 15 * 60 * 1000,
-    "1h": 60 * 60 * 1000,
-    "4h": 4 * 3600 * 1000,
-}
+# Canonical timeframe table shared app-wide (defined in candle_store); the 4H
+# entry is what HTF cache math needs.
+from candle_store import TIMEFRAME_MS
 DEFAULT_LTF_TIMEFRAME: str = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 
 from session_filter import (
@@ -139,6 +135,42 @@ async def get_last_n_candles(
     return [Candle.from_dict(c) for c in finished_raw]
 
 
+def _is_fvg_invalidated(
+    fvg: "FVG",
+    subsequent_candles: List[Candle],
+    use_close_invalidation: bool,
+    current_price: float = 0.0,
+) -> bool:
+    """True if any subsequent candle (or the live price) has breached the FVG boundary.
+
+    Candle breaches use close when close-invalidation is enabled, otherwise the wick
+    extreme. Live price uses the raw boundary (wick semantics).
+    """
+    for c in subsequent_candles:
+        breach = c.close if use_close_invalidation else (c.low if fvg.direction == "Bullish" else c.high)
+        if fvg.direction == "Bullish" and breach < fvg.bottom:
+            return True
+        if fvg.direction == "Bearish" and breach > fvg.top:
+            return True
+    if current_price > 0:
+        if fvg.direction == "Bullish" and current_price < fvg.bottom:
+            return True
+        if fvg.direction == "Bearish" and current_price > fvg.top:
+            return True
+    return False
+
+
+def _three_candle_fvg(c1: Candle, c2: Candle, c3: Candle, timeframe: str) -> Optional[FVG]:
+    """Builds the FVG implied by a 3-candle window (bullish gap over c1.high, bearish under c1.low)."""
+    if c3.low > c1.high:
+        return FVG(direction="Bullish", top=c3.low, bottom=c1.high, c1=c1, c2=c2, c3=c3,
+                   formed_at=c3.timestamp, timeframe=timeframe)
+    if c3.high < c1.low:
+        return FVG(direction="Bearish", top=c1.low, bottom=c3.high, c1=c1, c2=c2, c3=c3,
+                   formed_at=c3.timestamp, timeframe=timeframe)
+    return None
+
+
 def compute_all_active_4h_fvgs(
     candles_4h: List[Candle],
     current_time_ms: Optional[int] = None,
@@ -168,55 +200,18 @@ def compute_all_active_4h_fvgs(
     valid_fvgs: List[FVG] = []
 
     for i in range(len(closed_candles) - 2):
-        c1 = closed_candles[i]
-        c2 = closed_candles[i + 1]
-        c3 = closed_candles[i + 2]
+        c1, c2, c3 = closed_candles[i], closed_candles[i + 1], closed_candles[i + 2]
 
-        candidate: Optional[FVG] = None
-
-        if c3.low > c1.high:
-            candidate = FVG(
-                direction="Bullish",
-                top=c3.low,
-                bottom=c1.high,
-                c1=c1,
-                c2=c2,
-                c3=c3,
-                formed_at=c3.timestamp,
-                timeframe="4h",
-            )
-        elif c3.high < c1.low:
-            candidate = FVG(
-                direction="Bearish",
-                top=c1.low,
-                bottom=c3.high,
-                c1=c1,
-                c2=c2,
-                c3=c3,
-                formed_at=c3.timestamp,
-                timeframe="4h",
-            )
-
+        candidate = _three_candle_fvg(c1, c2, c3, timeframe="4h")
         if candidate is None:
             continue
 
         # Check invalidation across subsequent candles (from index i + 3 onwards)
-        is_invalidated = False
-        for k in range(i + 3, len(closed_candles)):
-            sub_c = closed_candles[k]
-            if candidate.direction == "Bullish":
-                breach = sub_c.close if use_close_invalidation else sub_c.low
-                if breach < candidate.bottom:
-                    is_invalidated = True
-                    break
-            else:
-                breach = sub_c.close if use_close_invalidation else sub_c.high
-                if breach > candidate.top:
-                    is_invalidated = True
-                    break
-
-        if not is_invalidated:
-            valid_fvgs.append(candidate)
+        if _is_fvg_invalidated(
+            candidate, closed_candles[i + 3:], use_close_invalidation,
+        ):
+            continue
+        valid_fvgs.append(candidate)
 
     # Sort newest first
     valid_fvgs.sort(key=lambda f: f.formed_at, reverse=True)
@@ -333,41 +328,17 @@ class HTFFVGCache:
         active = list(self.active_fvgs.get(key, []))
 
         # 2. Invalidation Step: Evaluate existing active FVGs against new delta candles + current price
-        surviving_fvgs: List[FVG] = []
-        for fvg in active:
-            is_invalidated = False
-
-            # Check against each new delta candle
-            for c in new_closed_candles:
-                if fvg.direction == "Bullish":
-                    breach = c.close if use_close_invalidation else c.low
-                    if breach < fvg.bottom:
-                        is_invalidated = True
-                        break
-                else:
-                    breach = c.close if use_close_invalidation else c.high
-                    if breach > fvg.top:
-                        is_invalidated = True
-                        break
-
-            # Also check live price against boundary
-            if not is_invalidated and current_price > 0:
-                if fvg.direction == "Bullish" and current_price < fvg.bottom:
-                    is_invalidated = True
-                elif fvg.direction == "Bearish" and current_price > fvg.top:
-                    is_invalidated = True
-
-            if not is_invalidated:
-                surviving_fvgs.append(fvg)
-            else:
-                logger.info(
-                    "[HTF Cache Invalidation] %s: 4H %s FVG [%.2f - %.2f] formed %s invalidated by price breach.",
-                    symbol,
-                    fvg.direction,
-                    fvg.bottom,
-                    fvg.top,
-                    fvg.formed_time_ist,
-                )
+        surviving_fvgs = [fvg for fvg in active if not _is_fvg_invalidated(fvg, new_closed_candles, use_close_invalidation, current_price)]
+        invalidated_fvgs = [fvg for fvg in active if _is_fvg_invalidated(fvg, new_closed_candles, use_close_invalidation, current_price)]
+        for fvg in invalidated_fvgs:
+            logger.info(
+                "[HTF Cache Invalidation] %s: 4H %s FVG [%.2f - %.2f] formed %s invalidated by price breach.",
+                symbol,
+                fvg.direction,
+                fvg.bottom,
+                fvg.top,
+                fvg.formed_time_ist,
+            )
 
         active = surviving_fvgs
 
@@ -378,70 +349,31 @@ class HTFFVGCache:
 
             # Scan any 3-candle window that includes at least one newly closed candle
             for i in range(len(combined) - 2):
-                c1 = combined[i]
-                c2 = combined[i + 1]
-                c3 = combined[i + 2]
+                c1, c2, c3 = combined[i], combined[i + 1], combined[i + 2]
 
                 # Only evaluate if c3 is a newly closed candle
                 if c3.timestamp <= last_ts:
                     continue
 
-                new_candidate: Optional[FVG] = None
-                if c3.low > c1.high:
-                    new_candidate = FVG(
-                        direction="Bullish",
-                        top=c3.low,
-                        bottom=c1.high,
-                        c1=c1,
-                        c2=c2,
-                        c3=c3,
-                        formed_at=c3.timestamp,
-                        timeframe="4h",
-                    )
-                elif c3.high < c1.low:
-                    new_candidate = FVG(
-                        direction="Bearish",
-                        top=c1.low,
-                        bottom=c3.high,
-                        c1=c1,
-                        c2=c2,
-                        c3=c3,
-                        formed_at=c3.timestamp,
-                        timeframe="4h",
-                    )
+                new_candidate = _three_candle_fvg(c1, c2, c3, timeframe="4h")
+                if new_candidate is None:
+                    continue
 
-                if new_candidate is not None:
-                    # Check if the new FVG was already invalidated by subsequent candles in combined or live price
-                    cand_invalidated = False
-                    for rem_idx in range(i + 3, len(combined)):
-                        sub_c = combined[rem_idx]
-                        if new_candidate.direction == "Bullish":
-                            b = sub_c.close if use_close_invalidation else sub_c.low
-                            if b < new_candidate.bottom:
-                                cand_invalidated = True
-                                break
-                        else:
-                            b = sub_c.close if use_close_invalidation else sub_c.high
-                            if b > new_candidate.top:
-                                cand_invalidated = True
-                                break
+                # Skip if the new FVG was already invalidated by subsequent candles in combined or live price
+                if _is_fvg_invalidated(
+                    new_candidate, combined[i + 3:], use_close_invalidation, current_price,
+                ):
+                    continue
 
-                    if not cand_invalidated and current_price > 0:
-                        if new_candidate.direction == "Bullish" and current_price < new_candidate.bottom:
-                            cand_invalidated = True
-                        elif new_candidate.direction == "Bearish" and current_price > new_candidate.top:
-                            cand_invalidated = True
-
-                    if not cand_invalidated:
-                        active.insert(0, new_candidate)
-                        logger.info(
-                            "[HTF Cache New FVG] %s: Detected new 4H %s FVG [%.2f - %.2f] formed %s",
-                            symbol,
-                            new_candidate.direction,
-                            new_candidate.bottom,
-                            new_candidate.top,
-                            new_candidate.formed_time_ist,
-                        )
+                active.insert(0, new_candidate)
+                logger.info(
+                    "[HTF Cache New FVG] %s: Detected new 4H %s FVG [%.2f - %.2f] formed %s",
+                    symbol,
+                    new_candidate.direction,
+                    new_candidate.bottom,
+                    new_candidate.top,
+                    new_candidate.formed_time_ist,
+                )
 
             # Update cache bookkeeping
             self.last_processed_candle_ts[key] = new_closed_candles[-1].timestamp
@@ -1093,39 +1025,16 @@ def find_unmitigated_ltf_fvgs(
     unmitigated: List[FVG] = []
 
     for i in range(len(closed_ltf) - 2):
-        c1 = closed_ltf[i]
-        c2 = closed_ltf[i + 1]
-        c3 = closed_ltf[i + 2]
+        c1, c2, c3 = closed_ltf[i], closed_ltf[i + 1], closed_ltf[i + 2]
 
         c3_close_ts = c3.timestamp + duration_ms
         # Must be formed strictly at or after the 4H anchor first touch timestamp
         if c3_close_ts < after_timestamp:
             continue
 
-        cand: Optional[FVG] = None
-        if direction == "Bullish" and c3.low > c1.high:
-            cand = FVG(
-                direction="Bullish",
-                top=c3.low,
-                bottom=c1.high,
-                c1=c1,
-                c2=c2,
-                c3=c3,
-                formed_at=c3.timestamp,
-                timeframe=ltf_timeframe,
-            )
-        elif direction == "Bearish" and c3.high < c1.low:
-            cand = FVG(
-                direction="Bearish",
-                top=c1.low,
-                bottom=c3.high,
-                c1=c1,
-                c2=c2,
-                c3=c3,
-                formed_at=c3.timestamp,
-                timeframe=ltf_timeframe,
-            )
-
+        cand = _three_candle_fvg(c1, c2, c3, timeframe=ltf_timeframe)
+        if cand is not None and cand.direction != direction:
+            cand = None  # geometry implies the opposite side of the requested direction
         if cand is None:
             continue
 
@@ -1324,6 +1233,3 @@ async def get_extreme_setup_for_symbol(
         setup.tp_1r, setup.tp_2r, setup.tp_3r, setup.risk_pct
     )
     return setup
-
-# Phase 1 model preserved in models.py; strategy FVG (dataclass with c1/c2/c3) is defined above.
-# No shadowing import at module bottom.

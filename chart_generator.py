@@ -8,6 +8,10 @@ import io
 import os
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+
+# Canonical timeframe table shared app-wide (defined in candle_store)
+from candle_store import TIMEFRAME_MS
+
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive headless backend
 import matplotlib.pyplot as plt
@@ -34,17 +38,6 @@ LTF_FVG_COLOR = "#d97706"  # Amber for LTF FVG
 
 TARGET_GREEN_BOX = "#089981"
 STOP_RED_BOX = "#f23645"
-
-TIMEFRAME_MS = {
-    "1m": 60 * 1000,
-    "3m": 3 * 60 * 1000,
-    "5m": 5 * 60 * 1000,
-    "15m": 15 * 60 * 1000,
-    "30m": 30 * 60 * 1000,
-    "1h": 60 * 60 * 1000,
-    "4h": 4 * 3600 * 1000,
-    "1d": 24 * 3600 * 1000,
-}
 
 
 def get_candle_duration_ms(timeframe: Optional[str], default_tf: str = "5m") -> int:
