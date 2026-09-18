@@ -124,6 +124,21 @@ def filter_closed_candles(
     return [c for c in candles if (c.timestamp + duration_ms) <= now_ms]
 
 
+async def get_last_n_candles(
+    symbol: str,
+    timeframe: str,
+    n: int = 50,
+    client: Optional[Any] = None,
+) -> List[Candle]:
+    """Fetches finished candles (drops the in-progress bar), same semantics as the former strategy.py helper."""
+    cli = client or market_data_provider
+    raw = await cli.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n + 1)
+    if not raw:
+        return []
+    finished_raw = raw[:-1] if len(raw) > 1 else raw
+    return [Candle.from_dict(c) for c in finished_raw]
+
+
 def compute_all_active_4h_fvgs(
     candles_4h: List[Candle],
     current_time_ms: Optional[int] = None,

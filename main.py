@@ -1,10 +1,6 @@
 """
-FastAPI application for Fair Value Gap (FVG) crypto day-trading screener.
-Features 2-Stage Strategy:
-1. 4H Active FVG Cache (with invalidation) + "ANY_VALID" vs "MOST_RECENT" selection modes.
-2. New LTF FVG Formation (1m, 5m, 15m) -> Alert 1: Setup Formed (Pending Retrace).
-3. Price Retrace into LTF FVG -> Alert 2: Trade Activated with 1R, 1.5R, 2R, 3R TP targets.
-4. Interactive real-time Web Dashboard in IST & Historical Backtesting.
+FastAPI application for the Extreme LTF Fair Value Gap (FVG) crypto screener.
+Runs the Strategy 2 daemon, dashboard, Telegram alerts, and extreme backtests.
 """
 
 import asyncio
@@ -53,10 +49,8 @@ class DashboardWSManager:
 dashboard_ws_manager = DashboardWSManager()
 
 from hyperliquid_client import hyperliquid_client
-import strategy
-from strategy import SetupResult, run_screener, get_last_n_candles, USE_CLOSE_BASED_INVALIDATION, MAX_HTF_RETRACE_CANDLES, SESSION_FILTER_ENABLED
-from telegram_client import broadcast_setups_stateful, broadcast_trade_updates, send_telegram_alert
-from trade_tracker import trade_tracker
+from strategy_extreme_fvg import get_last_n_candles
+from telegram_client import send_telegram_alert
 from redis_client import redis_client
 from market_data_provider import market_data_provider, get_market_data_provider, close_all_providers
 
@@ -79,14 +73,8 @@ logger = logging.getLogger("fvg-screener")
 # ==============================================================================
 # CONSTANTS & CONFIG
 # ==============================================================================
-DEFAULT_LTF_TIMEFRAME = os.getenv("LTF_TIMEFRAME", "5m")
-DEFAULT_HTF_MODE = os.getenv("HTF_SELECTION_MODE", "ANY_VALID")
-SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
-TOP_N_ALERTS = int(os.getenv("TOP_N_ALERTS", "5"))
 COINS_WHITELIST = os.getenv("COINS_WHITELIST", "BTC,ETH,SOL").strip()
 
-# Global state & Strategy Enablement
-ENABLE_STRATEGY_1 = os.getenv("ENABLE_STRATEGY_1", os.getenv("STRATEGY_1_ENABLED", "false")).strip().lower() in ("true", "1", "yes")
 ENABLE_STRATEGY_2 = os.getenv("ENABLE_STRATEGY_2", os.getenv("STRATEGY_2_ENABLED", "true")).strip().lower() in ("true", "1", "yes")
 EXTREME_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTREME_SCAN_INTERVAL_SECONDS", "30"))
 EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
@@ -103,18 +91,9 @@ EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "ALL").strip()
 from session_filter import SessionFilterConfig
 
 state: Dict[str, Any] = {
-    "strategy_1_enabled": ENABLE_STRATEGY_1,
     "strategy_2_enabled": ENABLE_STRATEGY_2,
-    "is_running": ENABLE_STRATEGY_1,
-    "scan_interval_minutes": SCAN_INTERVAL_MINUTES,
-    "top_n_alerts": TOP_N_ALERTS,
+    "is_running": ENABLE_STRATEGY_2,
     "coins_whitelist": COINS_WHITELIST,
-    "ltf_timeframe": DEFAULT_LTF_TIMEFRAME,
-    "htf_mode": DEFAULT_HTF_MODE,
-    "use_close_invalidation": strategy.USE_CLOSE_BASED_INVALIDATION,
-    "max_htf_retrace_candles": strategy.MAX_HTF_RETRACE_CANDLES,
-    "session_filter_enabled": strategy.SESSION_FILTER_ENABLED,
-    "single_position": trade_tracker.single_active_position,
     "universe_count": 0,
     "last_scan_time": None,
     "last_scan_time_ist": None,
@@ -125,7 +104,6 @@ state: Dict[str, Any] = {
     "total_scans_completed": 0,
     "background_task": None,
     "monitor_task": None,
-    # Extreme Strategy Daemon State
     "extreme_is_running": ENABLE_STRATEGY_2,
     "extreme_interval_seconds": EXTREME_SCAN_INTERVAL_SECONDS,
     "extreme_ltf": EXTREME_LTF_TIMEFRAME,
@@ -152,144 +130,6 @@ state: Dict[str, Any] = {
 
 # ==============================================================================
 # BACKGROUND SCAN & TRADE MONITOR LOOPS
-# ==============================================================================
-async def execute_screener_cycle(
-    ltf: Optional[str] = None,
-    htf_mode: Optional[str] = None,
-    use_close_invalidation: Optional[bool] = None,
-    max_htf_retrace_candles: Optional[int] = None,
-    session_filter_enabled: Optional[bool] = None,
-) -> List[SetupResult]:
-    """Execute a single screener cycle, dispatch alerts with charts, and monitor open trades."""
-    start_time_utc = datetime.now(timezone.utc)
-    start_time_ist = datetime.now(IST)
-    ltf_to_use = ltf or state.get("ltf_timeframe", DEFAULT_LTF_TIMEFRAME)
-    htf_mode_to_use = htf_mode or state.get("htf_mode", DEFAULT_HTF_MODE)
-    close_inval = state.get("use_close_invalidation", False) if use_close_invalidation is None else use_close_invalidation
-    retrace_win = state.get("max_htf_retrace_candles", 18) if max_htf_retrace_candles is None else max_htf_retrace_candles
-    sess_enabled = state.get("session_filter_enabled", False) if session_filter_enabled is None else session_filter_enabled
-
-    logger.info(
-        "--- Starting 2-Stage FVG Screener Cycle [%s IST | LTF=%s | 4H Mode=%s | CloseInval=%s | RetraceWin=%s | SessionFilter=%s] ---",
-        start_time_ist.strftime("%Y-%m-%d %I:%M:%S %p"),
-        ltf_to_use,
-        htf_mode_to_use,
-        close_inval,
-        retrace_win,
-        sess_enabled,
-    )
-
-    try:
-        universe = await market_data_provider.get_universe_coins()
-        whitelist_raw = os.getenv("COINS_WHITELIST", state.get("coins_whitelist", COINS_WHITELIST)).strip()
-        if whitelist_raw and whitelist_raw.upper() != "ALL":
-            allowed = {c.strip().upper() for c in whitelist_raw.split(",") if c.strip()}
-            active_count = len([c for c in universe if c.upper() in allowed])
-        else:
-            active_count = len(universe)
-
-        state["universe_count"] = active_count
-        state["coins_whitelist"] = whitelist_raw
-        state["ltf_timeframe"] = ltf_to_use
-        state["htf_mode"] = htf_mode_to_use
-        state["use_close_invalidation"] = close_inval
-        state["max_htf_retrace_candles"] = retrace_win
-        state["session_filter_enabled"] = sess_enabled
-
-        all_mids = await market_data_provider.get_all_mids()
-
-        # 1. Check open active trades for TP/SL hits
-        tp_sl_updates = trade_tracker.check_open_trades(all_mids)
-        if tp_sl_updates:
-            logger.info("Broadcasting %d trade TP/SL status updates to Telegram...", len(tp_sl_updates))
-            await broadcast_trade_updates(tp_sl_updates)
-
-        # 2. Run Screener for new setups
-        top_setups = await run_screener(
-            top_n=TOP_N_ALERTS,
-            ltf_timeframe=ltf_to_use,
-            htf_mode=htf_mode_to_use,
-            use_close_invalidation=close_inval,
-            max_htf_retrace_candles=retrace_win,
-            session_filter_enabled=sess_enabled,
-        )
-
-        activated_setups = [s for s in top_setups if s.stage == "ACTIVATED"]
-        pending_setups = [s for s in top_setups if s.stage == "PENDING_RETRACE"]
-
-        state["last_scan_time"] = start_time_utc.isoformat()
-        state["last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
-        state["last_scan_results_count"] = len(top_setups)
-        state["activated_count"] = len(activated_setups)
-        state["pending_count"] = len(pending_setups)
-        state["total_scans_completed"] += 1
-        state["last_scan_setups"] = [s.to_dict() for s in top_setups]
-
-        # 3. Fetch candle data and dispatch stateful alerts (with TradingView charts)
-        if top_setups:
-            candles_map = {}
-            for s in top_setups:
-                try:
-                    c_list = await get_last_n_candles(symbol=s.symbol, timeframe=ltf_to_use, n=50)
-                    candles_map[s.symbol] = c_list
-                except Exception as exc:
-                    logger.warning("Failed to fetch LTF candles for chart %s: %s", s.symbol, exc)
-
-            sent_count = await broadcast_setups_stateful(top_setups, candles_map=candles_map)
-            logger.info("Telegram broadcast finished (%d new setup messages sent).", sent_count)
-        else:
-            logger.info("Scan completed: No qualified 4H+LTF FVG setups found.")
-
-        return top_setups
-    except Exception as exc:
-        logger.error("Unexpected error during screener cycle: %s", exc, exc_info=True)
-        return []
-
-
-async def trade_monitor_worker():
-    """Real-time loop monitoring active trades for TP/SL hits (5s interval, served from WS/memory)."""
-    logger.info("Real-time trade TP/SL monitor started (5s interval).")
-    while state["is_running"]:
-        try:
-            await asyncio.sleep(5)
-            if not state["is_running"]:
-                break
-            provider = get_market_data_provider(state.get("data_provider"))
-            all_mids = await provider.get_all_mids()
-            if all_mids:
-                updates = trade_tracker.check_open_trades(all_mids)
-                if updates:
-                    logger.info("Real-time monitor detected %d trade updates. Broadcasting...", len(updates))
-                    await broadcast_trade_updates(updates)
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.debug("Error in trade monitor worker: %s", exc)
-
-
-async def screener_background_worker():
-    """Continuous background loop running the screener every SCAN_INTERVAL_MINUTES."""
-    logger.info("Background screener worker started (Interval: %d minutes).", SCAN_INTERVAL_MINUTES)
-    state["is_running"] = True
-
-    await execute_screener_cycle()
-
-    while state["is_running"]:
-        try:
-            sleep_duration_seconds = SCAN_INTERVAL_MINUTES * 60
-            await asyncio.sleep(sleep_duration_seconds)
-
-            if state["is_running"]:
-                await execute_screener_cycle()
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.error("Error in background worker loop: %s. Retrying in 60s...", exc)
-            await asyncio.sleep(60)
-
-
-# ==============================================================================
-# EXTREME LTF BACKGROUND SCREENER DAEMON (STEP 6)
 # ==============================================================================
 async def send_extreme_telegram_alert(
     message: str,
@@ -790,23 +630,7 @@ async def lifespan(app: FastAPI):
     except Exception as ws_err:
         logger.warning("Could not start market data WebSocket stream: %s. Using REST fallback.", ws_err)
 
-    # Strategy 1 (Standard 4H+LTF) Lifecycle
-    if ENABLE_STRATEGY_1:
-        state["is_running"] = True
-        state["strategy_1_enabled"] = True
-        worker_task = asyncio.create_task(screener_background_worker())
-        monitor_task = asyncio.create_task(trade_monitor_worker())
-        state["background_task"] = worker_task
-        state["monitor_task"] = monitor_task
-        logger.info("Strategy 1 (2-Stage Standard) background daemon started.")
-    else:
-        state["is_running"] = False
-        state["strategy_1_enabled"] = False
-        state["background_task"] = None
-        state["monitor_task"] = None
-        logger.info("Strategy 1 (2-Stage Standard) is DISABLED via config (ENABLE_STRATEGY_1=false).")
-
-    # Strategy 2 (Extreme LTF) Lifecycle
+    # Extreme LTF daemon
     if ENABLE_STRATEGY_2:
         state["extreme_is_running"] = True
         state["strategy_2_enabled"] = True
@@ -823,10 +647,6 @@ async def lifespan(app: FastAPI):
 
     state["is_running"] = False
     state["extreme_is_running"] = False
-    if state.get("background_task"):
-        state["background_task"].cancel()
-    if state.get("monitor_task"):
-        state["monitor_task"].cancel()
     if state.get("extreme_background_task"):
         state["extreme_background_task"].cancel()
 
@@ -847,7 +667,7 @@ os.makedirs(STATIC_DIR / "charts", exist_ok=True)
 # ==============================================================================
 app = FastAPI(
     title="Crypto Fair Value Gap (FVG) Screener",
-    description="2-Stage 4H + 1m/5m/15m FVG Screener & Backtester for Hyperliquid perps with Telegram alerts & Web Dashboard in IST.",
+    description="Extreme LTF FVG screener, live ledger, Telegram alerts, and web dashboard.",
     version="2.3.0",
     lifespan=lifespan,
 )
@@ -887,18 +707,9 @@ async def dashboard():
 @app.get("/api/health", summary="API Health Check")
 async def health():
     return {
-        "status": "healthy" if (state.get("is_running") or state.get("extreme_is_running")) else "stopped",
-        "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
+        "status": "healthy" if state.get("extreme_is_running") else "stopped",
         "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "timezone": "IST (UTC+5:30)",
-        "scan_interval_minutes": SCAN_INTERVAL_MINUTES,
-        "top_n_alerts": TOP_N_ALERTS,
-        "ltf_timeframe": state.get("ltf_timeframe", DEFAULT_LTF_TIMEFRAME),
-        "htf_mode": state.get("htf_mode", DEFAULT_HTF_MODE),
-        "use_close_invalidation": state.get("use_close_invalidation", False),
-        "max_htf_retrace_candles": state.get("max_htf_retrace_candles", 18),
-        "session_filter_enabled": state.get("session_filter_enabled", False),
-        "single_position": trade_tracker.single_active_position,
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
         "universe_count": state["universe_count"],
         "total_scans_completed": state["total_scans_completed"],
@@ -913,19 +724,11 @@ async def health():
 @app.get("/api/status", summary="Screener Status and Live Setups")
 async def get_status():
     return {
-        "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
         "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
-        "is_running": state["is_running"],
+        "is_running": state["extreme_is_running"],
         "timezone": "IST",
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
-        "ltf_timeframe": state.get("ltf_timeframe", DEFAULT_LTF_TIMEFRAME),
-        "htf_mode": state.get("htf_mode", DEFAULT_HTF_MODE),
-        "use_close_invalidation": state.get("use_close_invalidation", False),
-        "max_htf_retrace_candles": state.get("max_htf_retrace_candles", 18),
-        "session_filter_enabled": state.get("session_filter_enabled", False),
-        "single_position": trade_tracker.single_active_position,
         "universe_count": state["universe_count"],
-        "scan_interval_minutes": SCAN_INTERVAL_MINUTES,
         "total_scans_completed": state["total_scans_completed"],
         "last_scan_time_ist": state["last_scan_time_ist"],
         "last_scan_results_count": state["last_scan_results_count"],
@@ -938,49 +741,19 @@ async def get_status():
 @app.get("/api/config", summary="Get Current Strategy Runtime Config")
 @app.post("/api/config", summary="Update Strategy Runtime Config")
 async def config_endpoint(
-    enable_strategy_1: Optional[bool] = Query(default=None),
     enable_strategy_2: Optional[bool] = Query(default=None),
-    ltf_timeframe: Optional[str] = Query(default=None),
-    htf_mode: Optional[str] = Query(default=None),
-    use_close_invalidation: Optional[bool] = Query(default=None),
-    max_htf_retrace_candles: Optional[int] = Query(default=None),
-    session_filter_enabled: Optional[bool] = Query(default=None),
-    single_position: Optional[bool] = Query(default=None),
     coins_whitelist: Optional[str] = Query(default=None),
 ):
     """Dynamically get or update runtime screener strategy parameters."""
-    if enable_strategy_1 is not None:
-        state["strategy_1_enabled"] = bool(enable_strategy_1)
-        state["is_running"] = bool(enable_strategy_1)
-        if state["is_running"] and (state.get("background_task") is None or state["background_task"].done()):
-            state["background_task"] = asyncio.create_task(screener_background_worker())
-            state["monitor_task"] = asyncio.create_task(trade_monitor_worker())
-        elif not state["is_running"]:
-            if state.get("background_task"):
-                state["background_task"].cancel()
-            if state.get("monitor_task"):
-                state["monitor_task"].cancel()
     if enable_strategy_2 is not None:
         state["strategy_2_enabled"] = bool(enable_strategy_2)
         state["extreme_is_running"] = bool(enable_strategy_2)
+        state["is_running"] = bool(enable_strategy_2)
         if state["extreme_is_running"] and (state.get("extreme_background_task") is None or state["extreme_background_task"].done()):
             state["extreme_background_task"] = asyncio.create_task(extreme_screener_background_worker())
         elif not state["extreme_is_running"]:
             if state.get("extreme_background_task"):
                 state["extreme_background_task"].cancel()
-    if ltf_timeframe is not None and ltf_timeframe in ["1m", "5m", "15m", "1h"]:
-        state["ltf_timeframe"] = ltf_timeframe
-    if htf_mode is not None and htf_mode in ["ANY_VALID", "MOST_RECENT"]:
-        state["htf_mode"] = htf_mode
-    if use_close_invalidation is not None:
-        state["use_close_invalidation"] = bool(use_close_invalidation)
-    if max_htf_retrace_candles is not None:
-        state["max_htf_retrace_candles"] = max(1, min(100, int(max_htf_retrace_candles)))
-    if session_filter_enabled is not None:
-        state["session_filter_enabled"] = bool(session_filter_enabled)
-    if single_position is not None:
-        trade_tracker.single_active_position = bool(single_position)
-        state["single_position"] = trade_tracker.single_active_position
     if coins_whitelist is not None:
         state["coins_whitelist"] = coins_whitelist.strip()
 
@@ -988,286 +761,56 @@ async def config_endpoint(
         content={
             "status": "success",
             "config": {
-                "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
                 "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
-                "ltf_timeframe": state.get("ltf_timeframe", DEFAULT_LTF_TIMEFRAME),
-                "htf_mode": state.get("htf_mode", DEFAULT_HTF_MODE),
-                "use_close_invalidation": state.get("use_close_invalidation", False),
-                "max_htf_retrace_candles": state.get("max_htf_retrace_candles", 18),
-                "session_filter_enabled": state.get("session_filter_enabled", False),
-                "single_position": trade_tracker.single_active_position,
                 "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
             },
         }
     )
 
 
-@app.post("/scan", summary="Trigger Manual On-Demand Scan")
-@app.get("/scan", summary="Trigger Manual On-Demand Scan (GET)")
-@app.post("/api/scan", summary="Trigger Manual Scan via API")
-async def trigger_scan(
-    top_n: Optional[int] = Query(default=TOP_N_ALERTS, ge=1, le=50),
-    ltf: str = Query(default="5m", pattern="^(1m|5m|15m|1h)$", description="Lower timeframe to scan (1m, 5m, 15m)"),
-    htf_mode: str = Query(default="ANY_VALID", pattern="^(ANY_VALID|MOST_RECENT)$", description="4H FVG Selection Mode"),
-    use_close_invalidation: Optional[bool] = Query(default=None, description="Close-based vs Wick-based Invalidation"),
-    max_htf_retrace_candles: Optional[int] = Query(default=None, description="4H Retrace Lookback Window"),
-    session_filter_enabled: Optional[bool] = Query(default=None, description="Session Filter Enabled"),
-    send_alert: bool = Query(default=True, description="Whether to broadcast Telegram alert"),
-):
-    """Manually triggers an immediate 2-stage screener scan."""
-    close_inval = state.get("use_close_invalidation", False) if use_close_invalidation is None else use_close_invalidation
-    retrace_win = state.get("max_htf_retrace_candles", 18) if max_htf_retrace_candles is None else max_htf_retrace_candles
-    sess_enabled = state.get("session_filter_enabled", False) if session_filter_enabled is None else session_filter_enabled
-
-    logger.info(
-        "Manual scan triggered (top_n=%d, LTF=%s, 4H Mode=%s, CloseInval=%s, RetraceWin=%s, SessionFilter=%s, send_alert=%s)",
-        top_n,
-        ltf,
-        htf_mode,
-        close_inval,
-        retrace_win,
-        sess_enabled,
-        send_alert,
-    )
-    top_setups = await run_screener(
-        top_n=top_n,
-        ltf_timeframe=ltf,
-        htf_mode=htf_mode,
-        use_close_invalidation=close_inval,
-        max_htf_retrace_candles=retrace_win,
-        session_filter_enabled=sess_enabled,
-    )
-
-    start_time_ist = datetime.now(IST)
-    state["ltf_timeframe"] = ltf
-    state["htf_mode"] = htf_mode
-    state["use_close_invalidation"] = close_inval
-    state["max_htf_retrace_candles"] = retrace_win
-    state["session_filter_enabled"] = sess_enabled
-    state["last_scan_time"] = datetime.now(timezone.utc).isoformat()
-    state["last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
-    state["last_scan_results_count"] = len(top_setups)
-    state["activated_count"] = len([s for s in top_setups if s.stage == "ACTIVATED"])
-    state["pending_count"] = len([s for s in top_setups if s.stage == "PENDING_RETRACE"])
-    state["last_scan_setups"] = [s.to_dict() for s in top_setups]
-
-    if send_alert and top_setups:
-        candles_map = {}
-        for s in top_setups:
-            try:
-                c_list = await get_last_n_candles(symbol=s.symbol, timeframe=ltf, n=50)
-                candles_map[s.symbol] = c_list
-            except Exception as exc:
-                logger.warning("Failed to fetch LTF candles for chart %s: %s", s.symbol, exc)
-        await broadcast_setups_stateful(top_setups, candles_map=candles_map)
-
-    return JSONResponse(
-        content={
-            "status": "success",
-            "ltf_timeframe": ltf,
-            "htf_mode": htf_mode,
-            "use_close_invalidation": close_inval,
-            "max_htf_retrace_candles": retrace_win,
-            "session_filter_enabled": sess_enabled,
-            "timestamp_ist": state["last_scan_time_ist"],
-            "count": len(top_setups),
-            "activated_count": state["activated_count"],
-            "pending_count": state["pending_count"],
-            "setups": state["last_scan_setups"],
-        }
-    )
-
-
-from fastapi.responses import HTMLResponse, JSONResponse, Response
-
-@app.get("/api/chart", summary="Dynamic TradingView Setup Chart")
-async def get_dynamic_chart(
-    symbol: str = Query(default="BTC"),
-    direction: str = Query(default="Bullish"),
-    ltf: str = Query(default="5m"),
-    stage: str = Query(default="ACTIVATED"),
-    entry: Optional[float] = Query(default=None),
-    sl: Optional[float] = Query(default=None),
-    htf_bottom: Optional[float] = Query(default=None),
-    htf_top: Optional[float] = Query(default=None),
-    ltf_bottom: Optional[float] = Query(default=None),
-    ltf_top: Optional[float] = Query(default=None),
-    fvg_formed_ts: Optional[int] = Query(default=None),
-    entry_ts: Optional[int] = Query(default=None),
-    timestamp: Optional[int] = Query(default=None, description="Anchor timestamp for historical backtest setup"),
-):
-    """Generates and serves a real-time or historical TradingView-style candlestick chart for an asset setup."""
-    from chart_generator import generate_setup_chart
-    from strategy import Candle, FVG, calculate_tp_levels, compute_fvg, get_last_n_candles
-    from hyperliquid_client import hyperliquid_client
-
-    clean_symbol = symbol.strip().upper()
-    try:
-        interval_ms_map = {
-            "1m": 60 * 1000,
-            "5m": 5 * 60 * 1000,
-            "15m": 15 * 60 * 1000,
-            "1h": 60 * 60 * 1000,
-            "4h": 4 * 60 * 60 * 1000,
-            "1d": 24 * 60 * 60 * 1000,
-        }
-        interval_ms = interval_ms_map.get(ltf, 5 * 60 * 1000)
-
-        effective_fvg_ts = fvg_formed_ts or timestamp
-        effective_entry_ts = entry_ts or timestamp
-        anchor_ts = effective_fvg_ts or effective_entry_ts
-
-        candles: List[Candle] = []
-        if anchor_ts and anchor_ts > 0:
-            # Historical backtest trade: fetch snapshot centered around the trade formation timestamp
-            start_ms = anchor_ts - (25 * interval_ms)
-            end_ms = anchor_ts + (35 * interval_ms)
-            raw_candles = await hyperliquid_client.get_candle_snapshot(clean_symbol, ltf, start_ms, end_ms)
-            if not raw_candles or len(raw_candles) < 5:
-                raw_candles = await hyperliquid_client.fetch_fallback_historical_klines(clean_symbol, ltf, start_ms, end_ms)
-
-            if raw_candles:
-                candles = [
-                    Candle(
-                        timestamp=int(c.get("t", 0)),
-                        open=float(c.get("o", 0)),
-                        high=float(c.get("h", 0)),
-                        low=float(c.get("l", 0)),
-                        close=float(c.get("c", 0)),
-                        volume=float(c.get("v", 0)),
-                    )
-                    for c in raw_candles
-                ]
-
-        # If live scan or fallback
-        if not candles or len(candles) < 3:
-            candles = await get_last_n_candles(symbol=clean_symbol, timeframe=ltf, n=50)
-
-        if not candles or len(candles) < 3:
-            # Resilient fallback: synthetic candles around entry/sl for offline testing or network outage
-            base_p = entry if (entry and entry > 0) else (sl if (sl and sl > 0) else 100.0)
-            now_ms = int(time.time() * 1000)
-            candles = [
-                Candle(now_ms - (i * interval_ms), base_p * 0.99, base_p * 1.01, base_p * 0.98, base_p, 10.0)
-                for i in range(10, 0, -1)
-            ]
-
-        curr_price = candles[-1].close
-        entry_price = entry if (entry and entry > 0) else curr_price
-
-        # Detect or reconstruct LTF FVG
-        ltf_fvg = None
-        if ltf_bottom is not None and ltf_top is not None:
-            ltf_fvg = FVG(
-                direction=direction,
-                top=max(ltf_bottom, ltf_top),
-                bottom=min(ltf_bottom, ltf_top),
-                c1=candles[0],
-                c2=candles[1],
-                c3=candles[2],
-                formed_at=effective_fvg_ts or candles[-1].timestamp,
-            )
-        else:
-            ltf_fvg = compute_fvg(candles, direction=direction)
-
-        # Detect or reconstruct 4H FVG
-        htf_fvg = None
-        if htf_bottom is not None and htf_top is not None:
-            htf_fvg = FVG(
-                direction=direction,
-                top=max(htf_bottom, htf_top),
-                bottom=min(htf_bottom, htf_top),
-                c1=candles[0],
-                c2=candles[1],
-                c3=candles[2],
-                formed_at=effective_fvg_ts or candles[-1].timestamp,
-            )
-        else:
-            candles_4h = await get_last_n_candles(symbol=clean_symbol, timeframe="4h", n=20)
-            htf_fvg = compute_fvg(candles_4h, direction=direction)
-
-        # Stop loss & TP levels
-        if sl is not None and sl > 0:
-            sl_price = sl
-        else:
-            if direction == "Bullish":
-                sl_price = min([c.low for c in candles[-5:]]) * 0.998
-            else:
-                sl_price = max([c.high for c in candles[-5:]]) * 1.002
-
-        tp_levels = calculate_tp_levels(direction=direction, entry_price=entry_price, sl_price=sl_price)
-
-        img_bytes = generate_setup_chart(
-            symbol=clean_symbol,
-            direction=direction,
-            candles_ltf=candles,
-            htf_fvg=htf_fvg,
-            ltf_fvg=ltf_fvg,
-            entry_price=entry_price,
-            sl_price=sl_price,
-            tp_levels=tp_levels,
-            stage=stage,
-            ltf_timeframe=ltf,
-            entry_time_ms=effective_entry_ts,
-            fvg_formed_time_ms=effective_fvg_ts,
-        )
-
-        return Response(content=img_bytes, media_type="image/png")
-    except Exception as exc:
-        logger.error("Error generating dynamic chart for %s: %s", clean_symbol, exc)
-        return Response(status_code=500, content=b"Error rendering chart.")
-
-
 @app.post("/api/test-telegram", summary="Test Telegram Alert Dispatch")
 async def test_telegram():
     from telegram_client import send_telegram_photo
-    from chart_generator import generate_setup_chart
-    from strategy import Candle, FVG, calculate_tp_levels, get_last_n_candles
+    from chart_generator import generate_extreme_setup_chart
+    from strategy_extreme_fvg import get_last_n_candles
 
     now_ist = datetime.now(IST).strftime("%d-%b-%Y %I:%M:%S %p IST")
-    
-    # Fetch REAL live market candles for BTC
     candles = await get_last_n_candles(symbol="BTC", timeframe="5m", n=50)
     if not candles:
         return JSONResponse(status_code=500, content={"status": "error", "message": "Failed to fetch live BTC candles"})
 
     curr = candles[-1].close
-    direction = "Bullish"
     entry = curr
     sl = min([c.low for c in candles[-10:]])
     if sl >= entry:
         sl = entry * 0.995
-    tp = calculate_tp_levels(direction, entry, sl)
+    risk = entry - sl
+    tp1, tp2, tp3 = entry + risk, entry + 2 * risk, entry + 3 * risk
 
-    # Reconstruct zones
-    htf_fvg = FVG("Bullish", top=curr * 1.004, bottom=curr * 0.996, c1=candles[-3], c2=candles[-2], c3=candles[-1], formed_at=candles[-1].timestamp)
-    ltf_fvg = FVG("Bullish", top=curr * 1.001, bottom=curr * 0.998, c1=candles[-3], c2=candles[-2], c3=candles[-1], formed_at=candles[-1].timestamp)
-
-    chart_bytes = generate_setup_chart(
+    chart_bytes = generate_extreme_setup_chart(
         symbol="BTC",
         direction="Bullish",
         candles_ltf=candles,
-        htf_fvg=htf_fvg,
-        ltf_fvg=ltf_fvg,
+        htf_fvg_bottom=curr * 0.996,
+        htf_fvg_top=curr * 1.004,
+        htf_first_touch_ist=None,
+        ltf_fvg_bottom=curr * 0.998,
+        ltf_fvg_top=curr * 1.001,
+        ltf_fvg_formed_ts=candles[-1].timestamp,
         entry_price=entry,
-        sl_price=sl,
-        tp_levels=tp,
-        stage="ACTIVATED",
+        stop_loss=sl,
+        tp_1r=tp1,
+        tp_2r=tp2,
+        tp_3r=tp3,
+        state="PENDING_RETRACE",
         ltf_timeframe="5m",
     )
 
     test_caption = (
-        "🚀 🟢 <b>BTC-PERP — TRADE ACTIVATED!</b>\n"
-        "<b>Direction:</b> Bullish (5m Retrace Entry)\n"
+        "🚀 🟢 <b>BTC-PERP — TEST ALERT</b>\n"
+        "<b>Direction:</b> Bullish (Extreme LTF)\n"
         f"<b>Entry Price:</b> ${entry:,.2f}\n"
-        f"<b>Stop Loss:</b> ≤ ${sl:,.2f} (Risk: {tp.sl_points:,.2f} pts / {tp.risk_pct:.2f}%)\n"
-        f"<b>4H FVG:</b> ${htf_fvg.bottom:,.2f} – ${htf_fvg.top:,.2f}\n"
-        f"<b>5m FVG:</b> ${ltf_fvg.bottom:,.2f} – ${ltf_fvg.top:,.2f}\n\n"
-        "<b>Take Profit Targets:</b>\n"
-        f"  🎯 <b>1.0R:</b> ${tp.r1:,.2f} (+{tp.r1_points:,.2f} pts)\n"
-        f"  🎯 <b>1.5R:</b> ${tp.r1_5:,.2f} (+{tp.r1_5_points:,.2f} pts)\n"
-        f"  🎯 <b>2.0R:</b> ${tp.r2:,.2f} (+{tp.r2_points:,.2f} pts)\n"
-        f"  🎯 <b>3.0R:</b> ${tp.r3:,.2f} (+{tp.r3_points:,.2f} pts)\n\n"
+        f"<b>Stop Loss:</b> ≤ ${sl:,.2f}\n"
         f"<i>Live real-market test alert at {now_ist}</i>"
     )
 
@@ -1279,74 +822,17 @@ async def test_telegram():
 
     if success:
         return {"status": "success", "message": "Test chart alert with real candles sent successfully to Telegram."}
-    else:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": "Failed to send alert. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env",
-            },
-        )
-
-
-@app.post("/api/backtest", summary="Run Historical Backtest")
-@app.get("/api/backtest", summary="Run Historical Backtest (GET)")
-async def backtest_endpoint(
-    symbol: str = Query(default="BTC", description="Coin symbol to backtest"),
-    days: int = Query(default=14, ge=1, le=180, description="Lookback days (1 to 180)"),
-    start_date: Optional[str] = Query(default=None, description="Start date in YYYY-MM-DD format (IST)"),
-    end_date: Optional[str] = Query(default=None, description="End date in YYYY-MM-DD format (IST)"),
-    target_rr: float = Query(default=2.0, ge=0.5, le=10.0, description="Risk-to-Reward ratio target"),
-    ltf: str = Query(default="5m", pattern="^(1m|5m|15m|1h)$", description="Lower timeframe for entry (1m, 5m, 15m)"),
-    htf_mode: str = Query(default="ANY_VALID", pattern="^(ANY_VALID|MOST_RECENT)$", description="4H FVG Selection Mode"),
-    single_position: bool = Query(default=True, description="Single active position mode (one trade at a time until exit)"),
-    use_close_invalidation: bool = Query(default=False, description="Whether 4H FVG invalidation requires candle close"),
-    max_htf_retrace_candles: int = Query(default=18, ge=1, le=100, description="4H Retrace Lookback Window in 4H candles"),
-    min_candle_gap: Optional[int] = Query(default=None, description="Custom candle gap cooldown between trades"),
-):
-    from backtest import run_historical_backtest
-
-    clean_symbol = symbol.strip().upper()
-    logger.info(
-        "Historical backtest triggered for %s (days=%d, start_date=%s, end_date=%s, target_rr=%.1f, LTF=%s, 4H Mode=%s, single_pos=%s, close_inval=%s, retrace_win=%d, gap=%s)",
-        clean_symbol,
-        days,
-        start_date,
-        end_date,
-        target_rr,
-        ltf,
-        htf_mode,
-        single_position,
-        use_close_invalidation,
-        max_htf_retrace_candles,
-        min_candle_gap,
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": "error",
+            "message": "Failed to send alert. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env",
+        },
     )
 
-    try:
-        provider = get_market_data_provider(state.get("data_provider"))
-        summary = await run_historical_backtest(
-            symbol=clean_symbol,
-            days=days,
-            start_date=start_date,
-            end_date=end_date,
-            target_rr=target_rr,
-            ltf_timeframe=ltf,
-            htf_mode=htf_mode,
-            single_position=single_position,
-            use_close_invalidation=use_close_invalidation,
-            max_htf_retrace_candles=max_htf_retrace_candles,
-            min_candle_gap=min_candle_gap,
-            client=provider,
-        )
-        return JSONResponse(content={"status": "success", "data": summary.to_dict()})
-    except Exception as exc:
-        logger.error("Error executing Strategy 1 backtest for %s (%s): %s", clean_symbol, ltf, exc)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": f"Backtest failed: {str(exc)}", "data": None}
-        )
 
-
+# ==============================================================================
+# EXTREME LTF STRATEGY ENDPOINTS
 # ==============================================================================
 # EXTREME LTF STRATEGY ENDPOINTS (STEP 5)
 # ==============================================================================
@@ -1620,7 +1106,6 @@ async def api_extreme_backtest(
 async def api_extreme_status():
     return JSONResponse(content={
         "status": "success",
-        "strategy_1_enabled": state.get("strategy_1_enabled", ENABLE_STRATEGY_1),
         "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "is_running": state.get("extreme_is_running", False),
         "interval_seconds": state.get("extreme_interval_seconds", EXTREME_SCAN_INTERVAL_SECONDS),
@@ -1800,7 +1285,7 @@ async def api_extreme_chart(
     exit_ts: Optional[int] = Query(default=None),
 ):
     from chart_generator import generate_extreme_setup_chart
-    from strategy import Candle
+    from strategy_extreme_fvg import Candle
     import time
 
     provider = get_market_data_provider(state.get("data_provider"))

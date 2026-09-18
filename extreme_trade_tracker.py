@@ -290,6 +290,30 @@ class ExtremeTradeTracker:
                 return trade
         return None
 
+    def _resolve_live_session_config(
+        self,
+        session_config: Optional[SessionFilterConfig],
+        session_filter: Optional[bool],
+        weekday_filter: Optional[bool],
+        entry_session_filter: Optional[bool],
+        entry_weekday_filter: Optional[bool],
+        sessions: Optional[str],
+        entry_sessions: Optional[str],
+    ) -> SessionFilterConfig:
+        """Resolve per-call session filters without changing from_legacy precedence."""
+        if session_config is not None:
+            return session_config
+        if any(x is not None for x in (session_filter, weekday_filter, entry_session_filter, entry_weekday_filter, sessions, entry_sessions)):
+            return SessionFilterConfig.from_legacy(
+                session_filter=session_filter if session_filter is not None else (self.session_config.fvg_sessions.strip().upper() != "ALL"),
+                weekday_filter=weekday_filter if weekday_filter is not None else self.session_config.fvg_weekdays_only,
+                entry_session_filter=entry_session_filter if entry_session_filter is not None else (self.session_config.entry_sessions.strip().upper() != "ALL"),
+                entry_weekday_filter=entry_weekday_filter if entry_weekday_filter is not None else self.session_config.entry_weekdays_only,
+                sessions=sessions or self.session_config.fvg_sessions,
+                entry_sessions=entry_sessions or self.session_config.entry_sessions,
+            )
+        return self.session_config
+
     def process_live_setups(
         self,
         setups: List[Dict[str, Any]],
@@ -314,19 +338,15 @@ class ExtremeTradeTracker:
         events = []
         now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
         now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-
-        if session_config is None:
-            if any(x is not None for x in (session_filter, weekday_filter, entry_session_filter, entry_weekday_filter, sessions, entry_sessions)):
-                session_config = SessionFilterConfig.from_legacy(
-                    session_filter=session_filter if session_filter is not None else (self.session_config.fvg_sessions.strip().upper() != "ALL"),
-                    weekday_filter=weekday_filter if weekday_filter is not None else self.session_config.fvg_weekdays_only,
-                    entry_session_filter=entry_session_filter if entry_session_filter is not None else (self.session_config.entry_sessions.strip().upper() != "ALL"),
-                    entry_weekday_filter=entry_weekday_filter if entry_weekday_filter is not None else self.session_config.entry_weekdays_only,
-                    sessions=sessions or self.session_config.fvg_sessions,
-                    entry_sessions=entry_sessions or self.session_config.entry_sessions,
-                )
-            else:
-                session_config = self.session_config
+        session_config = self._resolve_live_session_config(
+            session_config,
+            session_filter,
+            weekday_filter,
+            entry_session_filter,
+            entry_weekday_filter,
+            sessions,
+            entry_sessions,
+        )
 
         # 1. Ingest/Update setups from scanner
         seen_symbols = set()

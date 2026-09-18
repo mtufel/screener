@@ -6,16 +6,13 @@ The engine scans perpetual markets for multi-timeframe Fair Value Gaps (4H Highe
 
 ---
 
-## 📌 Dual Strategy Suite Overview
+## 📌 Strategy Overview
 
 For full technical and algorithmic specifications, see **[STRATEGIES.md](STRATEGIES.md)**.
 
-### 🏛️ Strategy 1: 2-Stage Standard Multi-Timeframe FVG
-* **Phase 1 (4H Macro Anchor)**: Checks if price is inside or recently retraced into an active 4H FVG zone. Supports `ANY_VALID`, `RECENT_FORMED`, and `TOUCH_WINDOW` modes with wick/close invalidation.
-* **Phase 2 (15m/5m Micro Confirmation)**: Identifies matching LTF FVG and ranks opportunities via composite scoring (Tightness + Center Proximity).
-* **Stop Loss Reference**: Extreme wick of the 3 candles forming the LTF FVG.
+Strategy 1 (2-stage standard FVG) has been removed. The product runs **Strategy 2 only**.
 
-### ⚡ Strategy 2: ⚡ Extreme LTF FVG Strategy
+### ⚡ Strategy 2: Extreme LTF FVG Strategy
 * **4H Touch Anchor**: Pinpoints the exact timestamp when price first touched an active 4H FVG post-close (`first_touch_timestamp`).
 * **Post-Touch LTF Discovery**: Scans LTF FVGs (15m) formed strictly post-touch with a minimum gap threshold ($\ge 0.05\%$).
 * **#1 Extreme Ranking**: Selects the deepest FVG closest to the 4H zone (Lowest for Longs, Highest for Shorts).
@@ -32,11 +29,9 @@ crypto-fvg-screener/
 ├── .env                        # Local environment variables
 ├── requirements.txt            # Python dependencies
 ├── hyperliquid_client.py       # Async Hyperliquid client (Token Bucket, 429 Cooldown)
-├── strategy.py                 # Strategy 1 (Standard 2-Stage FVG math & scoring)
-├── strategy_extreme_fvg.py     # Strategy 2 (Extreme LTF FVG engine & state machine)
-├── extreme_trade_tracker.py    # Strategy 2 Immutable Active Trade Ledger
-├── backtest.py                 # Strategy 1 backtester engine
-├── backtest_extreme_fvg.py     # Strategy 2 Extreme backtester engine
+├── strategy_extreme_fvg.py     # Extreme LTF FVG engine & state machine
+├── extreme_trade_tracker.py    # Immutable Active Trade Ledger
+├── backtest_extreme_fvg.py     # Extreme backtester engine
 ├── chart_generator.py          # High-contrast TradingView-style candlestick chart generator
 ├── telegram_client.py          # Telegram alert dispatcher & photo attachments
 ├── main.py                     # FastAPI app, dual background daemons & Web UI
