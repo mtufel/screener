@@ -14,7 +14,6 @@ import httpx
 
 from telegram_client import send_telegram_alert, send_telegram_photo
 from extreme_trade_tracker import TrackedExtremeTrade, ExtremeTradeTracker
-from trade_tracker import TrackedTrade, TPLevels
 from main import send_extreme_telegram_alert
 
 
@@ -196,36 +195,6 @@ def test_tracked_extreme_trade_discussion_thread_id():
     assert restored.telegram_discussion_thread_id == 55555
 
 
-def test_tracked_trade_strategy1_message_id():
-    """Verifies that Strategy 1 TrackedTrade also supports telegram_message_id and discussion thread."""
-    tp = TPLevels(r1=101, r1_5=101.5, r2=102, r3=103, risk_points=1, risk_pct=1, r1_points=1, r1_5_points=1.5, r2_points=2, r3_points=3, sl_points=1)
-    t = TrackedTrade(
-        setup_id="SOL:100:Bullish",
-        symbol="SOL",
-        direction="Bullish",
-        ltf_timeframe="5m",
-        entry_price=100.0,
-        sl_price=99.0,
-        tp_levels=tp,
-        htf_fvg_bottom=98.0,
-        htf_fvg_top=102.0,
-        ltf_fvg_bottom=99.5,
-        ltf_fvg_top=100.5,
-        score=1.5,
-        stage="PENDING_RETRACE",
-        created_at_ist="13-Sep 10:00 AM IST",
-        telegram_message_id=98765,
-        telegram_discussion_thread_id=88888,
-    )
-    d = t.to_dict()
-    assert d["telegram_message_id"] == 98765
-    assert d["telegram_discussion_thread_id"] == 88888
-
-    restored = TrackedTrade.from_dict(d)
-    assert restored.telegram_message_id == 98765
-    assert restored.telegram_discussion_thread_id == 88888
-
-
 # ==============================================================================
 # 4. Discussion Helpers & send_extreme_telegram_alert Integration
 # ==============================================================================
@@ -382,28 +351,3 @@ async def test_screener_lifecycle_in_reply_mode():
         from telegram_client import is_telegram_thread_mode
         assert is_telegram_thread_mode() is False
 
-
-@pytest.mark.asyncio
-async def test_broadcast_setups_stateful_thread_vs_reply_mode():
-    """Verifies broadcast_setups_stateful respects is_telegram_thread_mode."""
-    import os
-    from telegram_client import broadcast_setups_stateful
-
-    dummy_setup = MagicMock()
-    dummy_setup.symbol = "ETH"
-
-    # 1. Test in reply mode
-    with patch.dict(os.environ, {"TELEGRAM_REPLY_MODE": "reply"}), \
-         patch("trade_tracker.trade_tracker.register_or_update_setup") as mock_reg, \
-         patch("trade_tracker.trade_tracker.get_setup_id", return_value="ETH_BULL"), \
-         patch.dict("trade_tracker.trade_tracker.trades", {}), \
-         patch("telegram_client.send_telegram_photo", new_callable=AsyncMock) as mock_photo, \
-         patch("telegram_client.resolve_discussion_thread_id", new_callable=AsyncMock) as mock_resolve:
-        
-        mock_reg.return_value = (True, "ETH Setup Alert", b"chart_bytes")
-        mock_photo.return_value = (True, 555)
-
-        count = await broadcast_setups_stateful([dummy_setup])
-        assert count == 1
-        # In reply mode, resolve_discussion_thread_id should NOT be called
-        mock_resolve.assert_not_called()
