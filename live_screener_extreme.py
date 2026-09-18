@@ -192,13 +192,13 @@ class ExtremeLiveScanner:
 
         # Alert 2: Entry Triggered (Trade Active)
         elif curr_state == "TRADE_ACTIVE" and last_state != "TRADE_ACTIVE":
+            primary_tp = setup.tp_2r if self.completion_target == "2R" else setup.tp_1r
             msg = (
                 f"🚀 <b>[ENTRY FILLED] {setup.symbol} {side} IS NOW LIVE!</b>\n\n"
                 f"• <b>Filled At:</b> <code>${setup.entry_price:,.2f}</code>\n"
                 f"• <b>Time:</b> {setup.entry_time_ist}\n"
                 f"• <b>Stop Loss:</b> <code>${setup.stop_loss:,.2f}</code>\n"
-                f"• <b>Primary Target ({self.completion_target}):</b> "
-                f"${setup.tp_2r:,.2f if self.completion_target == '2R' else setup.tp_1r:,.2f}\n"
+                f"• <b>Primary Target ({self.completion_target}):</b> <code>${primary_tp:,.2f}</code>\n"
                 f"• <b>Status:</b> 🚀 IN POSITION (Monitoring TP/SL)"
             )
             print(f"\n🚀 [ALERT DISPATCHED] {setup.symbol} {side} ENTRY TRIGGERED! Trade is now ACTIVE.")
