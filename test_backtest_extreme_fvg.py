@@ -592,5 +592,5 @@ async def test_run_extreme_backtest_with_sessions_string_filtering():
 
 
 
-Co-Authored-By: Claude Code <noreply@anthropic.com>
-🤖 Generated with Claude Code
+# Co-Authored-By: Claude Code <noreply@anthropic.com>
+# 🤖 Generated with [Claude Code](https://claude.com/claude-code)
