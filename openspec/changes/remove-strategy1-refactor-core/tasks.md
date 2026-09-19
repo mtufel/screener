@@ -6,3 +6,4 @@
 - [x] 4. Delete `strategy.py`, `trade_tracker.py`, `backtest.py`, S1 tests
 - [x] 5. Extract tracker helpers without changing ledger behavior
 - [x] 6. `pytest -q` green
+- [x] 7. Add `test_integration_scenarios.py` (23 E2E pipeline scenarios) and tmp_path/Redis isolation in `conftest.py`

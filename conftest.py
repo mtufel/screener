@@ -12,18 +12,31 @@ Every test runs with the tracker pointed at a throwaway file and the HTF cache
 cleared; the real ledger path is restored automatically after each test.
 """
 
+from pathlib import Path
+
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_shared_singletons(monkeypatch):
+def _isolate_shared_singletons(monkeypatch, tmp_path):
     from extreme_trade_tracker import extreme_trade_tracker
     from strategy_extreme_fvg import htf_fvg_cache
 
     # Ledger writes from the global tracker land in a scratch file, never the real one.
     monkeypatch.setattr(
-        extreme_trade_tracker, "storage_path", "data/extreme_live_trades_test.json"
+        extreme_trade_tracker, "storage_path", tmp_path / "ledger_test.json"
     )
+
+    # The tracker also round-trips Redis on load/save; never let tests touch
+    # the real Upstash instance.
+    async def _tracker_no_load(*_args, **_kwargs):
+        return False
+
+    async def _tracker_no_save(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(extreme_trade_tracker, "load_async", _tracker_no_load)
+    monkeypatch.setattr(extreme_trade_tracker, "save_async", _tracker_no_save)
 
     # Fresh HTF cache per test: no cross-test FVG/anchor bleed via the singleton.
     htf_fvg_cache.invalidate_cache()
