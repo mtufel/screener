@@ -314,7 +314,7 @@ async def api_extreme_4h_fvgs(
         curr_px = lookup_mid(mids, sym, float(mids.get(raw_sym, 0.0)))
 
         try:
-            raw_4h = await provider.get_last_n_candles(symbol=raw_sym, timeframe="4h", n=200)
+            raw_4h = await provider.get_last_n_candles(symbol=sym, timeframe="4h", n=200)
             candles_4h = [Candle.from_dict(c) for c in raw_4h] if raw_4h else []
         except Exception as exc:
             logger.warning("[4h-fvgs] Failed to fetch 4H candles for %s: %s", sym, exc)
@@ -327,62 +327,66 @@ async def api_extreme_4h_fvgs(
 
         fvgs_out: List[Dict[str, Any]] = []
         anchor_formed_at: Optional[int] = None
-        if candles_4h:
-            try:
-                active_fvgs = await get_active_4h_fvgs_for_symbol(
-                    symbol=raw_sym,
-                    client=provider,
-                    use_close_invalidation=use_close,
-                    candles_4h=candles_4h,
-                )
-                anchor = get_most_recent_touched_4h_fvg(
+        try:
+            passed_candles = candles_4h if len(candles_4h) >= 3 else None
+            active_fvgs = await get_active_4h_fvgs_for_symbol(
+                symbol=sym,
+                client=provider,
+                use_close_invalidation=use_close,
+                candles_4h=passed_candles,
+            )
+            anchor = (
+                get_most_recent_touched_4h_fvg(
                     candles_4h=candles_4h,
                     active_fvgs=active_fvgs,
                     current_price=curr_px,
                 )
-                if anchor is not None:
-                    anchor_formed_at = anchor.fvg.formed_at
+                if candles_4h
+                else None
+            )
+            if anchor is not None:
+                anchor_formed_at = anchor.fvg.formed_at
 
-                fvgs_sorted = sorted(active_fvgs, key=lambda f: f.formed_at, reverse=True)
-                for fvg in fvgs_sorted:
-                    if curr_px > 0:
-                        if fvg.bottom <= curr_px <= fvg.top:
-                            distance_pct = 0.0  # price is inside the zone
-                        else:
-                            near_edge = fvg.bottom if curr_px >= fvg.bottom else fvg.top
-                            distance_pct = ((curr_px - near_edge) / curr_px) * 100.0
+            fvgs_sorted = sorted(active_fvgs, key=lambda f: f.formed_at, reverse=True)
+            for fvg in fvgs_sorted:
+                if curr_px > 0:
+                    if fvg.bottom <= curr_px <= fvg.top:
+                        distance_pct = 0.0  # price is inside the zone
                     else:
-                        distance_pct = None
+                        near_edge = fvg.bottom if curr_px >= fvg.bottom else fvg.top
+                        distance_pct = ((curr_px - near_edge) / curr_px) * 100.0
+                else:
+                    distance_pct = None
 
-                    first_touch = get_4h_fvg_first_touch_ts(candles_4h, fvg, current_price=curr_px)
-                    rec_touch = get_4h_fvg_most_recent_touch_ts(candles_4h, fvg, current_price=curr_px)
-                    first_touch_ts = first_touch[0] if first_touch else None
-                    rec_ts, is_inside = (rec_touch[0], rec_touch[1]) if rec_touch else (first_touch_ts, False)
+                first_touch = get_4h_fvg_first_touch_ts(candles_4h, fvg, current_price=curr_px) if candles_4h else None
+                rec_touch = get_4h_fvg_most_recent_touch_ts(candles_4h, fvg, current_price=curr_px) if candles_4h else None
+                first_touch_ts = first_touch[0] if first_touch else None
+                rec_ts, is_inside = (rec_touch[0], rec_touch[1]) if rec_touch else (first_touch_ts, False)
 
-                    def _ist(ts: Optional[int]) -> Optional[str]:
-                        return (
-                            datetime.fromtimestamp(ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
-                            if ts else None
-                        )
+                def _ist(ts: Optional[int]) -> Optional[str]:
+                    return (
+                        datetime.fromtimestamp(ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+                        if ts else None
+                    )
 
-                    fvgs_out.append({
-                        "direction": fvg.direction,
-                        "top": fvg.top,
-                        "bottom": fvg.bottom,
-                        "width": fvg.width,
-                        "gap_pct": round(fvg.gap_pct, 3),
-                        "formed_at": fvg.formed_at,
-                        "formed_time_ist": fvg.formed_time_ist,
-                        "first_touch_timestamp": first_touch_ts,
-                        "first_touch_time_ist": _ist(first_touch_ts),
-                        "most_recent_touch_timestamp": rec_ts,
-                        "most_recent_touch_time_ist": _ist(rec_ts) if rec_ts and not is_inside else ("Currently Inside (Active Now)" if is_inside else None),
-                        "is_currently_inside": is_inside,
-                        "distance_to_zone_pct": round(distance_pct, 3) if distance_pct is not None else None,
-                        "is_active_anchor": (anchor_formed_at is not None and fvg.formed_at == anchor_formed_at),
-                    })
-            except Exception as exc:
-                logger.warning("[4h-fvgs] FVG computation failed for %s: %s", sym, exc)
+                fvgs_out.append({
+                    "direction": fvg.direction,
+                    "top": fvg.top,
+                    "bottom": fvg.bottom,
+                    "width": fvg.width,
+                    "gap_pct": round(fvg.gap_pct, 3),
+                    "formed_at": fvg.formed_at,
+                    "formed_time_ist": fvg.formed_time_ist,
+                    "first_touch_timestamp": first_touch_ts,
+                    "first_touch_time_ist": _ist(first_touch_ts),
+                    "most_recent_touch_timestamp": rec_ts,
+                    "most_recent_touch_time_ist": _ist(rec_ts) if rec_ts and not is_inside else ("Currently Inside (Active Now)" if is_inside else None),
+                    "is_currently_inside": is_inside,
+                    "distance_to_zone_pct": round(distance_pct, 3) if distance_pct is not None else None,
+                    "is_active_anchor": (anchor_formed_at is not None and fvg.formed_at == anchor_formed_at),
+                })
+        except Exception as exc:
+            logger.warning("[4h-fvgs] FVG computation failed for %s: %s", sym, exc)
 
         symbols_out.append({
             "symbol": sym,

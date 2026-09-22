@@ -173,7 +173,23 @@ class CcxtProvider(BaseMarketDataProvider):
             return cached
 
         if self._store.is_rate_limited(self.name):
-            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown", self.name)
+            # Rate-limit cooldown active: consult the fallback on EVERY call while
+            # primary is cooling down, instead of serving empty mids (~57s of every
+            # 60s cooldown window). Cache fallback result for the remaining cooldown.
+            if self.fallback_provider:
+                logger.warning(
+                    "[ProviderFallback] %s rate limited -> Delegating get_all_mids to %s (cooldown active)",
+                    self.name,
+                    self.fallback_provider.name,
+                )
+                fb_mids = await self.fallback_provider.get_all_mids()
+                if fb_mids:
+                    self._store.set_cached_mids(
+                        self.name, fb_mids,
+                        ttl_seconds=self._store.rate_limit_remaining(self.name) or self.mids_ttl_seconds,
+                    )
+                    return fb_mids
+            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown (no fallback available)", self.name)
             return {}
 
         try:
@@ -238,13 +254,14 @@ class CcxtProvider(BaseMarketDataProvider):
 
         # 2. Rate-Limit Guard
         if self._store.is_rate_limited(self.name):
-            if cached:
+            if cached and len(cached) >= min(n, 50):
                 logger.warning("[CcxtProvider] [RATE LIMITED] Serving %d cached bars for %s %s", len(cached), symbol, timeframe)
                 return cached
             if self.fallback_provider:
                 logger.warning(
-                    "[ProviderFallback] %s rate limited -> Delegating %s %s to %s",
+                    "[ProviderFallback] %s rate limited with insufficient cache (%d bars) -> Delegating %s %s to %s",
                     self.name,
+                    len(cached) if cached else 0,
                     symbol,
                     timeframe,
                     self.fallback_provider.name,
@@ -253,6 +270,8 @@ class CcxtProvider(BaseMarketDataProvider):
                 if fb_candles:
                     self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
                     return fb_candles
+            if cached:
+                return cached
             return []
 
         ccxt_sym = self.resolve_symbol(symbol)
@@ -292,11 +311,11 @@ class CcxtProvider(BaseMarketDataProvider):
             else:
                 logger.warning("[CcxtProvider] Failed to fetch OHLCV for %s %s: %s", symbol, timeframe, exc)
 
-            if cached:
+            if cached and len(cached) >= min(n, 50):
                 return cached
             if self.fallback_provider:
                 logger.warning(
-                    "[ProviderFallback] %s fetch_ohlcv failed -> Delegating %s %s to %s",
+                    "[ProviderFallback] %s fetch_ohlcv failed with insufficient cache -> Delegating %s %s to %s",
                     self.name,
                     symbol,
                     timeframe,
@@ -307,7 +326,9 @@ class CcxtProvider(BaseMarketDataProvider):
                     self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
                     return fb_candles
 
-        return cached or []
+            return cached or []
+
+        return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
 
     async def get_historical_candles_range(
         self,

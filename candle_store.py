@@ -117,16 +117,21 @@ class CandleStore:
             return dict(entry[0])
         return None
 
-    def set_cached_mids(self, provider_name: str, mids: Dict[str, float], merge: bool = False):
+    def set_cached_mids(self, provider_name: str, mids: Dict[str, float], merge: bool = False, ttl_seconds: Optional[float] = None):
         p = provider_name.strip().lower()
+        ttl = float(ttl_seconds) if ttl_seconds is not None else self.mids_ttl_seconds
         if merge and p in self._mids_cache:
             existing = dict(self._mids_cache[p][0])
             existing.update(mids)
-            self._mids_cache[p] = (existing, time.time() + self.mids_ttl_seconds)
+            self._mids_cache[p] = (existing, time.time() + ttl)
             logger.debug("[CandleStore] [MIDS CACHE MERGED] %s -> Store now holds %d mid prices", provider_name.upper(), len(existing))
         else:
-            self._mids_cache[p] = (dict(mids), time.time() + self.mids_ttl_seconds)
-            logger.info("[CandleStore] [MIDS CACHE UPDATED] %s -> Cached %d mid prices (TTL: %.1fs)", provider_name.upper(), len(mids), self.mids_ttl_seconds)
+            self._mids_cache[p] = (dict(mids), time.time() + ttl)
+            logger.info("[CandleStore] [MIDS CACHE UPDATED] %s -> Cached %d mid prices (TTL: %.1fs)", provider_name.upper(), len(mids), ttl)
+
+    def rate_limit_remaining(self, provider_name: str) -> float:
+        """Seconds left in the active rate-limit cooldown for a provider (0.0 if none)."""
+        return max(0.0, self._rate_limit_cooldown.get(provider_name.strip().lower(), 0.0) - time.time())
 
     def set_rate_limited(self, provider_name: str, cooldown_seconds: float = 60.0):
         target = time.time() + cooldown_seconds

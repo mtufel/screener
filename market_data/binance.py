@@ -131,7 +131,23 @@ class BinanceProvider(BaseMarketDataProvider):
             return cached
 
         if self._store.is_rate_limited(self.name):
-            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown", self.name)
+            # Rate-limit cooldown active: consult the fallback on EVERY call while
+            # primary is cooling down, instead of serving empty mids (~57s of every
+            # 60s cooldown window). Cache fallback result for the remaining cooldown.
+            if self.fallback_provider:
+                logger.warning(
+                    "[ProviderFallback] %s rate limited -> Delegating get_all_mids to %s (cooldown active)",
+                    self.name,
+                    self.fallback_provider.name,
+                )
+                fb_mids = await self.fallback_provider.get_all_mids()
+                if fb_mids:
+                    self._store.set_cached_mids(
+                        self.name, fb_mids,
+                        ttl_seconds=self._store.rate_limit_remaining(self.name) or self.mids_ttl_seconds,
+                    )
+                    return fb_mids
+            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown (no fallback available)", self.name)
             return {}
 
         client = self._get_http()
@@ -192,15 +208,25 @@ class BinanceProvider(BaseMarketDataProvider):
 
         # 2. Rate-Limit Guard
         if self._store.is_rate_limited(self.name):
-            if cached:
+            if cached and len(cached) >= min(n, 50):
                 logger.warning("[BinanceProvider] [RATE LIMITED] Serving %d cached bars for %s %s", len(cached), symbol, timeframe)
                 return cached
             if self.fallback_provider:
-                logger.warning("[ProviderFallback] %s is rate limited with no cache for %s %s -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+                logger.warning(
+                    "[ProviderFallback] %s is rate limited with insufficient cache (%d bars) for %s %s -> Delegating to %s",
+                    self.name,
+                    len(cached) if cached else 0,
+                    symbol,
+                    timeframe,
+                    self.fallback_provider.name,
+                )
                 fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
                 if fb_candles:
                     self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
                     return fb_candles
+            if cached:
+                logger.warning("[BinanceProvider] [RATE LIMITED] Serving %d cached bars for %s %s (no fallback available)", len(cached), symbol, timeframe)
+                return cached
             logger.warning("[BinanceProvider] [RATE LIMITED] Rate limited and no cache available for %s %s", symbol, timeframe)
             return []
 
@@ -253,15 +279,15 @@ class BinanceProvider(BaseMarketDataProvider):
             elif resp.status_code in (418, 429):
                 self._store.set_rate_limited(self.name, 60.0)
                 logger.warning("[BinanceProvider] [HTTP %d] Rate limit hit for %s (%s): %s", resp.status_code, symbol, timeframe, resp.text[:200])
-                if cached:
+                if cached and len(cached) >= min(n, 50):
                     return cached
                 if self.fallback_provider:
-                    logger.warning("[ProviderFallback] %s hit HTTP %d for %s (%s) -> Delegating to %s", self.name, resp.status_code, symbol, timeframe, self.fallback_provider.name)
+                    logger.warning("[ProviderFallback] %s hit HTTP %d for %s (%s) with insufficient cache -> Delegating to %s", self.name, resp.status_code, symbol, timeframe, self.fallback_provider.name)
                     fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
                     if fb_candles:
                         self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
                         return fb_candles
-                return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
+                return self._store.get_candles(self.name, symbol, timeframe, n=n) or cached or []
             elif resp.status_code == 400 and self.use_futures:
                 logger.info("[BinanceProvider] Symbol %s not found on Futures, falling back to Binance Spot klines", binance_sym)
                 spot_url = f"https://api.binance.com/api/v3/klines"
