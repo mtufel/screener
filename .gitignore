@@ -43,4 +43,5 @@ logs/
 .freebuff/
 scratch/
 *.out
+*.log
 render_logs.json
