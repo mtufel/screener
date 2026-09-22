@@ -7,7 +7,8 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
@@ -26,6 +27,7 @@ from app_config import (
     EXTREME_USE_CLOSE_INVALIDATION,
     EXTREME_WEEKDAY_FILTER_ENABLED,
     ENABLE_STRATEGY_2,
+    IST,
     logger,
     state,
 )
@@ -39,6 +41,11 @@ from screener_cycle import (
     extreme_screener_background_worker,
 )
 from session_filter import SessionFilterConfig
+from strategy_extreme_fvg import (
+    Candle,
+    get_4h_fvg_first_touch_ts,
+    get_4h_fvg_most_recent_touch_ts,
+)
 
 router = APIRouter()
 
@@ -276,6 +283,121 @@ async def api_extreme_status():
         "pending_count": state.get("extreme_pending_count", 0),
         "total_cycles": state.get("extreme_total_cycles", 0),
         "setups": state.get("extreme_setups", []),
+    })
+
+
+@router.get("/api/extreme/4h-fvgs", summary="Current View of All Unmitigated 4H FVGs (with Active Anchor)")
+async def api_extreme_4h_fvgs(
+    symbols: Optional[str] = Query(default=None, description="Comma-separated symbols or leave empty for whitelist"),
+    invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
+):
+    """Returns ALL active (unmitigated) 4H FVGs per tracked symbol, flagging the
+    strategy's current anchor (most-recent-touched zone, price-inside-first) and
+    which zones currently contain price. Zero-FVG symbols are still listed."""
+    from strategy_extreme_fvg import (
+        get_active_4h_fvgs_for_symbol,
+        get_most_recent_touched_4h_fvg,
+    )
+
+    inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
+    use_close = (inval_to_use == "close")
+
+    whitelist_raw = symbols or state.get("coins_whitelist") or os.getenv("COINS_WHITELIST", "BTC,ETH,SOL")
+    coin_list = [c.strip().upper() for c in whitelist_raw.split(",") if c.strip()]
+
+    provider = _svc().get_market_data_provider(state.get("data_provider"))
+    mids = await provider.get_all_mids()
+
+    symbols_out = []
+    for sym in coin_list:
+        raw_sym = provider.resolve_symbol(sym)
+        curr_px = lookup_mid(mids, sym, float(mids.get(raw_sym, 0.0)))
+
+        try:
+            raw_4h = await provider.get_last_n_candles(symbol=raw_sym, timeframe="4h", n=200)
+            candles_4h = [Candle.from_dict(c) for c in raw_4h] if raw_4h else []
+        except Exception as exc:
+            logger.warning("[4h-fvgs] Failed to fetch 4H candles for %s: %s", sym, exc)
+            candles_4h = []
+
+        if not candles_4h and curr_px > 0:
+            curr_px = curr_px  # keep live mid even without candles
+        if candles_4h and curr_px <= 0:
+            curr_px = candles_4h[-1].close
+
+        fvgs_out: List[Dict[str, Any]] = []
+        anchor_formed_at: Optional[int] = None
+        if candles_4h:
+            try:
+                active_fvgs = await get_active_4h_fvgs_for_symbol(
+                    symbol=raw_sym,
+                    client=provider,
+                    use_close_invalidation=use_close,
+                    candles_4h=candles_4h,
+                )
+                anchor = get_most_recent_touched_4h_fvg(
+                    candles_4h=candles_4h,
+                    active_fvgs=active_fvgs,
+                    current_price=curr_px,
+                )
+                if anchor is not None:
+                    anchor_formed_at = anchor.fvg.formed_at
+
+                fvgs_sorted = sorted(active_fvgs, key=lambda f: f.formed_at, reverse=True)
+                for fvg in fvgs_sorted:
+                    if curr_px > 0:
+                        if fvg.bottom <= curr_px <= fvg.top:
+                            distance_pct = 0.0  # price is inside the zone
+                        else:
+                            near_edge = fvg.bottom if curr_px >= fvg.bottom else fvg.top
+                            distance_pct = ((curr_px - near_edge) / curr_px) * 100.0
+                    else:
+                        distance_pct = None
+
+                    first_touch = get_4h_fvg_first_touch_ts(candles_4h, fvg, current_price=curr_px)
+                    rec_touch = get_4h_fvg_most_recent_touch_ts(candles_4h, fvg, current_price=curr_px)
+                    first_touch_ts = first_touch[0] if first_touch else None
+                    rec_ts, is_inside = (rec_touch[0], rec_touch[1]) if rec_touch else (first_touch_ts, False)
+
+                    def _ist(ts: Optional[int]) -> Optional[str]:
+                        return (
+                            datetime.fromtimestamp(ts / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+                            if ts else None
+                        )
+
+                    fvgs_out.append({
+                        "direction": fvg.direction,
+                        "top": fvg.top,
+                        "bottom": fvg.bottom,
+                        "width": fvg.width,
+                        "gap_pct": round(fvg.gap_pct, 3),
+                        "formed_at": fvg.formed_at,
+                        "formed_time_ist": fvg.formed_time_ist,
+                        "first_touch_timestamp": first_touch_ts,
+                        "first_touch_time_ist": _ist(first_touch_ts),
+                        "most_recent_touch_timestamp": rec_ts,
+                        "most_recent_touch_time_ist": _ist(rec_ts) if rec_ts and not is_inside else ("Currently Inside (Active Now)" if is_inside else None),
+                        "is_currently_inside": is_inside,
+                        "distance_to_zone_pct": round(distance_pct, 3) if distance_pct is not None else None,
+                        "is_active_anchor": (anchor_formed_at is not None and fvg.formed_at == anchor_formed_at),
+                    })
+            except Exception as exc:
+                logger.warning("[4h-fvgs] FVG computation failed for %s: %s", sym, exc)
+
+        symbols_out.append({
+            "symbol": sym,
+            "current_price": curr_px,
+            "invalidation_mode": inval_to_use,
+            "fvg_count": len(fvgs_out),
+            "active_anchor_formed_at": anchor_formed_at,
+            "fvgs": fvgs_out,
+        })
+
+    return JSONResponse(content={
+        "status": "success",
+        "generated_at_ist": datetime.now(IST).strftime("%d-%b-%Y %I:%M:%S %p IST"),
+        "coins_whitelist": coin_list,
+        "symbols": symbols_out,
     })
 
 
