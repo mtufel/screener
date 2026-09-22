@@ -65,23 +65,23 @@ def test_api_extreme_config_endpoint():
 
 def test_strategy_enablement_flags():
     client = TestClient(app)
-    # Check health and status endpoints return strategy_1_enabled and strategy_2_enabled
+    # Strategy 1 is retired; payloads expose Strategy 2 only.
     health_resp = client.get("/api/health")
     assert health_resp.status_code == 200
     h_data = health_resp.json()
-    assert "strategy_1_enabled" in h_data
+    assert "strategy_1_enabled" not in h_data
     assert "strategy_2_enabled" in h_data
 
     status_resp = client.get("/api/status")
     assert status_resp.status_code == 200
     s_data = status_resp.json()
-    assert "strategy_1_enabled" in s_data
+    assert "strategy_1_enabled" not in s_data
     assert "strategy_2_enabled" in s_data
 
     extreme_status = client.get("/api/extreme/status")
     assert extreme_status.status_code == 200
     e_data = extreme_status.json()
-    assert "strategy_1_enabled" in e_data
+    assert "strategy_1_enabled" not in e_data
     assert "strategy_2_enabled" in e_data
 
 

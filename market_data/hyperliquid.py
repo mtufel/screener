@@ -93,7 +93,8 @@ class HyperliquidProvider(BaseMarketDataProvider):
         )
 
     async def get_universe_coins(self, min_volume: float = 0.0) -> List[str]:
-        return await self._client.get_universe_coins(min_volume=min_volume)
+        # Hyperliquid meta endpoint exposes no 24h volume; min_volume filtering is unsupported here.
+        return await self._client.get_universe()
 
     async def close(self):
         await self.stop_websocket()

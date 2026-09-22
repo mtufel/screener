@@ -40,6 +40,8 @@ logs/
 .cline/
 .clinerules/
 .opencode/
+.freebuff/
 scratch/
 *.out
+*.log
 render_logs.json

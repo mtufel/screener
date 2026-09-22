@@ -15,9 +15,12 @@ import os
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from session_filter import SessionFilterConfig, is_in_ny_session, is_weekday
+from hyperliquid_client import lookup_mid
+# Canonical timeframe table shared app-wide (defined in candle_store).
+from candle_store import TIMEFRAME_MS
 
 logger = logging.getLogger("extreme_trade_tracker")
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -30,18 +33,6 @@ PERSISTENCE_FILE = os.getenv("EXTREME_LIVE_TRADES_FILE", DEFAULT_STORAGE_FILE)
 # A PENDING_RETRACE record whose scanner setup is absent for this many consecutive
 # scan-valid cycles transitions to INVALIDATED (default 40 cycles ~ 20 min at 30s).
 PENDING_ABSENT_EXPIRY_CYCLES = int(os.getenv("EXTREME_PENDING_EXPIRY_CYCLES", "40"))
-
-
-TIMEFRAME_MS: Dict[str, int] = {
-    "1m": 60 * 1000,
-    "3m": 180 * 1000,
-    "5m": 5 * 60 * 1000,
-    "15m": 15 * 60 * 1000,
-    "30m": 30 * 60 * 1000,
-    "1h": 60 * 60 * 1000,
-    "4h": 4 * 3600 * 1000,
-    "1d": 24 * 3600 * 1000,
-}
 
 
 def _ts_to_ist(ts_ms: int) -> str:
@@ -65,6 +56,46 @@ def _candle_high(c: Any) -> float:
 
 def _candle_low(c: Any) -> float:
     return getattr(c, "low", c.get("l", 0.0) if isinstance(c, dict) else 0.0)
+
+
+# Completion target -> (R multiple, TrackedExtremeTrade attribute holding the target price)
+_TP_TARGETS: Dict[str, Tuple[float, str]] = {
+    "1R": (1.0, "tp_1r"),
+    "2R": (2.0, "tp_2r"),
+    "3R": (3.0, "tp_3r"),
+}
+
+
+def _resolve_tp_target(trade: Any) -> Tuple[float, float]:
+    """Resolves (target_price, r_multiple) for a trade's completion target (unknown values fall back to 3R)."""
+    mult, attr = _TP_TARGETS.get(trade.completion_target, _TP_TARGETS["3R"])
+    return float(getattr(trade, attr)), mult
+
+
+def _update_mfe(trade: Any, extreme_price: float, risk_r: float) -> None:
+    """Tracks the favorable-excursion high-water mark (highs for longs, lows for shorts)."""
+    if trade.direction == "Bullish":
+        trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, extreme_price)
+        trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
+    else:
+        trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, extreme_price)
+        trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
+
+
+def _close_trade(trade: Any, state: str, realized_r: float, status_detail: str,
+                 exit_ts: int, closed_at_ist: str, duration_min: Optional[int] = None) -> None:
+    """Single mutation point for terminal trade state: stamps exit evidence and realized R.
+
+    Invalidations pass realized_r=0.0 (they never realize R) and omit duration_min
+    (there is no holding period before entry).
+    """
+    trade.state = state
+    trade.realized_r = realized_r
+    trade.status_detail = status_detail
+    trade.closed_at_ist = closed_at_ist
+    trade.closed_timestamp = exit_ts
+    if duration_min is not None:
+        trade.duration_min = duration_min
 
 
 @dataclass
@@ -290,46 +321,50 @@ class ExtremeTradeTracker:
                 return trade
         return None
 
-    def process_live_setups(
+    def _resolve_live_session_config(
+        self,
+        session_config: Optional[SessionFilterConfig],
+        session_filter: Optional[bool],
+        weekday_filter: Optional[bool],
+        entry_session_filter: Optional[bool],
+        entry_weekday_filter: Optional[bool],
+        sessions: Optional[str],
+        entry_sessions: Optional[str],
+    ) -> SessionFilterConfig:
+        """Resolve per-call session filters without changing from_legacy precedence."""
+        if session_config is not None:
+            return session_config
+        if any(x is not None for x in (session_filter, weekday_filter, entry_session_filter, entry_weekday_filter, sessions, entry_sessions)):
+            return SessionFilterConfig.from_legacy(
+                session_filter=session_filter if session_filter is not None else (self.session_config.fvg_sessions.strip().upper() != "ALL"),
+                weekday_filter=weekday_filter if weekday_filter is not None else self.session_config.fvg_weekdays_only,
+                entry_session_filter=entry_session_filter if entry_session_filter is not None else (self.session_config.entry_sessions.strip().upper() != "ALL"),
+                entry_weekday_filter=entry_weekday_filter if entry_weekday_filter is not None else self.session_config.entry_weekdays_only,
+                sessions=sessions or self.session_config.fvg_sessions,
+                entry_sessions=entry_sessions or self.session_config.entry_sessions,
+            )
+        return self.session_config
+
+
+    def _ingest_scanner_setups(
         self,
         setups: List[Dict[str, Any]],
         current_mids: Dict[str, float],
-        recent_candles_map: Optional[Dict[str, List[Any]]] = None,
-        session_filter: Optional[bool] = None,
-        weekday_filter: Optional[bool] = None,
-        entry_session_filter: Optional[bool] = None,
-        entry_weekday_filter: Optional[bool] = None,
-        sessions: Optional[str] = None,
-        entry_sessions: Optional[str] = None,
-        session_config: Optional[SessionFilterConfig] = None,
-    ) -> List[Tuple[str, TrackedExtremeTrade]]:
+        session_config: SessionFilterConfig,
+        now_ts: int,
+        now_ist_str: str,
+        events: List[Tuple[str, TrackedExtremeTrade]],
+    ) -> Set[str]:
+        """Registers/refreshes trades from scanner emissions; returns symbols seen this cycle.
+
+        Invariants (why this is structured the way it is):
+        - A symbol with a TRADE_ACTIVE ledger record is locked: entry/SL are immutable,
+          so later scanner emissions for it are ignored.
+        - An unfilled pending record follows the FRESHEST FVG emission in place (newer
+          formed_at wins); anchor/FVG metadata is replaced without duplicate events.
+        - Out-of-session fills are never ingested as active; the setup stays pending.
         """
-        Ingests live scanner setups, tracks new entries, monitors open positions,
-        and resolves TP / SL exits.
-        Returns a list of event tuples: (event_type, trade)
-        e.g. ("NEW_SETUP", trade), ("ENTRY_FILLED", trade), ("TP_HIT", trade), ("SL_HIT", trade)
-        """
-        from hyperliquid_client import lookup_mid
-
-        events = []
-        now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
-        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-
-        if session_config is None:
-            if any(x is not None for x in (session_filter, weekday_filter, entry_session_filter, entry_weekday_filter, sessions, entry_sessions)):
-                session_config = SessionFilterConfig.from_legacy(
-                    session_filter=session_filter if session_filter is not None else (self.session_config.fvg_sessions.strip().upper() != "ALL"),
-                    weekday_filter=weekday_filter if weekday_filter is not None else self.session_config.fvg_weekdays_only,
-                    entry_session_filter=entry_session_filter if entry_session_filter is not None else (self.session_config.entry_sessions.strip().upper() != "ALL"),
-                    entry_weekday_filter=entry_weekday_filter if entry_weekday_filter is not None else self.session_config.entry_weekdays_only,
-                    sessions=sessions or self.session_config.fvg_sessions,
-                    entry_sessions=entry_sessions or self.session_config.entry_sessions,
-                )
-            else:
-                session_config = self.session_config
-
-        # 1. Ingest/Update setups from scanner
-        seen_symbols = set()
+        seen_symbols: Set[str] = set()
         for s in setups:
             sym = s["symbol"].strip().upper()
             curr_px = lookup_mid(current_mids, sym, float(s.get("current_price", s["entry_price"])))
@@ -356,6 +391,7 @@ class ExtremeTradeTracker:
                 # Scanner offers a different setup for a symbol with an unfilled pending
                 # record. The pending record must follow the FRESHEST emission (newer
                 # formed_at) in place: stale anchor/FVG pairings are replaced and no
+                # duplicate NEW_SETUP event is emitted.
                 formed_ist = s.get("target_fvg", {}).get("formed_time_ist") or s.get("fvg_formation_time_ist")
                 if not formed_ist and fvg_formed_at:
                     formed_ist = _candle_close_ist(fvg_formed_at, s.get("ltf_timeframe", "15m"))
@@ -439,18 +475,257 @@ class ExtremeTradeTracker:
                 old_state = trade.state
                 new_state = s.get("state", trade.state)
 
-                # Check if transitioned to active
+                # Check if transitioned to active (out-of-session fills are suppressed)
                 if old_state == "PENDING_RETRACE" and new_state == "TRADE_ACTIVE":
                     entry_ts_eval = s.get("entry_timestamp") or now_ts
-                    if not session_config.is_entry_valid(entry_ts_eval):
-                        # Suppress fill outside allowed window
-                        pass
-                    else:
+                    if session_config.is_entry_valid(entry_ts_eval):
                         trade.state = "TRADE_ACTIVE"
                         trade.entry_filled_at_ist = s.get("entry_time_ist") or now_ist_str
                         trade.entry_timestamp = entry_ts_eval
                         trade.status_detail = "Active (Just Filled)"
                         events.append(("ENTRY_FILLED", trade))
+
+        return seen_symbols
+
+    def _monitor_pending_trade(
+        self,
+        trade: TrackedExtremeTrade,
+        trade_id: str,
+        candles: List[Any],
+        curr_px: float,
+        risk_r: float,
+        session_config: SessionFilterConfig,
+        seen_symbols: Set[str],
+        now_ts: int,
+        now_ist_str: str,
+        events: List[Tuple[str, TrackedExtremeTrade]],
+        to_close: List[Tuple[str, str, TrackedExtremeTrade]],
+    ) -> None:
+        """Pending-retrace monitor: replays post-formation candles for fill/invalidation,
+        then applies live-mid invalidation and absent-setup expiry.
+
+        Frozen event order: candle replay resolves SL before TP on the same candle
+        (pessimistic); out-of-session entry touches are ignored, not deferred.
+        Closure events are appended to `to_close` so they are emitted only after archival.
+        """
+        htf_bottom = trade.htf_anchor.get("bottom", 0.0)
+        htf_top = trade.htf_anchor.get("top", float("inf"))
+        formed_at = trade.ltf_fvg.get("formed_at", 0) or 0
+        post_formation = [c for c in candles if _candle_ts(c) > formed_at] if candles else []
+        post_formation.sort(key=_candle_ts)
+
+        target_tp, target_mult = _resolve_tp_target(trade)
+
+        filled = False
+        fill_ts = None
+        resolved = False
+        for c in post_formation:
+            c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
+            c_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
+            if not filled:
+                if trade.direction == "Bullish":
+                    sl_before_entry = c_low <= trade.stop_loss and c_high < trade.entry_price
+                    anchor_before_entry = (
+                        "bottom" in trade.htf_anchor
+                        and trade.htf_anchor.get("bottom") is not None
+                        and c_low < float(trade.htf_anchor["bottom"])
+                        and c_high < trade.entry_price
+                    )
+                    if sl_before_entry or anchor_before_entry:
+                        _close_trade(trade, "INVALIDATED", 0.0, "Invalidated (SL/Anchor Breached Before Entry)", c_ts, c_ist)
+                        to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                        resolved = True
+                        break
+                    # Check Fill (out-of-session touches are ignored, not deferred)
+                    if c_low <= trade.entry_price and session_config.is_entry_valid(c_ts):
+                        filled = True
+                        fill_ts = c_ts
+                        trade.entry_timestamp = fill_ts
+                        trade.entry_filled_at_ist = c_ist
+                else:  # Bearish
+                    sl_before_entry = c_high >= trade.stop_loss and c_low > trade.entry_price
+                    anchor_before_entry = (
+                        "top" in trade.htf_anchor
+                        and trade.htf_anchor.get("top") is not None
+                        and c_high > float(trade.htf_anchor["top"])
+                        and c_low > trade.entry_price
+                    )
+                    if sl_before_entry or anchor_before_entry:
+                        _close_trade(trade, "INVALIDATED", 0.0, "Invalidated (SL/Anchor Breached Before Entry)", c_ts, c_ist)
+                        to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+                        resolved = True
+                        break
+                    # Check Fill (out-of-session touches are ignored, not deferred)
+                    if c_high >= trade.entry_price and session_config.is_entry_valid(c_ts):
+                        filled = True
+                        fill_ts = c_ts
+                        trade.entry_timestamp = fill_ts
+                        trade.entry_filled_at_ist = c_ist
+
+            if filled:
+                # Check exits chronologically on fill candle or subsequent candles
+                _update_mfe(trade, c_high if trade.direction == "Bullish" else c_low, risk_r)
+                dur_min = max(1, int((c_ts - fill_ts) / 60000))
+                if trade.direction == "Bullish":
+                    if c_low <= trade.stop_loss:
+                        _close_trade(trade, "STOPPED_OUT", -1.0, "STOP LOSS HIT (-1.0R)", c_ts, c_ist, dur_min)
+                        to_close.append((trade_id, "SL_HIT", trade))
+                        resolved = True
+                        break
+                    if c_high >= target_tp:
+                        _close_trade(trade, "COMPLETED_TP", target_mult, f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)", c_ts, c_ist, dur_min)
+                        to_close.append((trade_id, "TP_HIT", trade))
+                        resolved = True
+                        break
+                else:  # Bearish
+                    if c_high >= trade.stop_loss:
+                        _close_trade(trade, "STOPPED_OUT", -1.0, "STOP LOSS HIT (-1.0R)", c_ts, c_ist, dur_min)
+                        to_close.append((trade_id, "SL_HIT", trade))
+                        resolved = True
+                        break
+                    if c_low <= target_tp:
+                        _close_trade(trade, "COMPLETED_TP", target_mult, f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)", c_ts, c_ist, dur_min)
+                        to_close.append((trade_id, "TP_HIT", trade))
+                        resolved = True
+                        break
+
+        if resolved:
+            return
+
+        if filled:
+            trade.state = "TRADE_ACTIVE"
+            trade.status_detail = "Active (Filled)"
+            events.append(("ENTRY_FILLED", trade))
+            return
+
+        # No candle fill yet: live mid already breaching SL or the HTF anchor invalidates.
+        if trade.direction == "Bullish":
+            is_invalidated = curr_px <= trade.stop_loss or curr_px < htf_bottom
+        else:
+            is_invalidated = curr_px >= trade.stop_loss or curr_px > htf_top
+
+        if is_invalidated:
+            _close_trade(trade, "INVALIDATED", 0.0, "Invalidated (SL/Anchor Breached Before Entry)", now_ts, now_ist_str)
+            to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+            return
+
+        # Absent-setup expiry: scanner stopped emitting this symbol.
+        if trade.symbol.strip().upper() not in seen_symbols:
+            trade.absent_cycles += 1
+            if trade.absent_cycles >= PENDING_ABSENT_EXPIRY_CYCLES:
+                _close_trade(
+                    trade, "INVALIDATED", 0.0,
+                    f"Expired (setup absent from scanner for {trade.absent_cycles} cycles)",
+                    now_ts, now_ist_str,
+                )
+                to_close.append((trade_id, "SETUP_INVALIDATED", trade))
+        else:
+            trade.absent_cycles = 0
+
+    def _monitor_active_trade(
+        self,
+        trade: TrackedExtremeTrade,
+        trade_id: str,
+        candles: List[Any],
+        curr_px: float,
+        risk_r: float,
+        now_ts: int,
+        now_ist_str: str,
+        to_close: List[Tuple[str, str, TrackedExtremeTrade]],
+    ) -> None:
+        """Active-position monitor: replays candles strictly chronologically with SL checked
+        BEFORE TP on the same candle (pessimistic), then falls back to the live mid price.
+        Closure events are appended to `to_close` so they are emitted only after archival.
+        """
+        target_tp, target_mult = _resolve_tp_target(trade)
+
+        entry_t = trade.entry_timestamp or 0
+        subsequent_candles = [c for c in candles if _candle_ts(c) >= entry_t] if candles else []
+        subsequent_candles.sort(key=_candle_ts)
+
+        for c in subsequent_candles:
+            c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
+            c_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
+            dur_min = max(1, int((c_ts - entry_t) / 60000))
+            _update_mfe(trade, c_high if trade.direction == "Bullish" else c_low, risk_r)
+            if trade.direction == "Bullish":
+                # 1. Stop Loss checked BEFORE Take Profit on the same candle (pessimistic)
+                if c_low <= trade.stop_loss:
+                    _close_trade(trade, "STOPPED_OUT", -1.0, "STOP LOSS HIT (-1.0R)", c_ts, c_ist, dur_min)
+                    to_close.append((trade_id, "SL_HIT", trade))
+                    return
+                if c_high >= target_tp:
+                    _close_trade(trade, "COMPLETED_TP", target_mult, f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)", c_ts, c_ist, dur_min)
+                    to_close.append((trade_id, "TP_HIT", trade))
+                    return
+            else:  # Bearish
+                if c_high >= trade.stop_loss:
+                    _close_trade(trade, "STOPPED_OUT", -1.0, "STOP LOSS HIT (-1.0R)", c_ts, c_ist, dur_min)
+                    to_close.append((trade_id, "SL_HIT", trade))
+                    return
+                if c_low <= target_tp:
+                    _close_trade(trade, "COMPLETED_TP", target_mult, f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)", c_ts, c_ist, dur_min)
+                    to_close.append((trade_id, "TP_HIT", trade))
+                    return
+
+        # Not closed on past candles: evaluate the live mid price.
+        _update_mfe(trade, curr_px, risk_r)
+        if trade.direction == "Bullish":
+            trade.floating_r = round((curr_px - trade.entry_price) / risk_r, 2)
+            hit_sl, hit_tp = curr_px <= trade.stop_loss, curr_px >= target_tp
+        else:  # Bearish
+            trade.floating_r = round((trade.entry_price - curr_px) / risk_r, 2)
+            hit_sl, hit_tp = curr_px >= trade.stop_loss, curr_px <= target_tp
+
+        if hit_sl or hit_tp:
+            _close_trade(
+                trade,
+                "STOPPED_OUT" if hit_sl else "COMPLETED_TP",
+                -1.0 if hit_sl else target_mult,
+                "STOP LOSS HIT (-1.0R)" if hit_sl else f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)",
+                now_ts, now_ist_str,
+                max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1,
+            )
+            to_close.append((trade_id, "SL_HIT" if hit_sl else "TP_HIT", trade))
+        else:
+            trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
+
+    def process_live_setups(
+        self,
+        setups: List[Dict[str, Any]],
+        current_mids: Dict[str, float],
+        recent_candles_map: Optional[Dict[str, List[Any]]] = None,
+        session_filter: Optional[bool] = None,
+        weekday_filter: Optional[bool] = None,
+        entry_session_filter: Optional[bool] = None,
+        entry_weekday_filter: Optional[bool] = None,
+        sessions: Optional[str] = None,
+        entry_sessions: Optional[str] = None,
+        session_config: Optional[SessionFilterConfig] = None,
+    ) -> List[Tuple[str, TrackedExtremeTrade]]:
+        """
+        Ingests live scanner setups, tracks new entries, monitors open positions,
+        and resolves TP / SL exits.
+        Returns a list of event tuples: (event_type, trade)
+        e.g. ("NEW_SETUP", trade), ("ENTRY_FILLED", trade), ("TP_HIT", trade), ("SL_HIT", trade)
+        """
+        events = []
+        now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
+        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        session_config = self._resolve_live_session_config(
+            session_config,
+            session_filter,
+            weekday_filter,
+            entry_session_filter,
+            entry_weekday_filter,
+            sessions,
+            entry_sessions,
+        )
+
+        # 1. Ingest/Update setups from scanner (register new, refresh stale pendings)
+        seen_symbols = self._ingest_scanner_setups(
+            setups, current_mids, session_config, now_ts, now_ist_str, events,
+        )
 
         # 2. Monitor all open trades: check both TRADE_ACTIVE (for TP/SL) and PENDING_RETRACE (for invalidation / breach)
         from hyperliquid_client import SYMBOL_ALIASES
@@ -462,286 +737,21 @@ class ExtremeTradeTracker:
 
             candles = (recent_candles_map.get(raw_sym) or recent_candles_map.get(trade.symbol) or []) if recent_candles_map else []
 
-            # A. Monitor PENDING_RETRACE setups for invalidation before entry / same-bar completion
+            # A. Pending-retrace: candle replay for fill/invalidation, then live/absent expiry
             if trade.state == "PENDING_RETRACE":
-                htf_bottom = trade.htf_anchor.get("bottom", 0.0)
-                htf_top = trade.htf_anchor.get("top", float("inf"))
-                formed_at = trade.ltf_fvg.get("formed_at", 0) or 0
-                post_formation = [c for c in candles if _candle_ts(c) > formed_at] if candles else []
-                post_formation.sort(key=_candle_ts)
-
-                target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
-                target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
-
-                filled = False
-                fill_ts = None
-                resolved = False
-                for c in post_formation:
-                    c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
-                    if not filled:
-                        if trade.direction == "Bullish":
-                            sl_before_entry = c_low <= trade.stop_loss and c_high < trade.entry_price
-                            anchor_before_entry = (
-                                "bottom" in trade.htf_anchor
-                                and trade.htf_anchor.get("bottom") is not None
-                                and c_low < float(trade.htf_anchor["bottom"])
-                                and c_high < trade.entry_price
-                            )
-                            if sl_before_entry or anchor_before_entry:
-                                trade.state = "INVALIDATED"
-                                trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                trade.closed_timestamp = c_ts
-                                to_close.append((trade_id, "SETUP_INVALIDATED", trade))
-                                resolved = True
-                                break
-                            # Check Fill
-                            if c_low <= trade.entry_price:
-                                if not session_config.is_entry_valid(c_ts):
-                                    # Entry fill occurred outside allowed session/weekday - ignore fill
-                                    pass
-                                else:
-                                    filled = True
-                                    fill_ts = c_ts
-                                    trade.entry_timestamp = fill_ts
-                                    trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
-                        else:  # Bearish
-                            sl_before_entry = c_high >= trade.stop_loss and c_low > trade.entry_price
-                            anchor_before_entry = (
-                                "top" in trade.htf_anchor
-                                and trade.htf_anchor.get("top") is not None
-                                and c_high > float(trade.htf_anchor["top"])
-                                and c_low > trade.entry_price
-                            )
-                            if sl_before_entry or anchor_before_entry:
-                                trade.state = "INVALIDATED"
-                                trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                trade.closed_timestamp = c_ts
-                                to_close.append((trade_id, "SETUP_INVALIDATED", trade))
-                                resolved = True
-                                break
-                            # Check Fill
-                            if c_high >= trade.entry_price:
-                                if not session_config.is_entry_valid(c_ts):
-                                    # Entry fill occurred outside allowed session/weekday - ignore fill
-                                    pass
-                                else:
-                                    filled = True
-                                    fill_ts = c_ts
-                                    trade.entry_timestamp = fill_ts
-                                    trade.entry_filled_at_ist = _candle_close_ist(fill_ts, trade.ltf_timeframe)
-
-                    if filled:
-                        # Check exits chronologically on fill candle or subsequent candles
-                        if trade.direction == "Bullish":
-                            trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, c_high)
-                            trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
-                            if c_low <= trade.stop_loss:
-                                trade.state = "STOPPED_OUT"
-                                trade.realized_r = -1.0
-                                trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                trade.closed_timestamp = c_ts
-                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
-                                to_close.append((trade_id, "SL_HIT", trade))
-                                resolved = True
-                                break
-                            elif c_high >= target_tp:
-                                trade.state = "COMPLETED_TP"
-                                trade.realized_r = target_mult
-                                trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                trade.closed_timestamp = c_ts
-                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
-                                to_close.append((trade_id, "TP_HIT", trade))
-                                resolved = True
-                                break
-                        else:  # Bearish
-                            trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, c_low)
-                            trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
-                            if c_high >= trade.stop_loss:
-                                trade.state = "STOPPED_OUT"
-                                trade.realized_r = -1.0
-                                trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                trade.closed_timestamp = c_ts
-                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
-                                to_close.append((trade_id, "SL_HIT", trade))
-                                resolved = True
-                                break
-                            elif c_low <= target_tp:
-                                trade.state = "COMPLETED_TP"
-                                trade.realized_r = target_mult
-                                trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                                trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                                trade.closed_timestamp = c_ts
-                                trade.duration_min = max(1, int((c_ts - fill_ts) / 60000))
-                                to_close.append((trade_id, "TP_HIT", trade))
-                                resolved = True
-                                break
-
-                if resolved:
-                    continue
-
-                if filled:
-                    trade.state = "TRADE_ACTIVE"
-                    trade.status_detail = "Active (Filled)"
-                    events.append(("ENTRY_FILLED", trade))
-                    continue
-
-
-                # Live price invalidation check
-                is_invalidated = False
-                if trade.direction == "Bullish":
-                    if curr_px <= trade.stop_loss or curr_px < htf_bottom:
-                        is_invalidated = True
-                else:
-                    if curr_px >= trade.stop_loss or curr_px > htf_top:
-                        is_invalidated = True
-
-                if is_invalidated:
-                    trade.state = "INVALIDATED"
-                    trade.status_detail = "Invalidated (SL/Anchor Breached Before Entry)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    to_close.append((trade_id, "SETUP_INVALIDATED", trade))
-                    continue
-
-                # A2. Absent-setup expiry
-                if trade.symbol.strip().upper() not in seen_symbols:
-                    trade.absent_cycles += 1
-                    if trade.absent_cycles >= PENDING_ABSENT_EXPIRY_CYCLES:
-                        trade.state = "INVALIDATED"
-                        trade.status_detail = f"Expired (setup absent from scanner for {trade.absent_cycles} cycles)"
-                        trade.closed_at_ist = now_ist_str
-                        trade.closed_timestamp = now_ts
-                        to_close.append((trade_id, "SETUP_INVALIDATED", trade))
-                else:
-                    trade.absent_cycles = 0
+                self._monitor_pending_trade(
+                    trade, trade_id, candles, curr_px, risk_r, session_config,
+                    seen_symbols, now_ts, now_ist_str, events, to_close,
+                )
                 continue
 
             if trade.state != "TRADE_ACTIVE":
                 continue
 
-            # B. Monitor TRADE_ACTIVE trades strictly chronologically candle-by-candle (SL FIRST, then TP)
-            target_tp = trade.tp_2r if trade.completion_target == "2R" else (trade.tp_1r if trade.completion_target == "1R" else trade.tp_3r)
-            target_mult = 2.0 if trade.completion_target == "2R" else (1.0 if trade.completion_target == "1R" else 3.0)
-
-            entry_t = trade.entry_timestamp or 0
-            subsequent_candles = [c for c in candles if _candle_ts(c) >= entry_t] if candles else []
-            subsequent_candles.sort(key=_candle_ts)
-
-            trade_closed = False
-            for c in subsequent_candles:
-                c_ts, c_high, c_low = _candle_ts(c), _candle_high(c), _candle_low(c)
-                if trade.direction == "Bullish":
-                    trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, c_high)
-                    trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
-
-                    # 1. Stop Loss Check FIRST
-                    if c_low <= trade.stop_loss:
-                        trade.state = "STOPPED_OUT"
-                        trade.realized_r = -1.0
-                        trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                        trade.closed_timestamp = c_ts
-                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
-                        to_close.append((trade_id, "SL_HIT", trade))
-                        trade_closed = True
-                        break
-
-                    # 2. Take Profit Check SECOND
-                    elif c_high >= target_tp:
-                        trade.state = "COMPLETED_TP"
-                        trade.realized_r = target_mult
-                        trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                        trade.closed_timestamp = c_ts
-                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
-                        to_close.append((trade_id, "TP_HIT", trade))
-                        trade_closed = True
-                        break
-
-                else:  # Bearish
-                    trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, c_low)
-                    trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
-
-                    # 1. Stop Loss Check FIRST
-                    if c_high >= trade.stop_loss:
-                        trade.state = "STOPPED_OUT"
-                        trade.realized_r = -1.0
-                        trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                        trade.closed_timestamp = c_ts
-                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
-                        to_close.append((trade_id, "SL_HIT", trade))
-                        trade_closed = True
-                        break
-
-                    # 2. Take Profit Check SECOND
-                    elif c_low <= target_tp:
-                        trade.state = "COMPLETED_TP"
-                        trade.realized_r = target_mult
-                        trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                        trade.closed_at_ist = _candle_close_ist(c_ts, trade.ltf_timeframe)
-                        trade.closed_timestamp = c_ts
-                        trade.duration_min = max(1, int((c_ts - entry_t) / 60000))
-                        to_close.append((trade_id, "TP_HIT", trade))
-                        trade_closed = True
-                        break
-
-            if trade_closed:
-                continue
-
-            # If not closed on past candles, check live mid price
-            if trade.direction == "Bullish":
-                trade.floating_r = round((curr_px - trade.entry_price) / risk_r, 2)
-                trade.max_favorable_price = max(trade.max_favorable_price or trade.entry_price, curr_px)
-                trade.mfe_r = max(trade.mfe_r, round((trade.max_favorable_price - trade.entry_price) / risk_r, 2))
-
-                if curr_px <= trade.stop_loss:
-                    trade.state = "STOPPED_OUT"
-                    trade.realized_r = -1.0
-                    trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
-                    to_close.append((trade_id, "SL_HIT", trade))
-                elif curr_px >= target_tp:
-                    trade.state = "COMPLETED_TP"
-                    trade.realized_r = target_mult
-                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
-                    to_close.append((trade_id, "TP_HIT", trade))
-                else:
-                    trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
-
-            else:  # Bearish
-                trade.floating_r = round((trade.entry_price - curr_px) / risk_r, 2)
-                trade.max_favorable_price = min(trade.max_favorable_price or trade.entry_price, curr_px)
-                trade.mfe_r = max(trade.mfe_r, round((trade.entry_price - trade.max_favorable_price) / risk_r, 2))
-
-                if curr_px >= trade.stop_loss:
-                    trade.state = "STOPPED_OUT"
-                    trade.realized_r = -1.0
-                    trade.status_detail = "STOP LOSS HIT (-1.0R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
-                    to_close.append((trade_id, "SL_HIT", trade))
-                elif curr_px <= target_tp:
-                    trade.state = "COMPLETED_TP"
-                    trade.realized_r = target_mult
-                    trade.status_detail = f"TP {trade.completion_target} HIT (+{target_mult:.1f}R)"
-                    trade.closed_at_ist = now_ist_str
-                    trade.closed_timestamp = now_ts
-                    trade.duration_min = max(1, int((now_ts - entry_t) / 60000)) if entry_t else 1
-                    to_close.append((trade_id, "TP_HIT", trade))
-                else:
-                    trade.status_detail = f"Active ({'+' if trade.floating_r > 0 else ''}{trade.floating_r}R)"
+            # B. Active position: chronological candle replay (SL before TP) + live-mid check
+            self._monitor_active_trade(
+                trade, trade_id, candles, curr_px, risk_r, now_ts, now_ist_str, to_close,
+            )
 
 
         # 3. Archive resolved trades to history
@@ -757,14 +767,14 @@ class ExtremeTradeTracker:
         """Calculates live performance summary statistics across all daemon-tracked trades."""
         closed_trades = [t for t in self.history if t.state in ("COMPLETED_TP", "STOPPED_OUT")]
         total_closed = len(closed_trades)
-        wins = len([t for t in closed_trades if t.state == "COMPLETED_TP"])
-        losses = len([t for t in closed_trades if t.state == "STOPPED_OUT"])
+        wins = sum(1 for t in closed_trades if t.state == "COMPLETED_TP")
+        losses = total_closed - wins  # closed trades are exactly TP or SL
         win_rate = round((wins / total_closed * 100), 1) if total_closed > 0 else 0.0
         net_r = round(sum(t.realized_r for t in closed_trades), 2)
         avg_mfe = round(sum(t.mfe_r for t in closed_trades) / total_closed, 2) if total_closed > 0 else 0.0
 
-        active_count = len([t for t in self.active_trades.values() if t.state == "TRADE_ACTIVE"])
-        pending_count = len([t for t in self.active_trades.values() if t.state == "PENDING_RETRACE"])
+        active_count = sum(1 for t in self.active_trades.values() if t.state == "TRADE_ACTIVE")
+        pending_count = sum(1 for t in self.active_trades.values() if t.state == "PENDING_RETRACE")
 
         return {
             "total_tracked_trades": len(self.history) + len(self.active_trades),
