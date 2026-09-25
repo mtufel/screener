@@ -748,7 +748,7 @@ async def api_strategy_backtest(
     params = strat.resolve_params({
         "ltf_timeframe": ltf_to_use,
         "use_close_invalidation": use_close,
-        "min_gap_pct": min_gap_pct if min_gap_pct is not None else float(state.get("extreme_min_gap", 0.05)),
+        "min_gap_pct": min_gap_pct if min_gap_pct is not None else float(state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT)),
         "session_filter": sess_filter,
         "weekday_filter": wkday_filter,
         "entry_session_filter": entry_sess_filter,
@@ -774,10 +774,21 @@ async def api_strategy_backtest(
         except (TypeError, ValueError):
             return default
 
+    def _report_value(val: Any) -> Any:
+        """Coerce numeric fields to clean floats; leave strings/bools intact.
+
+        Only numeric fields go through ``_safe_float`` — otherwise string
+        metadata (symbol, ltf_timeframe, invalidation_mode, session names)
+        would be coerced to ``0.0`` and booleans to ``1.0``/``0.0``.
+        """
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return val
+        return _safe_float(val)
+
     return JSONResponse(content={
         "status": "success",
         "strategy": strategy,
-        **{k: _safe_float(v) for k, v in vars(report).items() if k not in ("trades",)},
+        **{k: _report_value(v) for k, v in vars(report).items() if k not in ("trades",)},
         "trades": [
             {**vars(t), **{f: _safe_float(v) for f, v in vars(t).items() if isinstance(v, float)}}
             for t in getattr(report, "trades", [])
