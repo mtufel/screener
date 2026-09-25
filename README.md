@@ -166,6 +166,20 @@ DATA_PROVIDER=hyperliquid            # hyperliquid | binance | ccxt
 FALLBACK_DATA_PROVIDER=binance       # Used when the primary provider fails
 ```
 
+### 5. Strategy 3 — Liquidity-Sweep FVG (`liquidity_sweep_fvg`)
+The video-model strategy (4H FVG bias → liquidity sweep → LTF FVG entry → liquidity target) runs as a second registered strategy. Validated knobs (see `strategy3_validation_report.html` and `STRATEGIES.md` §Strategy 3):
+```ini
+EXTREME_REQUIRE_SWEEP=true           # Require a fresh opposing-side pool sweep
+EXTREME_SWEEP_MAX_AGE_H=2            # Sweep must occur within this many hours before FVG formation
+EXTREME_ANCHOR_AGE_GUARD=true        # Skip 4H anchors aged 24–48h at fill (measured dead zone)
+EXTREME_GAP_BAND_EXCLUDE=0.10,0.20   # Reject LTF FVGs whose gap % falls in this band
+EXTREME_TP_MODE=LIQUIDITY            # LIQUIDITY (nearest pool ≥1.5R) or FIXED_R
+EXTREME_MIN_RR_FOR_LIQUIDITY=1.5
+EXTREME_TP_BUFFER_PCT=0.02
+EXTREME_S3_ENTRY_SESSIONS=NY_KZ      # Entry fills restricted to 13:00–16:00 UTC
+```
+Run its backtester: `python backtest_liquidity_sweep_fvg.py --symbol BTC --days 90 --ltf 5m --invalidation close`
+
 ---
 
 ## 🚢 Production Deployment
