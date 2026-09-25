@@ -16,6 +16,7 @@ from strategies.registry import get_strategy, list_strategy_names, register, reg
 # Import concrete strategies so they self-register. Each must be import-safe
 # with no import of the daemon/API.
 from strategies import strategy2_extreme  # noqa: E402,F401  (triggers registration)
+from strategies import strategy3_video_fvg  # noqa: E402,F401  (triggers registration)
 
 __all__ = [
     "get_strategy",
