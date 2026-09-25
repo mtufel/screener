@@ -55,7 +55,7 @@ def test_custom_session_time_cross_midnight():
 
 
 def test_template_contains_custom_session_controls():
-    html_path = Path(__file__).parent / "templates" / "index.html"
+    html_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
     assert html_path.exists(), "templates/index.html must exist"
     content = html_path.read_text(encoding="utf-8")
 
