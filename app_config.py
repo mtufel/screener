@@ -47,6 +47,8 @@ EXTREME_ENTRY_SESSION_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_SESSION_FILTER_E
 EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_SESSIONS = os.getenv("EXTREME_SESSIONS", "ALL").strip()
 EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "ALL").strip()
+# Strategy framework (freqtrade StrategyResolver analog): name of the active strategy.
+EXTREME_ACTIVE_STRATEGY = os.getenv("EXTREME_ACTIVE_STRATEGY", "extreme_fvg").strip()
 
 state: Dict[str, Any] = {
     "strategy_2_enabled": ENABLE_STRATEGY_2,
@@ -80,6 +82,7 @@ state: Dict[str, Any] = {
     "extreme_pending_count": 0,
     "extreme_total_cycles": 0,
     "extreme_background_task": None,
+    "extreme_active_strategy": EXTREME_ACTIVE_STRATEGY,
     "data_provider": os.getenv("DATA_PROVIDER", "binance").strip().lower(),
     "fallback_data_provider": os.getenv("FALLBACK_DATA_PROVIDER", "hyperliquid").strip().lower(),
 }
