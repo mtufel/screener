@@ -169,7 +169,23 @@ def _active_trade_setup_payload(sym: str, trade: Any, curr_px: float) -> Dict[st
 
 
 def _extreme_anchor_payload(anchor: Any) -> Dict[str, Any]:
-    """HTF anchor block shared by both payload builders."""
+    """HTF anchor block shared by both payload builders.
+
+    Accepts either an ``ExtremeAnchor`` dataclass (Strategy 2) or a plain
+    ``Dict`` (Strategy 3 ``VideoFVGSetup.anchor``) and returns a uniform,
+    dashboard/ledger-friendly block in both cases.
+    """
+    if isinstance(anchor, dict):
+        if "direction" in anchor:
+            # Strategy 3 engine dict: normalize into the shared shape.
+            return {
+                "direction": anchor.get("direction"),
+                "bottom": anchor.get("bottom"),
+                "top": anchor.get("top"),
+                "formed_time_ist": _ms_to_ist_str(anchor.get("formed_at")),
+                "confirm_time_ist": _ms_to_ist_str(anchor.get("confirm_ts")),
+            }
+        return dict(anchor)
     return {
         "direction": anchor.fvg.direction,
         "bottom": anchor.fvg.bottom,
@@ -181,7 +197,27 @@ def _extreme_anchor_payload(anchor: Any) -> Dict[str, Any]:
 
 
 def _extreme_target_fvg_payload(ltf_fvg: Any) -> Dict[str, Any]:
-    """Target-FVG block shared by both payload builders."""
+    """Target-FVG block shared by both payload builders.
+
+    Accepts either an Extreme LTF FVG dataclass (Strategy 2) or a plain
+    ``Dict`` (Strategy 3 ``VideoFVGSetup.ltf_fvg``) and returns a uniform,
+    dashboard/ledger-friendly block in both cases.
+    """
+    if isinstance(ltf_fvg, dict):
+        if "direction" in ltf_fvg:
+            width = (ltf_fvg.get("top") or 0) - (ltf_fvg.get("bottom") or 0)
+            mid = ((ltf_fvg.get("top") or 0) + (ltf_fvg.get("bottom") or 0)) / 2.0
+            gap_pct = ((width / mid) * 100.0) if mid > 0 else 0.0
+            return {
+                "direction": ltf_fvg.get("direction"),
+                "bottom": ltf_fvg.get("bottom"),
+                "top": ltf_fvg.get("top"),
+                "width": width,
+                "gap_pct": round(gap_pct, 3),
+                "formed_time_ist": _ms_to_ist_str(ltf_fvg.get("formed_at")),
+                "formed_at": ltf_fvg.get("formed_at"),
+            }
+        return dict(ltf_fvg)
     return {
         "direction": ltf_fvg.direction,
         "bottom": ltf_fvg.bottom,
@@ -191,6 +227,18 @@ def _extreme_target_fvg_payload(ltf_fvg: Any) -> Dict[str, Any]:
         "formed_time_ist": ltf_fvg.formed_time_ist,
         "formed_at": ltf_fvg.formed_at,
     }
+
+
+def _ms_to_ist_str(ts_ms: Optional[int]) -> Optional[str]:
+    """Format a millisecond epoch timestamp as an IST string (or None)."""
+    if not ts_ms:
+        return None
+    try:
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return datetime.fromtimestamp(ts_ms / 1000.0, tz=ist).strftime("%d-%b %I:%M %p IST")
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def _extreme_setup_payload(

@@ -435,3 +435,87 @@ def test_setup_has_required_fields():
     assert isinstance(setup.ltf_fvg, dict)
     assert setup.risk_pct == 1.0
     assert setup.is_valid_risk is True
+
+# ==============================================================================
+# Daemon / ledger wiring — _extreme_setup_payload accepts a VideoFVGSetup
+# ==============================================================================
+
+def test_setup_payload_accepts_video_fvg_setup():
+    """The shared daemon payload builder must serialize a VideoFVGSetup (whose
+    anchor/ltf_fvg are plain dicts) without crashing — covers the ledger/dashboard
+    wiring for Strategy 3 (openspec task 5.2)."""
+    from screener_cycle import _extreme_setup_payload
+    from strategy_video_fvg import VideoFVGSetup
+
+    setup = VideoFVGSetup(
+        symbol="BTC",
+        direction="Bullish",
+        anchor={
+            "direction": "Bullish",
+            "bottom": 78000.0,
+            "top": 80500.0,
+            "formed_at": 1725372000000,  # some ms epoch
+        },
+        ltf_fvg={
+            "direction": "Bullish",
+            "bottom": 77000.0,
+            "top": 77100.0,
+            "formed_at": 1725454800000,
+        },
+        entry_price=77000.0,
+        stop_loss=76900.0,
+        risk_r=100.0,
+        tp_1r=77100.0,
+        tp_2r=77200.0,
+        tp_3r=77300.0,
+        completion_target="3R",
+        ltf_timeframe="5m",
+    )
+
+    payload = _extreme_setup_payload("BTC", setup, curr_px=77050.0, strategy_name="video_fvg")
+
+    assert payload["strategy"] == "video_fvg"
+    assert payload["direction"] == "Bullish"
+    assert payload["entry_price"] == 77000.0
+    # Anchor block normalized from plain dict
+    assert payload["anchor"]["bottom"] == 78000.0
+    assert payload["anchor"]["top"] == 80500.0
+    assert payload["anchor"]["direction"] == "Bullish"
+    # Target-FVG block normalized from plain dict (width/gap_pct computed)
+    assert payload["target_fvg"]["bottom"] == 77000.0
+    assert payload["target_fvg"]["top"] == 77100.0
+    assert payload["target_fvg"]["direction"] == "Bullish"
+    assert payload["target_fvg"]["width"] == 100.0
+    assert payload["target_fvg"]["gap_pct"] == pytest.approx(0.130, abs=0.001)
+
+
+def test_ledger_records_and_filters_video_fvg_trade():
+    """End-to-end ledger wiring (openspec task 5.1): a Strategy 3 setup payload
+    fed through the shared trade tracker must be recorded with strategy='video_fvg'
+    and returned by get_filtered_trades(strategy='video_fvg')."""
+    from screener_cycle import _extreme_setup_payload
+    from strategy_video_fvg import VideoFVGSetup
+    from extreme_trade_tracker import extreme_trade_tracker
+
+    setup = VideoFVGSetup(
+        symbol="BTC", direction="Bullish",
+        anchor={"direction": "Bullish", "bottom": 78000.0, "top": 80500.0, "formed_at": 1725372000000},
+        ltf_fvg={"direction": "Bullish", "bottom": 77000.0, "top": 77100.0, "formed_at": 1725454800000},
+        entry_price=77000.0, stop_loss=76900.0, risk_r=100.0,
+        tp_1r=77100.0, tp_2r=77200.0, tp_3r=77300.0,
+        completion_target="3R", ltf_timeframe="5m",
+    )
+    payload = _extreme_setup_payload("BTC", setup, curr_px=77050.0, strategy_name="video_fvg")
+    assert payload["strategy"] == "video_fvg"
+
+    # Guard: clear any name collision, then feed the payload through the ledger.
+    extreme_trade_tracker.clear_history() if hasattr(extreme_trade_tracker, "clear_history") else None
+    trades = extreme_trade_tracker.process_live_setups([payload], {"BTC": 77050.0, "BTCUSDT": 77050.0})
+    assert isinstance(trades, list)
+
+    filtered = extreme_trade_tracker.get_filtered_trades(strategy="video_fvg")
+    # The filter exposes the requested strategy on the response.
+    assert filtered["filters"]["strategy"] == "video_fvg"
+    # The recorded video_fvg setup is returned by the filtered query.
+    symbols = {t.get("symbol") for t in filtered.get("trades", [])}
+    assert "BTC" in symbols
