@@ -129,6 +129,10 @@ class TrackedExtremeTrade:
     absent_cycles: int = 0
     telegram_message_id: Optional[int] = None
     telegram_discussion_thread_id: Optional[int] = None
+    # Strategy-framework fields: originating strategy name and the effective
+    # params dict at open time. Allows one ledger to serve all strategies.
+    strategy: str = "extreme_fvg"
+    strategy_params: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.trade_id:
@@ -414,6 +418,8 @@ class ExtremeTradeTracker:
                         completion_target=s.get("completion_target", "2R"),
                         htf_anchor=s.get("anchor", {}),
                         ltf_fvg=s.get("target_fvg", {}),
+                        strategy=s.get("strategy", "extreme_fvg"),
+                        strategy_params=s.get("strategy_params", {}) or {},
                         state="PENDING_RETRACE",
                         status_detail="Waiting for Retrace (refreshed to latest emission)",
                         created_at_ist=setup_created_ist,
@@ -457,6 +463,8 @@ class ExtremeTradeTracker:
                     completion_target=s.get("completion_target", "2R"),
                     htf_anchor=s.get("anchor", {}),
                     ltf_fvg=s.get("target_fvg", {}),
+                    strategy=s.get("strategy", "extreme_fvg"),
+                    strategy_params=s.get("strategy_params", {}) or {},
                     state="TRADE_ACTIVE" if is_active else s.get("state", "PENDING_RETRACE"),
                     status_detail=status_det,
                     created_at_ist=setup_created_ist,
@@ -763,21 +771,30 @@ class ExtremeTradeTracker:
         self._save()
         return events
 
-    def get_summary(self) -> Dict[str, Any]:
-        """Calculates live performance summary statistics across all daemon-tracked trades."""
-        closed_trades = [t for t in self.history if t.state in ("COMPLETED_TP", "STOPPED_OUT")]
+    def get_summary(self, strategy: Optional[str] = None) -> Dict[str, Any]:
+        """Calculates live performance summary statistics.
+        When ``strategy`` is given, aggregates only trades with that strategy name.
+        """
+        def _filter(trades: List["TrackedExtremeTrade"]) -> List["TrackedExtremeTrade"]:
+            if strategy:
+                return [t for t in trades if t.strategy == strategy]
+            return trades
+
+        closed_history = _filter(self.history)
+        closed_trades = [t for t in closed_history if t.state in ("COMPLETED_TP", "STOPPED_OUT")]
         total_closed = len(closed_trades)
         wins = sum(1 for t in closed_trades if t.state == "COMPLETED_TP")
-        losses = total_closed - wins  # closed trades are exactly TP or SL
+        losses = total_closed - wins
         win_rate = round((wins / total_closed * 100), 1) if total_closed > 0 else 0.0
         net_r = round(sum(t.realized_r for t in closed_trades), 2)
         avg_mfe = round(sum(t.mfe_r for t in closed_trades) / total_closed, 2) if total_closed > 0 else 0.0
 
-        active_count = sum(1 for t in self.active_trades.values() if t.state == "TRADE_ACTIVE")
-        pending_count = sum(1 for t in self.active_trades.values() if t.state == "PENDING_RETRACE")
+        active_all = _filter(list(self.active_trades.values()))
+        active_count = sum(1 for t in active_all if t.state == "TRADE_ACTIVE")
+        pending_count = sum(1 for t in active_all if t.state == "PENDING_RETRACE")
 
         return {
-            "total_tracked_trades": len(self.history) + len(self.active_trades),
+            "total_tracked_trades": len(closed_history) + len(active_all),
             "total_closed_trades": total_closed,
             "wins": wins,
             "losses": losses,
@@ -798,18 +815,22 @@ class ExtremeTradeTracker:
         state: Optional[str] = None,
         symbol: Optional[str] = None,
         direction: Optional[str] = None,
+        strategy: Optional[str] = None,
         page: int = 1,
         per_page: int = 20,
     ) -> Dict[str, Any]:
         """
         Filters and paginates tracked live trades (active + history).
-        Returns paginated records, pagination metadata, subset metrics, and global summary.
+        Pass ``strategy`` to filter by originating strategy name (e.g. ``extreme_fvg``).
         """
         active_list = [t.to_dict() for t in self.active_trades.values()]
         hist_list = [t.to_dict() for t in self.history]
         all_trades = active_list + hist_list
-        # Sort combined trades latest first (by entry timestamp or FVG formation time)
-        all_trades.sort(key=lambda x: x.get("entry_timestamp") or x.get("ltf_fvg", {}).get("formed_at", 0), reverse=True)
+        # Sort combined trades latest first
+        all_trades.sort(
+            key=lambda x: x.get("entry_timestamp") or x.get("ltf_fvg", {}).get("formed_at", 0),
+            reverse=True,
+        )
 
         # Apply Filters
         if state:
@@ -821,6 +842,8 @@ class ExtremeTradeTracker:
         if direction:
             dir_clean = direction.strip().capitalize()
             all_trades = [t for t in all_trades if t.get("direction") == dir_clean]
+        if strategy:
+            all_trades = [t for t in all_trades if t.get("strategy") == strategy]
 
         total = len(all_trades)
         total_pages = max(1, (total + per_page - 1) // per_page) if per_page > 0 else 1
@@ -845,6 +868,7 @@ class ExtremeTradeTracker:
                 "state": state,
                 "symbol": symbol,
                 "direction": direction,
+                "strategy": strategy,
             },
             "pagination": {
                 "page": safe_page,
@@ -866,7 +890,7 @@ class ExtremeTradeTracker:
                 "net_realized_r": net_pnl_r,
                 "avg_mfe_r": avg_mfe,
             },
-            "summary": self.get_summary(),
+            "summary": self.get_summary(strategy=strategy),
             "trades": paginated_trades,
             "active_trades": [t for t in paginated_trades if t.get("state") in ("PENDING_RETRACE", "TRADE_ACTIVE")],
             "history": [t for t in paginated_trades if t.get("state") not in ("PENDING_RETRACE", "TRADE_ACTIVE")],

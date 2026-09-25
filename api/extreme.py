@@ -682,3 +682,163 @@ async def api_extreme_clear_live_history():
     from extreme_trade_tracker import extreme_trade_tracker
     extreme_trade_tracker.clear_history()
     return JSONResponse(content={"status": "success", "message": "Live trade history cleared successfully"})
+
+
+# ==============================================================================
+# Strategy-parameterized routes (freqtrade StrategyResolver UX analog).
+# These coexist with the existing /api/extreme/* routes which remain unchanged.
+# ==============================================================================
+
+@router.get("/api/{strategy}/backtest", summary="Run Backtest for a Registered Strategy")
+async def api_strategy_backtest(
+    strategy: str,
+    symbol: str = Query(default="BTC", description="Coin symbol"),
+    days: int = Query(default=14, ge=1, le=90, description="Lookback days"),
+    ltf: Optional[str] = Query(default=None, pattern="^(1m|5m|15m|1h)$", description="LTF timeframe override"),
+    invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
+    min_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Min gap size %"),
+    session_filter: Optional[bool] = Query(default=None, description="FVG formation session filter"),
+    weekday_filter: Optional[bool] = Query(default=None, description="FVG formation weekday filter"),
+    entry_session_filter: Optional[bool] = Query(default=None, description="Entry fill session filter"),
+    entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill weekday filter"),
+    sessions: Optional[str] = Query(default=None, description="Session filter ('ALL', 'NY', etc.)"),
+    entry_sessions: Optional[str] = Query(default=None, description="Entry session filter"),
+):
+    """Run a historical backtest for the named strategy (e.g. ``extreme_fvg``)."""
+    import math
+    from strategies import get_strategy
+
+    try:
+        strat = get_strategy(strategy)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0]))
+
+    ltf_to_use = ltf or state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME)
+    inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
+    use_close = (inval_to_use == "close")
+    sess_filter = (
+        session_filter
+        if session_filter is not None
+        else (
+            (sessions.strip().upper() != "ALL")
+            if (sessions and sessions.strip())
+            else os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+    )
+    wkday_filter = (
+        weekday_filter
+        if weekday_filter is not None
+        else os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+    )
+    entry_sess_filter = (
+        entry_session_filter
+        if entry_session_filter is not None
+        else (
+            (entry_sessions.strip().upper() != "ALL")
+            if (entry_sessions and entry_sessions.strip())
+            else os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+    )
+    entry_wkday_filter = (
+        entry_weekday_filter
+        if entry_weekday_filter is not None
+        else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+    )
+
+    params = strat.resolve_params({
+        "ltf_timeframe": ltf_to_use,
+        "use_close_invalidation": use_close,
+        "min_gap_pct": min_gap_pct if min_gap_pct is not None else float(state.get("extreme_min_gap", 0.05)),
+        "session_filter": sess_filter,
+        "weekday_filter": wkday_filter,
+        "entry_session_filter": entry_sess_filter,
+        "entry_weekday_filter": entry_wkday_filter,
+        "sessions": sessions or state.get("extreme_sessions", EXTREME_SESSIONS),
+        "entry_sessions": entry_sessions or state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS),
+    })
+
+    provider = _svc().get_market_data_provider(state.get("data_provider"))
+    report = await strat.backtest(
+        symbol=symbol.strip().upper(),
+        days=days,
+        provider=provider,
+        params=params,
+    )
+
+    def _safe_float(val: Any, default: float = 0.0, digits: int = 2) -> float:
+        try:
+            f = float(val)
+            if math.isnan(f) or math.isinf(f):
+                return default
+            return round(f, digits)
+        except (TypeError, ValueError):
+            return default
+
+    return JSONResponse(content={
+        "status": "success",
+        "strategy": strategy,
+        **{k: _safe_float(v) for k, v in vars(report).items() if k not in ("trades",)},
+        "trades": [
+            {**vars(t), **{f: _safe_float(v) for f, v in vars(t).items() if isinstance(v, float)}}
+            for t in getattr(report, "trades", [])
+        ],
+    })
+
+
+@router.get("/api/{strategy}/status", summary="Get Daemon Status for a Registered Strategy")
+async def api_strategy_status(strategy: str):
+    """Return runtime status of the daemon running the named strategy."""
+    from strategies import get_strategy
+
+    try:
+        strat = get_strategy(strategy)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e.args[0]))
+
+    return JSONResponse(content={
+        "status": "success",
+        "strategy": strategy,
+        "display_name": strat.display_name,
+        "is_active": strategy == state.get("extreme_active_strategy"),
+        "is_running": state.get("extreme_is_running", False),
+        "interval_seconds": state.get("extreme_interval_seconds", EXTREME_SCAN_INTERVAL_SECONDS),
+        "ltf_timeframe": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
+        "completion_target": state.get("extreme_target", EXTREME_COMPLETION_TARGET),
+        "min_gap_pct": state.get("extreme_min_gap", EXTREME_MIN_GAP_PCT),
+        "use_close_invalidation": state.get("extreme_use_close", EXTREME_USE_CLOSE_INVALIDATION),
+        "session_filter_enabled": state.get("extreme_session_filter", EXTREME_SESSION_FILTER_ENABLED),
+        "weekday_filter_enabled": state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED),
+        "entry_session_filter_enabled": state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED),
+        "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
+        "sessions": state.get("extreme_sessions", EXTREME_SESSIONS),
+        "entry_sessions": state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS),
+        "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
+        "last_scan_time_ist": state.get("extreme_last_scan_time_ist"),
+        "active_count": state.get("extreme_active_count", 0),
+        "pending_count": state.get("extreme_pending_count", 0),
+        "total_cycles": state.get("extreme_total_cycles", 0),
+    })
+
+
+@router.get("/api/{strategy}/info", summary="Get Strategy Metadata")
+async def api_strategy_info(strategy: str):
+    """Return the metadata (name, display name, interface version, declared params)
+    for the named registered strategy."""
+    from strategies import get_strategy, list_strategy_names
+
+    try:
+        strat = get_strategy(strategy)
+    except KeyError:
+        available = ", ".join(list_strategy_names())
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown strategy {strategy!r}. Available: {available}",
+        )
+
+    return JSONResponse(content={
+        "status": "success",
+        "name": strat.name,
+        "display_name": strat.display_name,
+        "interface_version": strat.interface_version,
+        "default_params": strat.default_params,
+    })

@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from app_config import (
     COINS_WHITELIST,
     ENABLE_STRATEGY_2,
+    EXTREME_ACTIVE_STRATEGY,
     EXTREME_COMPLETION_TARGET,
     EXTREME_ENTRY_SESSIONS,
     EXTREME_ENTRY_SESSION_FILTER_ENABLED,
@@ -97,7 +98,7 @@ async def send_extreme_telegram_alert(
 def _runtime_extreme_config() -> Dict[str, Any]:
     """Snapshots the runtime daemon config from `state` into one dict.
 
-    Keys: coin_list, ltf, target, min_gap, use_close, sess_filter, wkday_filter,
+    Keys: active_strategy, coin_list, ltf, target, min_gap, use_close, sess_filter, wkday_filter,
     entry_sess_filter, entry_wkday_filter, sessions_str, entry_sessions_str,
     session_config.
     """
@@ -108,6 +109,7 @@ def _runtime_extreme_config() -> Dict[str, Any]:
     entry_sess_filter = state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED)
     entry_wkday_filter = state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED)
     return {
+        "active_strategy": state.get("extreme_active_strategy", EXTREME_ACTIVE_STRATEGY),
         "coin_list": [c.strip().upper() for c in state.get("coins_whitelist", COINS_WHITELIST).strip().split(",") if c.strip()],
         "ltf": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
         "target": state.get("extreme_target", EXTREME_COMPLETION_TARGET),
@@ -158,6 +160,8 @@ def _active_trade_setup_payload(sym: str, trade: Any, curr_px: float) -> Dict[st
         "entry_timestamp": trade.entry_timestamp,
         "completion_target": trade.completion_target,
         "ltf_timeframe": trade.ltf_timeframe,
+        "strategy": getattr(trade, "strategy", "extreme_fvg"),
+        "strategy_params": dict(getattr(trade, "strategy_params", {}) or {}),
         "anchor": trade.htf_anchor,
         "target_fvg": trade.ltf_fvg,
         "unmitigated_count": 1,
@@ -189,7 +193,13 @@ def _extreme_target_fvg_payload(ltf_fvg: Any) -> Dict[str, Any]:
     }
 
 
-def _extreme_setup_payload(sym: str, setup: Any, curr_px: float) -> Dict[str, Any]:
+def _extreme_setup_payload(
+    sym: str,
+    setup: Any,
+    curr_px: float,
+    strategy_name: Optional[str] = None,
+    strategy_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Dashboard/scan payload for a freshly scanned setup (pending retrace or already-active)."""
     dist_pct = ((curr_px - setup.entry_price) / setup.entry_price) * 100
     return {
@@ -210,9 +220,11 @@ def _extreme_setup_payload(sym: str, setup: Any, curr_px: float) -> Dict[str, An
         "entry_timestamp": setup.entry_timestamp,
         "completion_target": setup.completion_target,
         "ltf_timeframe": setup.ltf_timeframe,
-        "anchor": _extreme_anchor_payload(setup.anchor),
-        "target_fvg": _extreme_target_fvg_payload(setup.ltf_fvg),
-        "unmitigated_count": len(setup.all_unmitigated_fvgs),
+        "strategy": strategy_name or "extreme_fvg",
+        "strategy_params": dict(strategy_params or {}),
+        "anchor": _extreme_anchor_payload(setup.anchor) if getattr(setup, "anchor", None) else {},
+        "target_fvg": _extreme_target_fvg_payload(setup.ltf_fvg) if getattr(setup, "ltf_fvg", None) else {},
+        "unmitigated_count": len(getattr(setup, "all_unmitigated_fvgs", []) or []),
     }
 
 
@@ -422,7 +434,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     """Runs a single background scan across whitelisted coins for Extreme LTF setups."""
     import main
 
-    from strategy_extreme_fvg import get_extreme_setup_for_symbol
+    from strategies import get_strategy
     from extreme_trade_tracker import extreme_trade_tracker
 
     start_time_ist = datetime.now(IST)
@@ -433,6 +445,22 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         len(cfg["coin_list"]), cfg["coin_list"], cfg["ltf"], cfg["target"], provider.name
     )
     mids = await provider.get_all_mids()
+
+    # Resolve the active strategy by name (freqtrade StrategyResolver analog) and
+    # build its effective params with config > strategy-default precedence.
+    strategy = get_strategy(cfg["active_strategy"])
+    strategy_params = strategy.resolve_params({
+        "ltf_timeframe": cfg["ltf"],
+        "completion_target": cfg["target"],
+        "min_gap_pct": cfg["min_gap"],
+        "use_close_invalidation": cfg["use_close"],
+        "session_filter": cfg["sess_filter"],
+        "weekday_filter": cfg["wkday_filter"],
+        "entry_session_filter": cfg["entry_sess_filter"],
+        "entry_weekday_filter": cfg["entry_wkday_filter"],
+        "sessions": cfg["sessions_str"],
+        "entry_sessions": cfg["entry_sessions_str"],
+    })
 
     setups_out: List[Dict[str, Any]] = []
 
@@ -448,21 +476,15 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
 
         # 2. No active trade -> scan for new setups / pending retrace
         try:
-            setup = await get_extreme_setup_for_symbol(
-                symbol=sym,
-                ltf_timeframe=cfg["ltf"],
-                client=provider,
-                use_close_invalidation=cfg["use_close"],
-                min_gap_pct=cfg["min_gap"],
-                completion_target=cfg["target"],
-                session_config=cfg["session_config"],
-                session_filter=cfg["sess_filter"],
-                weekday_filter=cfg["wkday_filter"],
-            )
-            if setup:
+            setups = await strategy.find_setups(sym, provider, strategy_params)
+            for setup in setups:
                 if curr_px == 0.0:
                     curr_px = float(mids.get(raw_sym, mids.get(sym, setup.entry_price)))
-                setups_out.append(_extreme_setup_payload(sym, setup, curr_px))
+                setups_out.append(_extreme_setup_payload(
+                    sym, setup, curr_px,
+                    strategy_name=cfg["active_strategy"],
+                    strategy_params=strategy_params,
+                ))
             await asyncio.sleep(0.1)
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
