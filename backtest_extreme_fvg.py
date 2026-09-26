@@ -36,6 +36,7 @@ from strategy_extreme_fvg import (
     get_most_recent_touched_4h_fvg,
     find_unmitigated_ltf_fvgs,
     select_extreme_ltf_fvg,
+    _is_strong_momentum,
     build_extreme_trade_setup,
     HTF_CANDLE_DURATION_MS,
     TIMEFRAME_MS,
@@ -195,6 +196,10 @@ class ExtremeBacktestReport:
     fvg_sessions: str = "ALL"
     entry_sessions: str = "ALL"
     trades_filtered_out: int = 0
+    max_dist_from_4h_pct: float = 0.0
+    require_momentum: bool = False
+    max_gap_pct: float = 0.0
+    max_ltf_fvg_age_candles: int = 9999
     trades: List[ExtremeHistoricalTrade] = field(default_factory=list)
 
 
@@ -338,6 +343,11 @@ async def run_extreme_backtest(
     entry_sessions: Optional[str] = None,
     session_config: Optional[SessionFilterConfig] = None,
     client: Optional[Any] = None,
+    # Bias filter params (live defaults from research backtest marginal analysis)
+    max_dist_from_4h_pct: float = 0.0,
+    require_momentum: bool = False,
+    max_gap_pct: float = 0.0,
+    max_ltf_fvg_age_candles: int = 9999,
 ) -> ExtremeBacktestReport:
     """
     Executes a complete historical backtest over the specified number of days.
@@ -351,6 +361,7 @@ async def run_extreme_backtest(
             sessions=sessions,
             entry_sessions=entry_sessions,
         )
+    max_ltf_fvg_age_candles = int(max_ltf_fvg_age_candles)
 
     prov = client or market_data_provider
     now_ms = int(time.time() * 1000)
@@ -568,12 +579,34 @@ async def run_extreme_backtest(
 
         # Find all unmitigated LTF FVGs formed between anchor.first_touch_timestamp and fvg_idx
         candidate_pool: List[FVG] = []
+        touch_idx = bisect.bisect_left(ltf_timestamps, anchor.first_touch_timestamp)
         for prev_ptr in range(fvg_ptr + 1):
             p_idx, p_fvg = ltf_fvgs[prev_ptr]
             if p_fvg.direction != anchor.fvg.direction or p_fvg.close_timestamp < anchor.first_touch_timestamp:
                 continue
             if p_fvg.formed_at in entered_fvg_timestamps:
                 continue
+
+            # ---- Bias filters (identical logic to the live engine) ----
+            # Gap ceiling: reject oversized gaps while respecting the min-gap floor.
+            if max_gap_pct > 0 and p_fvg.gap_pct > max_gap_pct:
+                continue
+            # Distance-from-4H-zone confluence filter.
+            if max_dist_from_4h_pct > 0 and anchor.fvg.bottom > 0 and anchor.fvg.top > 0:
+                if p_fvg.direction == "Bullish":
+                    d = (p_fvg.bottom - anchor.fvg.bottom) / anchor.fvg.bottom * 100.0
+                else:
+                    d = (anchor.fvg.top - p_fvg.top) / anchor.fvg.top * 100.0
+                if d > max_dist_from_4h_pct:
+                    continue
+            # Momentum impulse-candle filter.
+            if require_momentum and not _is_strong_momentum(p_fvg.c2, p_fvg.direction):
+                continue
+            # Age ceiling: reject stale/decayed imbalances.
+            if max_ltf_fvg_age_candles > 0 and max_ltf_fvg_age_candles < 9999:
+                age = p_idx - touch_idx
+                if age > max_ltf_fvg_age_candles:
+                    continue
 
             # Check invalidation between p_idx and fvg_idx
             is_inval = False
@@ -715,6 +748,10 @@ async def run_extreme_backtest(
         fvg_sessions=session_config.fvg_sessions,
         entry_sessions=session_config.entry_sessions,
         trades_filtered_out=trades_filtered_out,
+        max_dist_from_4h_pct=max_dist_from_4h_pct,
+        require_momentum=require_momentum,
+        max_gap_pct=max_gap_pct,
+        max_ltf_fvg_age_candles=max_ltf_fvg_age_candles,
         total_trades=total_trades,
         wins_1r=wins_1r,
         wins_2r=wins_2r,
@@ -798,6 +835,10 @@ async def main():
     parser.add_argument("--entry-weekday-filter", action="store_true", default=None, help="Only execute trades with entry filled on weekdays (Mon-Fri UTC)")
     parser.add_argument("--sessions", default=None, help="Trading sessions for FVG formation (e.g. NY, LONDON, LONDON,NY, or custom UTC ranges)")
     parser.add_argument("--entry-sessions", default=None, help="Trading sessions for entry fill (e.g. NY, LONDON, LONDON,NY, or custom UTC ranges)")
+    parser.add_argument("--max-dist-from-4h-pct", type=float, default=None, help="Reject LTF FVGs further than this %% from the 4H anchor zone (0 disables)")
+    parser.add_argument("--require-momentum", action="store_true", default=None, help="Require a strong directional impulse candle (body >= 50%% of range)")
+    parser.add_argument("--max-gap-pct", type=float, default=None, help="Reject LTF FVGs with gap_pct above this ceiling (0 disables)")
+    parser.add_argument("--max-ltf-fvg-age", type=int, default=None, help="Reject LTF FVGs that form more than this many candles after the 4H touch (9999 disables)")
     args = parser.parse_args()
 
     # CLI args override env vars; env vars override False defaults
@@ -807,6 +848,12 @@ async def main():
     entry_weekday_filter = args.entry_weekday_filter if args.entry_weekday_filter is not None else os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").lower() == "true"
     sessions = args.sessions or os.getenv("EXTREME_SESSIONS")
     entry_sessions = args.entry_sessions or os.getenv("EXTREME_ENTRY_SESSIONS")
+
+    # Bias filter params: CLI args override env vars; env vars override the lenient defaults.
+    max_dist = args.max_dist_from_4h_pct if args.max_dist_from_4h_pct is not None else float(os.getenv("EXTREME_MAX_DIST_FROM_4H_PCT", "0.0"))
+    require_momentum = args.require_momentum if args.require_momentum is not None else os.getenv("EXTREME_REQUIRE_MOMENTUM", "false").lower() in ("true", "1", "yes")
+    max_gap = args.max_gap_pct if args.max_gap_pct is not None else float(os.getenv("EXTREME_MAX_GAP_PCT", "0.0"))
+    max_age = args.max_ltf_fvg_age if args.max_ltf_fvg_age is not None else int(os.getenv("EXTREME_MAX_LTF_FVG_AGE_CANDLES", "9999"))
 
     use_close = (args.invalidation == "close")
     report = await run_extreme_backtest(
@@ -821,6 +868,10 @@ async def main():
         entry_weekday_filter=entry_weekday_filter,
         sessions=sessions,
         entry_sessions=entry_sessions,
+        max_dist_from_4h_pct=max_dist,
+        require_momentum=require_momentum,
+        max_gap_pct=max_gap,
+        max_ltf_fvg_age_candles=max_age,
     )
     print_backtest_report(report)
 

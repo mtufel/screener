@@ -76,6 +76,11 @@ class ExtremeLiveScanner:
         sessions: Optional[str] = None,
         entry_sessions: Optional[str] = None,
         session_config: Optional[SessionFilterConfig] = None,
+        # Bias filter params (live defaults from research backtest marginal analysis)
+        max_dist_from_4h_pct: float = 0.0,
+        require_momentum: bool = False,
+        max_gap_pct: float = 0.0,
+        max_ltf_fvg_age_candles: int = 9999,
     ):
         self.symbols = symbols
         self.ltf_timeframe = ltf_timeframe
@@ -84,6 +89,11 @@ class ExtremeLiveScanner:
         self.completion_target = completion_target
         self.poll_interval = poll_interval_seconds
         self.enable_telegram = enable_telegram
+        # Bias filter params
+        self.max_dist_from_4h_pct = max_dist_from_4h_pct
+        self.require_momentum = require_momentum
+        self.max_gap_pct = max_gap_pct
+        self.max_ltf_fvg_age_candles = int(max_ltf_fvg_age_candles)
 
         if session_config is not None:
             self.session_config = session_config
@@ -140,6 +150,13 @@ class ExtremeLiveScanner:
             ltf_timeframe=self.ltf_timeframe,
             min_gap_pct=self.min_gap_pct,
             completion_target=self.completion_target,
+            anchor_bottom=anchor.fvg.bottom,
+            anchor_top=anchor.fvg.top,
+            max_dist_from_4h_pct=self.max_dist_from_4h_pct,
+            require_momentum=self.require_momentum,
+            max_gap_pct=self.max_gap_pct,
+            max_ltf_fvg_age_candles=self.max_ltf_fvg_age_candles,
+            first_touch_ts=anchor.first_touch_timestamp,
         )
         if not unmitigated:
             return None
@@ -284,10 +301,20 @@ def main():
     parser.add_argument("--entry-session-filter", action="store_true", default=None, help="Only fill entries during NY session (13-22 UTC)")
     parser.add_argument("--entry-weekday-filter", action="store_true", default=None, help="Only fill entries on weekdays (Mon-Fri UTC)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram notifications")
+    parser.add_argument("--max-dist-from-4h-pct", type=float, default=None, help="Reject LTF FVGs further than this %% from the 4H anchor zone (0 disables)")
+    parser.add_argument("--require-momentum", action="store_true", default=None, help="Require a strong directional impulse candle (body >= 50%% of range)")
+    parser.add_argument("--max-gap-pct", type=float, default=None, help="Reject LTF FVGs with gap_pct above this ceiling (0 disables)")
+    parser.add_argument("--max-ltf-fvg-age", type=int, default=None, help="Reject LTF FVGs that form more than this many candles after the 4H touch (9999 disables)")
     args = parser.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     use_close = (args.invalidation == "close")
+
+    # Bias filter params: CLI args override env vars; env vars override the lenient defaults.
+    max_dist = args.max_dist_from_4h_pct if args.max_dist_from_4h_pct is not None else float(os.getenv("EXTREME_MAX_DIST_FROM_4H_PCT", "0.0"))
+    require_momentum = args.require_momentum if args.require_momentum is not None else os.getenv("EXTREME_REQUIRE_MOMENTUM", "false").lower() in ("true", "1", "yes")
+    max_gap = args.max_gap_pct if args.max_gap_pct is not None else float(os.getenv("EXTREME_MAX_GAP_PCT", "0.0"))
+    max_age = args.max_ltf_fvg_age if args.max_ltf_fvg_age is not None else int(os.getenv("EXTREME_MAX_LTF_FVG_AGE_CANDLES", "9999"))
 
     scanner = ExtremeLiveScanner(
         symbols=symbols,
@@ -301,6 +328,10 @@ def main():
         weekday_filter=args.weekday_filter,
         entry_session_filter=args.entry_session_filter,
         entry_weekday_filter=args.entry_weekday_filter,
+        max_dist_from_4h_pct=max_dist,
+        require_momentum=require_momentum,
+        max_gap_pct=max_gap,
+        max_ltf_fvg_age_candles=max_age,
     )
 
     try:

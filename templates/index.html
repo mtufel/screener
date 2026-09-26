@@ -266,6 +266,16 @@
             </div>
 
             <div>
+              <label class="block text-[11px] font-semibold text-slate-400 mb-1">Bias Filters <span class="text-slate-600">(read-only)</span></label>
+              <div class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300 flex flex-wrap gap-3">
+                <span title="Max distance of LTF FVG midpoint from 4H anchor zone">Dist 4H: <b id="biasMaxDist4h" class="text-amber-400">—</b>%</span>
+                <span title="Require a strong directional impulse candle (body >= 50% of range)">Momentum: <b id="biasRequireMomentum" class="text-amber-400">—</b></span>
+                <span title="Reject LTF FVGs whose gap_pct exceeds this ceiling">Gap ≤: <b id="biasMaxGap" class="text-amber-400">—</b>%</span>
+                <span title="Reject LTF FVGs forming more than this many candles after the 4H touch">Age ≤: <b id="biasMaxAge" class="text-amber-400">—</b></span>
+              </div>
+            </div>
+
+            <div>
               <label class="block text-[11px] font-semibold text-slate-400 mb-1">Daemon Interval</label>
               <select
                 id="extremeDaemonInterval"
@@ -975,6 +985,27 @@
         if (el && (!extremeConfigInitialized || activeEl !== el)) {
           el.value = data.min_gap_pct;
         }
+      }
+
+      // Read-only bias filter display
+      if (data.max_dist_from_4h_pct !== undefined) {
+        const v = data.max_dist_from_4h_pct;
+        const el = document.getElementById('biasMaxDist4h');
+        if (el) el.textContent = v ? v.toFixed(2) : 'OFF';
+      }
+      if (data.require_momentum !== undefined) {
+        const el = document.getElementById('biasRequireMomentum');
+        if (el) el.textContent = data.require_momentum ? 'ON' : 'OFF';
+      }
+      if (data.max_gap_pct !== undefined) {
+        const v = data.max_gap_pct;
+        const el = document.getElementById('biasMaxGap');
+        if (el) el.textContent = v ? v.toFixed(2) : 'OFF';
+      }
+      if (data.max_ltf_fvg_age_candles !== undefined) {
+        const v = data.max_ltf_fvg_age_candles;
+        const el = document.getElementById('biasMaxAge');
+        if (el) el.textContent = (v === null || v >= 9999) ? '∞' : String(v);
       }
 
       if (data.interval_seconds !== undefined) {

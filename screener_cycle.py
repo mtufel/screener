@@ -27,6 +27,10 @@ from app_config import (
     EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     EXTREME_LTF_TIMEFRAME,
     EXTREME_MIN_GAP_PCT,
+    EXTREME_MAX_DIST_FROM_4H_PCT,
+    EXTREME_MAX_GAP_PCT,
+    EXTREME_MAX_LTF_FVG_AGE_CANDLES,
+    EXTREME_REQUIRE_MOMENTUM,
     EXTREME_SCAN_INTERVAL_SECONDS,
     EXTREME_SESSIONS,
     EXTREME_SESSION_FILTER_ENABLED,
@@ -99,7 +103,8 @@ def _runtime_extreme_config() -> Dict[str, Any]:
 
     Keys: coin_list, ltf, target, min_gap, use_close, sess_filter, wkday_filter,
     entry_sess_filter, entry_wkday_filter, sessions_str, entry_sessions_str,
-    session_config.
+    session_config, max_dist_from_4h_pct, require_momentum, max_gap_pct,
+    max_ltf_fvg_age_candles.
     """
     sessions_str = state.get("extreme_sessions", EXTREME_SESSIONS)
     entry_sessions_str = state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS)
@@ -119,6 +124,10 @@ def _runtime_extreme_config() -> Dict[str, Any]:
         "entry_wkday_filter": entry_wkday_filter,
         "sessions_str": sessions_str,
         "entry_sessions_str": entry_sessions_str,
+        "max_dist_from_4h_pct": state.get("extreme_max_dist_from_4h_pct", EXTREME_MAX_DIST_FROM_4H_PCT),
+        "require_momentum": state.get("extreme_require_momentum", EXTREME_REQUIRE_MOMENTUM),
+        "max_gap_pct": state.get("extreme_max_gap_pct", EXTREME_MAX_GAP_PCT),
+        "max_ltf_fvg_age_candles": int(state.get("extreme_max_ltf_fvg_age_candles", EXTREME_MAX_LTF_FVG_AGE_CANDLES)),
         "session_config": SessionFilterConfig.from_legacy(
             session_filter=sess_filter,
             weekday_filter=wkday_filter,
@@ -458,6 +467,10 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                 session_config=cfg["session_config"],
                 session_filter=cfg["sess_filter"],
                 weekday_filter=cfg["wkday_filter"],
+                max_dist_from_4h_pct=cfg["max_dist_from_4h_pct"],
+                require_momentum=cfg["require_momentum"],
+                max_gap_pct=cfg["max_gap_pct"],
+                max_ltf_fvg_age_candles=cfg["max_ltf_fvg_age_candles"],
             )
             if setup:
                 if curr_px == 0.0:
