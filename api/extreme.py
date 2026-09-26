@@ -20,7 +20,11 @@ from app_config import (
     EXTREME_ENTRY_SESSION_FILTER_ENABLED,
     EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     EXTREME_LTF_TIMEFRAME,
+    EXTREME_MAX_DIST_FROM_4H_PCT,
+    EXTREME_MAX_GAP_PCT,
+    EXTREME_MAX_LTF_FVG_AGE_CANDLES,
     EXTREME_MIN_GAP_PCT,
+    EXTREME_REQUIRE_MOMENTUM,
     EXTREME_SCAN_INTERVAL_SECONDS,
     EXTREME_SESSIONS,
     EXTREME_SESSION_FILTER_ENABLED,
@@ -148,6 +152,11 @@ async def api_extreme_backtest(
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill Weekday filter (Mon-Fri UTC)"),
     sessions: Optional[str] = Query(default=None, description="FVG formation session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
     entry_sessions: Optional[str] = Query(default=None, description="Entry fill session filter ('ALL', 'NY', 'LONDON', 'LONDON,NY', or 'HH:MM-HH:MM')"),
+    # Bias filter params
+    max_dist_from_4h_pct: Optional[float] = Query(default=None, description="Reject LTF FVGs further than this %% from the 4H anchor zone (0 disables)"),
+    require_momentum: Optional[bool] = Query(default=None, description="Require strong directional impulse candle (body >= 50%% of range)"),
+    max_gap_pct: Optional[float] = Query(default=None, description="Reject LTF FVGs with gap_pct above this ceiling (0 disables)"),
+    max_ltf_fvg_age_candles: Optional[int] = Query(default=None, description="Reject LTF FVGs that form more than this many candles after the 4H touch (9999 disables)"),
 ):
     import math
     from backtest_extreme_fvg import run_extreme_backtest
@@ -201,6 +210,28 @@ async def api_extreme_backtest(
             entry_sessions=entry_sessions,
         )
 
+        # Bias filter params: CLI args override env vars; env vars override lenient defaults.
+        _max_dist = (
+            max_dist_from_4h_pct
+            if max_dist_from_4h_pct is not None
+            else float(os.getenv("EXTREME_MAX_DIST_FROM_4H_PCT", "0.0"))
+        )
+        _require_momentum = (
+            require_momentum
+            if require_momentum is not None
+            else os.getenv("EXTREME_REQUIRE_MOMENTUM", "false").strip().lower() in ("true", "1", "yes")
+        )
+        _max_gap = (
+            max_gap_pct
+            if max_gap_pct is not None
+            else float(os.getenv("EXTREME_MAX_GAP_PCT", "0.0"))
+        )
+        _max_age = (
+            max_ltf_fvg_age_candles
+            if max_ltf_fvg_age_candles is not None
+            else int(os.getenv("EXTREME_MAX_LTF_FVG_AGE_CANDLES", "9999"))
+        )
+
         provider = _svc().get_market_data_provider(state.get("data_provider"))
         report = await run_extreme_backtest(
             symbol=symbol.strip().upper(),
@@ -215,6 +246,10 @@ async def api_extreme_backtest(
             entry_weekday_filter=entry_wkday_filter,
             sessions=sessions,
             entry_sessions=entry_sessions,
+            max_dist_from_4h_pct=_max_dist,
+            require_momentum=_require_momentum,
+            max_gap_pct=_max_gap,
+            max_ltf_fvg_age_candles=_max_age,
             client=provider,
         )
         return JSONResponse(content={
@@ -231,6 +266,10 @@ async def api_extreme_backtest(
             "sessions": report.fvg_sessions,
             "entry_sessions": report.entry_sessions,
             "trades_filtered_out": report.trades_filtered_out,
+            "max_dist_from_4h_pct": report.max_dist_from_4h_pct,
+            "require_momentum": report.require_momentum,
+            "max_gap_pct": report.max_gap_pct,
+            "max_ltf_fvg_age_candles": report.max_ltf_fvg_age_candles,
             "total_trades": report.total_trades,
             "wins_1r": report.wins_1r,
             "wins_2r": report.wins_2r,
@@ -273,6 +312,10 @@ async def api_extreme_status():
         "weekday_filter_enabled": state.get("extreme_weekday_filter", EXTREME_WEEKDAY_FILTER_ENABLED),
         "entry_session_filter_enabled": state.get("extreme_entry_session_filter", EXTREME_ENTRY_SESSION_FILTER_ENABLED),
         "entry_weekday_filter_enabled": state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED),
+        "max_dist_from_4h_pct": state.get("extreme_max_dist_from_4h_pct", EXTREME_MAX_DIST_FROM_4H_PCT),
+        "require_momentum": state.get("extreme_require_momentum", EXTREME_REQUIRE_MOMENTUM),
+        "max_gap_pct": state.get("extreme_max_gap_pct", EXTREME_MAX_GAP_PCT),
+        "max_ltf_fvg_age_candles": state.get("extreme_max_ltf_fvg_age_candles", EXTREME_MAX_LTF_FVG_AGE_CANDLES),
         "sessions": state.get("extreme_sessions", EXTREME_SESSIONS),
         "entry_sessions": state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS),
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
@@ -448,6 +491,10 @@ async def api_extreme_config(
     symbols: Optional[str] = Query(default=None, description="Comma-separated symbols"),
     provider: Optional[str] = Query(default=None, pattern="^(binance|binance_futures|binance_spot|oanda|hyperliquid)$", description="Market data provider"),
     fallback_provider: Optional[str] = Query(default=None, pattern="^(hyperliquid|binance|binance_futures|binance_spot|oanda|none)$", description="Fallback market data provider"),
+    max_dist_from_4h_pct: Optional[float] = Query(default=None, ge=0.0, description="Max distance of LTF FVG from 4H anchor zone % (0 disables)"),
+    require_momentum: Optional[bool] = Query(default=None, description="Require strong directional impulse candle (body >= 50% of range)"),
+    max_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Reject LTF FVGs with gap_pct above this ceiling (0 disables)"),
+    max_ltf_fvg_age_candles: Optional[int] = Query(default=None, ge=0, description="Reject LTF FVGs older than this many candles after the 4H touch"),
 ):
     if interval_seconds is not None:
         state["extreme_interval_seconds"] = interval_seconds
@@ -493,6 +540,14 @@ async def api_extreme_config(
     if fallback_provider is not None and fallback_provider.strip():
         state["fallback_data_provider"] = fallback_provider.strip().lower()
         logger.info("Switched active fallback data provider to '%s'", state["fallback_data_provider"])
+    if max_dist_from_4h_pct is not None:
+        state["extreme_max_dist_from_4h_pct"] = float(max_dist_from_4h_pct)
+    if require_momentum is not None:
+        state["extreme_require_momentum"] = bool(require_momentum)
+    if max_gap_pct is not None:
+        state["extreme_max_gap_pct"] = float(max_gap_pct)
+    if max_ltf_fvg_age_candles is not None:
+        state["extreme_max_ltf_fvg_age_candles"] = int(max_ltf_fvg_age_candles)
 
     from extreme_trade_tracker import extreme_trade_tracker
     extreme_trade_tracker.update_session_config(
@@ -521,6 +576,11 @@ async def api_extreme_config(
         "coins_whitelist": state["coins_whitelist"],
         "data_provider": state.get("data_provider", "binance"),
         "fallback_data_provider": state.get("fallback_data_provider", "hyperliquid"),
+        # Bias filter state
+        "max_dist_from_4h_pct": state.get("extreme_max_dist_from_4h_pct", EXTREME_MAX_DIST_FROM_4H_PCT),
+        "require_momentum": state.get("extreme_require_momentum", EXTREME_REQUIRE_MOMENTUM),
+        "max_gap_pct": state.get("extreme_max_gap_pct", EXTREME_MAX_GAP_PCT),
+        "max_ltf_fvg_age_candles": state.get("extreme_max_ltf_fvg_age_candles", EXTREME_MAX_LTF_FVG_AGE_CANDLES),
     }
 
     # Persist updated configuration to Redis
