@@ -23,21 +23,21 @@
 - [x] 3.6 Add `POST /api/{strategy}/activate` + `GET /api/strategies` in `api/extreme.py`
 - [x] 3.7 Add `mode=replay` support to `GET /api/{strategy}/backtest` (MAX-speed run, same envelope + `engine: "replay"` + effective params)
 - [x] 3.8 Add `test_replay_manager.py`: fixture replay runs to completion, ledger isolation, pause/resume semantics, abort report, no-lookahead invariant via fake dataset
-- [ ] 3.9 Add `test_unified_strategy_api.py`: `/api/strategies` shape, activate valid/invalid, replay start/status/report flow via TestClient
+- [x] 3.9 Add `test_unified_strategy_api.py`: `/api/strategies` shape, activate valid/invalid, replay start/status/report flow via TestClient
 - [x] 3.10 Run full `pytest -v`
 
 ## 4. Unified dashboard UI
 
-- [ ] 4.1 Replace `#strat2Wrapper`/`#strat3Wrapper` markup with unified panel: header strategy dropdown, Live/Backtest tabs, all existing widgets preserved (setups grid, FVG map, live trade log + filters, daemon controls, chart modal, toasts)
-- [ ] 4.2 Generate backtest controls from `GET /api/{strategy}/info` `default_params` (type-aware rendering: bool→checkbox, number→input, session→preset select, timeframe→select) + symbol/days/speed/engine inputs
-- [ ] 4.3 Wire live tab to `/api/{strategy}/scan|status` and daemon endpoints (strategy-aware Scan Now, WS reuse)
-- [ ] 4.4 Backtest submit: analytic mode → existing envelope render; replay mode → progress view (virtual clock, head, event feed, live ledger) consuming `/ws/replay`, then report render with Pin/variant comparison
-- [ ] 4.5 Remove dead S2/S3-only JS; keep shared helpers; smoke-test dashboard endpoints
+- [x] 4.1 Replace `#strat2Wrapper`/`#strat3Wrapper` markup with unified panel: header strategy dropdown, Live/Backtest tabs, all existing widgets preserved (setups grid, FVG map, live trade log + filters, daemon controls, chart modal, toasts)
+- [x] 4.2 Generate backtest controls from `GET /api/{strategy}/info` `default_params` (type-aware rendering: bool→checkbox, number→input, session→preset select, timeframe→select) + symbol/days/speed/engine inputs
+- [x] 4.3 Wire live tab to `/api/{strategy}/scan|status` and daemon endpoints (strategy-aware Scan Now, WS reuse)
+- [x] 4.4 Backtest submit: analytic mode → existing envelope render; replay mode → progress view (virtual clock, head, event feed, live ledger) consuming `/ws/replay`, then report render with Pin/variant comparison
+- [x] 4.5 Remove dead S2/S3-only JS; keep shared helpers; smoke-test dashboard endpoints
 - [ ] 4.6 Manual smoke: live scan for both strategies; 14-day replay at MAX with pause/resume; report + variant pin
 
 ## 5. Validation & wrap-up
 
-- [ ] 5.1 Full `pytest -v` green (SOT untouched)
-- [ ] 5.2 Typecheck/lint pass (python -m compileall; no new lint suppressions)
-- [ ] 5.3 Update `project.md`/`README` (replay backtest, unified UI, new endpoints)
+- [x] 5.1 Full `pytest -v` green (SOT untouched)
+- [x] 5.2 Typecheck/lint pass (python -m compileall; no new lint suppressions)
+- [x] 5.3 Update `project.md`/`README` (replay backtest, unified UI, new endpoints)
 - [ ] 5.4 `openspec validate unified-strategy-ui-replay-backtest` (or manual checklist if CLI unavailable)
