@@ -8,6 +8,7 @@ Focuses on:
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+import bisect
 import logging
 import os
 import time
@@ -169,6 +170,25 @@ def _three_candle_fvg(c1: Candle, c2: Candle, c3: Candle, timeframe: str) -> Opt
         return FVG(direction="Bearish", top=c1.low, bottom=c3.high, c1=c1, c2=c2, c3=c3,
                    formed_at=c3.timestamp, timeframe=timeframe)
     return None
+
+
+def _is_strong_momentum(cand: Candle, direction: Literal["Bullish", "Bearish"]) -> bool:
+    """True if candle c2 is a strong directional impulse: body ≥ 50% of range, direction matches FVG.
+
+    Research: momentum bucket (c2 body ≥50% range, in-trade direction) was +27R vs -9R
+    for no-momentum — a clean positive filter.
+    """
+    if cand.high <= cand.low:
+        return False
+    body = abs(cand.close - cand.open)
+    rng = cand.high - cand.low
+    body_ratio = body / rng
+    if body_ratio < 0.5:
+        return False
+    if direction == "Bullish":
+        return cand.close > cand.open
+    else:
+        return cand.close < cand.open
 
 
 def compute_all_active_4h_fvgs(
@@ -1006,6 +1026,14 @@ def find_unmitigated_ltf_fvgs(
     ltf_timeframe: str = "5m",
     min_gap_pct: float = 0.05,
     completion_target: Literal["1R", "2R", "3R"] = "2R",
+    # Bias filter params
+    anchor_bottom: float = 0.0,
+    anchor_top: float = 0.0,
+    max_dist_from_4h_pct: float = 0.0,
+    require_momentum: bool = False,
+    max_gap_pct: float = 0.0,
+    max_ltf_fvg_age_candles: int = 9999,
+    first_touch_ts: int = 0,
 ) -> List[FVG]:
     """
     Scans candles_ltf for FVGs matching direction that formed strictly AFTER after_timestamp,
@@ -1013,6 +1041,12 @@ def find_unmitigated_ltf_fvgs(
     - Retains PENDING_RETRACE (waiting for entry)
     - Retains TRADE_ACTIVE (touched entry, floating between Entry and TP/SL)
     - Discards STOPPED_OUT, COMPLETED, and INVALIDATED.
+
+    Bias filters applied at candidate selection (research-backed):
+    - Distance: reject LTF FVG > max_dist_from_4h_pct from the 4H anchor zone.
+    - Momentum: reject if require_momentum=True and c2 body < 50% of range.
+    - Gap ceiling: reject if gap_pct > max_gap_pct (0 = disabled).
+    - Age ceiling: reject if FVG forms > max_ltf_fvg_age_candles after the 4H touch.
     """
     duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
     now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
@@ -1023,6 +1057,10 @@ def find_unmitigated_ltf_fvgs(
         return []
 
     unmitigated: List[FVG] = []
+
+    # Index of first closed LTF candle at/after the 4H first-touch -> baseline for age calcs.
+    _ltf_ts = [c.timestamp for c in closed_ltf]
+    _touch_idx = bisect.bisect_left(_ltf_ts, first_touch_ts) if first_touch_ts > 0 else 0
 
     for i in range(len(closed_ltf) - 2):
         c1, c2, c3 = closed_ltf[i], closed_ltf[i + 1], closed_ltf[i + 2]
@@ -1041,6 +1079,30 @@ def find_unmitigated_ltf_fvgs(
         # Check minimum gap size filter
         if min_gap_pct > 0 and cand.gap_pct < min_gap_pct:
             continue
+
+        # ---- Bias filters (research-backed) ----
+        # 1. Gap ceiling: reject oversized gaps while respecting the min-gap floor.
+        if max_gap_pct > 0 and cand.gap_pct > max_gap_pct:
+            continue
+
+        # 2. Distance-from-4H-zone confluence filter (reject far-from-zone setups).
+        if max_dist_from_4h_pct > 0 and anchor_bottom > 0 and anchor_top > 0:
+            if direction == "Bullish":
+                d = (cand.bottom - anchor_bottom) / anchor_bottom * 100.0
+            else:
+                d = (anchor_top - cand.top) / anchor_top * 100.0
+            if d > max_dist_from_4h_pct:
+                continue
+
+        # 3. Momentum impulse-candle filter.
+        if require_momentum and not _is_strong_momentum(c2, direction):
+            continue
+
+        # 4. Age ceiling: reject stale/decayed imbalances (formed far past the 4H touch).
+        if max_ltf_fvg_age_candles > 0 and max_ltf_fvg_age_candles < 9999:
+            age = (i + 2) - _touch_idx
+            if age > max_ltf_fvg_age_candles:
+                continue
 
         # Evaluate trade state machine across subsequent candles
         subsequent = closed_ltf[i + 3:]
@@ -1147,6 +1209,11 @@ async def get_extreme_setup_for_symbol(
     session_config: Optional[SessionFilterConfig] = None,
     candles_4h: Optional[List[Candle]] = None,
     candles_ltf: Optional[List[Candle]] = None,
+    # Bias filter params (live defaults from research backtest marginal analysis)
+    max_dist_from_4h_pct: float = 0.0,
+    require_momentum: bool = False,
+    max_gap_pct: float = 0.0,
+    max_ltf_fvg_age_candles: int = 9999,
 ) -> Optional[ExtremeTradeSetup]:
     """
     End-to-end pipeline:
@@ -1196,6 +1263,13 @@ async def get_extreme_setup_for_symbol(
         ltf_timeframe=ltf_timeframe,
         min_gap_pct=min_gap_pct,
         completion_target=completion_target,
+        anchor_bottom=anchor.fvg.bottom,
+        anchor_top=anchor.fvg.top,
+        max_dist_from_4h_pct=max_dist_from_4h_pct,
+        require_momentum=require_momentum,
+        max_gap_pct=max_gap_pct,
+        max_ltf_fvg_age_candles=max_ltf_fvg_age_candles,
+        first_touch_ts=anchor.first_touch_timestamp,
     )
     if not unmitigated:
         logger.debug("[ExtremeStrategy] [%s] 0 unmitigated LTF FVGs found post-touch (threshold: %.3f%%)", symbol, min_gap_pct)

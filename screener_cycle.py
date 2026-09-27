@@ -27,7 +27,11 @@ from app_config import (
     EXTREME_ENTRY_SESSION_FILTER_ENABLED,
     EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     EXTREME_LTF_TIMEFRAME,
+    EXTREME_MAX_DIST_FROM_4H_PCT,
+    EXTREME_MAX_GAP_PCT,
+    EXTREME_MAX_LTF_FVG_AGE_CANDLES,
     EXTREME_MIN_GAP_PCT,
+    EXTREME_REQUIRE_MOMENTUM,
     EXTREME_SCAN_INTERVAL_SECONDS,
     EXTREME_SESSIONS,
     EXTREME_SESSION_FILTER_ENABLED,
@@ -121,6 +125,13 @@ def _runtime_extreme_config() -> Dict[str, Any]:
         "entry_wkday_filter": entry_wkday_filter,
         "sessions_str": sessions_str,
         "entry_sessions_str": entry_sessions_str,
+        # Bias filters (Strategy 2). "0" / False / 9999 disable each filter.
+        "max_dist_from_4h_pct": state.get("extreme_max_dist_from_4h_pct", EXTREME_MAX_DIST_FROM_4H_PCT),
+        "require_momentum": state.get("extreme_require_momentum", EXTREME_REQUIRE_MOMENTUM),
+        "max_gap_pct": state.get("extreme_max_gap_pct", EXTREME_MAX_GAP_PCT),
+        "max_ltf_fvg_age_candles": int(
+            state.get("extreme_max_ltf_fvg_age_candles", EXTREME_MAX_LTF_FVG_AGE_CANDLES)
+        ),
         "session_config": SessionFilterConfig.from_legacy(
             session_filter=sess_filter,
             weekday_filter=wkday_filter,
@@ -508,6 +519,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         "entry_weekday_filter": cfg["entry_wkday_filter"],
         "sessions": cfg["sessions_str"],
         "entry_sessions": cfg["entry_sessions_str"],
+        # Bias filters (Strategy 2). Forwarded through the strategy's
+        # default_params, so strategies that do not declare them ignore them.
+        "max_dist_from_4h_pct": cfg["max_dist_from_4h_pct"],
+        "require_momentum": cfg["require_momentum"],
+        "max_gap_pct": cfg["max_gap_pct"],
+        "max_ltf_fvg_age_candles": cfg["max_ltf_fvg_age_candles"],
     })
 
     setups_out: List[Dict[str, Any]] = []

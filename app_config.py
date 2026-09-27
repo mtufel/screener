@@ -49,6 +49,11 @@ EXTREME_SESSIONS = os.getenv("EXTREME_SESSIONS", "ALL").strip()
 EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "ALL").strip()
 # Strategy framework (freqtrade StrategyResolver analog): name of the active strategy.
 EXTREME_ACTIVE_STRATEGY = os.getenv("EXTREME_ACTIVE_STRATEGY", "extreme_fvg").strip()
+# Bias-filter params (live defaults from research backtest marginal analysis)
+EXTREME_MAX_DIST_FROM_4H_PCT = float(os.getenv("EXTREME_MAX_DIST_FROM_4H_PCT", "2.0"))
+EXTREME_REQUIRE_MOMENTUM = os.getenv("EXTREME_REQUIRE_MOMENTUM", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_MAX_GAP_PCT = float(os.getenv("EXTREME_MAX_GAP_PCT", "0.3"))
+EXTREME_MAX_LTF_FVG_AGE_CANDLES = int(os.getenv("EXTREME_MAX_LTF_FVG_AGE_CANDLES", "9999"))
 
 state: Dict[str, Any] = {
     "strategy_2_enabled": ENABLE_STRATEGY_2,
@@ -76,6 +81,10 @@ state: Dict[str, Any] = {
     "extreme_entry_weekday_filter": EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     "extreme_sessions": EXTREME_SESSIONS,
     "extreme_entry_sessions": EXTREME_ENTRY_SESSIONS,
+    "extreme_max_dist_from_4h_pct": EXTREME_MAX_DIST_FROM_4H_PCT,
+    "extreme_require_momentum": EXTREME_REQUIRE_MOMENTUM,
+    "extreme_max_gap_pct": EXTREME_MAX_GAP_PCT,
+    "extreme_max_ltf_fvg_age_candles": EXTREME_MAX_LTF_FVG_AGE_CANDLES,
     "extreme_last_scan_time_ist": None,
     "extreme_setups": [],
     "extreme_active_count": 0,

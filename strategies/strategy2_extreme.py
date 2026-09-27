@@ -71,6 +71,14 @@ class Strategy2Extreme(BaseStrategy):
         "entry_session_filter": False,
         "entry_weekday_filter": False,
         "entry_sessions": "ALL",
+        # Bias filters (research-backed marginal analysis; see
+        # openspec/specs/strategy-biases/spec.md). 0 / False / 9999 are
+        # "disabled" sentinels — the engine no-ops on them, so an empty
+        # runtime_overrides dict reproduces pre-bias-filter behavior.
+        "max_dist_from_4h_pct": 0.0,
+        "require_momentum": False,
+        "max_gap_pct": 0.0,
+        "max_ltf_fvg_age_candles": 9999,
     }
 
     async def find_setups(
@@ -101,6 +109,10 @@ class Strategy2Extreme(BaseStrategy):
             weekday_filter=params.get("weekday_filter", False),
             sessions=params.get("sessions"),
             session_config=session_config,
+            max_dist_from_4h_pct=params.get("max_dist_from_4h_pct", 0.0),
+            require_momentum=params.get("require_momentum", False),
+            max_gap_pct=params.get("max_gap_pct", 0.0),
+            max_ltf_fvg_age_candles=params.get("max_ltf_fvg_age_candles", 9999),
         )
         return [setup] if setup is not None else []
 
@@ -131,4 +143,8 @@ class Strategy2Extreme(BaseStrategy):
             entry_sessions=params.get("entry_sessions"),
             session_config=session_config,
             client=provider,
+            max_dist_from_4h_pct=params.get("max_dist_from_4h_pct", 0.0),
+            require_momentum=params.get("require_momentum", False),
+            max_gap_pct=params.get("max_gap_pct", 0.0),
+            max_ltf_fvg_age_candles=params.get("max_ltf_fvg_age_candles", 9999),
         )

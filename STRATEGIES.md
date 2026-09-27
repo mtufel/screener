@@ -130,10 +130,29 @@ flowchart TD
   * Discards candidate FVGs that already completed targets or stopped out.
   * Retains candidates in `PENDING_RETRACE` or `TRADE_ACTIVE`.
 
+### Step 3b: Research-backed Bias Filters (Empirical, 2026-09-26)
+Four opt-in bias filters, derived from marginal backtest analysis in
+`strategy_research_findings.md`, refine candidate LTF FVGs **before** lifecycle/ranking. All
+are applied inside `find_unmitigated_ltf_fvgs` (and mirrored in the backtester's scan loop).
+Defaults are permissive/off so existing behavior is unchanged unless enabled:
+
+| Filter | Param | Default | Rule |
+|---|---|---|---|
+| **Distance from 4H zone** | `max_dist_from_4h_pct` | `2.0` (0 = off) | Reject LTF FVG whose midpoint distance from the active 4H anchor zone exceeds the ceiling. Bullish: $d = \frac{\text{bottom} - \text{anchor.bottom}}{\text{anchor.bottom}} \times 100$. Bearish: $d = \frac{\text{anchor.top} - \text{top}}{\text{anchor.top}} \times 100$. |
+| **Momentum impulse-candle** | `require_momentum` | `false` | When on, reject any FVG whose middle candle `c2` is not a strong directional impulse: body ≥ 50% of range **and** direction matching the FVG (`_is_strong_momentum`). |
+| **Gap ceiling** | `max_gap_pct` | `0.3` (0 = off) | Reject LTF FVGs whose `gap_pct` exceeds this ceiling (respects the existing `min_gap_pct` floor). |
+| **Age ceiling** | `max_ltf_fvg_age_candles` | `9999` (permissive) | Reject LTF FVGs that form more than this many candles after the 4H first touch: $\text{age} = \text{candle}_3 \text{ index} - \text{touch index}$ (via `bisect` on LTF timestamps). |
+
+**Empirical basis** (from `strategy_research_findings.md`): momentum-bucket setups (c2 body
+≥ 50%, in-trade direction) earned **+27R vs −9R** for no-momentum; FVGs far from the 4H zone and
+oversized gaps underperformed. These filters converge candidates toward confluent, high-quality
+imbalances. They are exposed end-to-end: env vars → `app_config` → strategy engine → backtester
+CLI (`--max-dist-from-4h-pct`, `--require-momentum`, `--max-gap-pct`, `--max-ltf-fvg-age`) →
+`api/extreme` (backtest + config) → live daemon → Web dashboard (read-only display).
+
 ### Step 4: Extreme Ranking & Selection
 From all valid, unmitigated LTF FVGs formed post-touch:
-* **Bullish (Long)**: Selects the **Lowest Price FVG** (deepest discount, closest to the 4H anchor support zone).
-  $$\text{Selected FVG} = \arg\min_{f \in \text{FVGs}} (f.\text{bottom})$$
+* **Bullish (Long)**: Selects the **Lowest Price FVG** (deepest discount, closest to the 4H anchor support zone).  $$\text{Selected FVG} = \arg\min_{f \in \text{FVGs}} (f.\text{bottom})$$
 * **Bearish (Short)**: Selects the **Highest Price FVG** (highest premium, closest to the 4H anchor resistance zone).
   $$\text{Selected FVG} = \arg\max_{f \in \text{FVGs}} (f.\text{top})$$
 
