@@ -65,22 +65,54 @@ def test_api_extreme_config_endpoint():
 
 def test_strategy_enablement_flags():
     client = TestClient(app)
-    # Check health and status endpoints return strategy_1_enabled and strategy_2_enabled
+    # Strategy 1 is retired; payloads expose Strategy 2 only.
     health_resp = client.get("/api/health")
     assert health_resp.status_code == 200
     h_data = health_resp.json()
-    assert "strategy_1_enabled" in h_data
+    assert "strategy_1_enabled" not in h_data
     assert "strategy_2_enabled" in h_data
 
     status_resp = client.get("/api/status")
     assert status_resp.status_code == 200
     s_data = status_resp.json()
-    assert "strategy_1_enabled" in s_data
+    assert "strategy_1_enabled" not in s_data
     assert "strategy_2_enabled" in s_data
 
     extreme_status = client.get("/api/extreme/status")
     assert extreme_status.status_code == 200
     e_data = extreme_status.json()
-    assert "strategy_1_enabled" in e_data
+    assert "strategy_1_enabled" not in e_data
     assert "strategy_2_enabled" in e_data
+
+
+def test_api_extreme_session_config():
+    client = TestClient(app)
+    # Check status endpoint contains sessions and entry_sessions
+    status_resp = client.get("/api/extreme/status")
+    assert status_resp.status_code == 200
+    s_data = status_resp.json()
+    assert "sessions" in s_data
+    assert "entry_sessions" in s_data
+
+    # Update session configuration via POST /api/extreme/config
+    resp = client.post("/api/extreme/config?sessions=LONDON,NY&entry_sessions=NY")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["config"]["sessions"] == "LONDON,NY"
+    assert data["config"]["entry_sessions"] == "NY"
+    assert data["config"]["session_filter_enabled"] is True
+    assert data["config"]["entry_session_filter_enabled"] is True
+    assert state["extreme_sessions"] == "LONDON,NY"
+    assert state["extreme_entry_sessions"] == "NY"
+
+    # Reset back to ALL
+    reset_resp = client.post("/api/extreme/config?sessions=ALL&entry_sessions=ALL")
+    assert reset_resp.status_code == 200
+    reset_data = reset_resp.json()
+    assert reset_data["config"]["sessions"] == "ALL"
+    assert reset_data["config"]["entry_sessions"] == "ALL"
+    assert reset_data["config"]["session_filter_enabled"] is False
+    assert reset_data["config"]["entry_session_filter_enabled"] is False
+
 

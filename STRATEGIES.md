@@ -1,6 +1,8 @@
 # 📖 Comprehensive Strategy Documentation
 
-This document provides complete architectural, mathematical, and algorithmic specifications for the two trading strategies implemented in this repository.
+This document provides complete architectural, mathematical, and algorithmic specifications for the trading strategies in this repository.
+
+**Runtime note:** Strategy 1 is retired. The live app, daemon, dashboard, and backtester run Strategy 2 (Extreme LTF FVG) only. The Strategy 1 section below is historical reference.
 
 ---
 

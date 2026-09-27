@@ -13,6 +13,10 @@ from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 
+# Canonical timeframe -> candle duration (ms) lives in candle_store (single source
+# of truth shared by every module); re-exported here for snapshot/chunking math.
+from candle_store import TIMEFRAME_MS
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -24,6 +28,7 @@ RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "3.0"))  # Sustained requests
 
 # Symbol aliases for commodities and alternative naming
 SYMBOL_ALIASES: Dict[str, str] = {
+    "GOLD": "PAXG",
     "XAU": "PAXG",
     "XAUUSD": "PAXG",
     "PAXGOLD": "PAXG",
@@ -34,11 +39,76 @@ SYMBOL_ALIASES: Dict[str, str] = {
     "CRUDE": "WTIOIL",
 }
 
+# Canonical Hyperliquid coin -> user-facing aliases (REST and WS mids must both expand these)
+REVERSE_ALIASES: Dict[str, List[str]] = {
+    "PAXG": ["GOLD", "XAU", "XAUUSD", "PAXGOLD"],
+    "SILVER": ["XAG", "XAGUSD"],
+    "WTIOIL": ["OIL", "CRUDE"],
+}
+
+DEFAULT_TIMEFRAME_MS: int = 5 * 60 * 1000
+
+
+def timeframe_to_ms(timeframe: str) -> int:
+    """Duration of one candle for `timeframe` in ms (unknown values fall back to 5m)."""
+    return TIMEFRAME_MS.get(timeframe.lower(), DEFAULT_TIMEFRAME_MS)
+
+
+def _binance_kline_row(row: List[Any], coin: str, interval: str) -> Dict[str, Any]:
+    """Maps a raw Binance kline array onto the candle dict schema used across the app."""
+    return {
+        "t": int(row[0]),
+        "T": int(row[6]),
+        "s": coin,
+        "i": interval,
+        "o": float(row[1]),
+        "h": float(row[2]),
+        "l": float(row[3]),
+        "c": float(row[4]),
+        "v": float(row[5]),
+        "n": int(row[8]),
+    }
+
 
 def resolve_symbol(symbol: str) -> str:
     """Normalizes symbol by stripping PERP/USDT and applying commodity aliases."""
     clean = symbol.strip().upper().replace("-PERP", "").replace("USDT", "").replace("USD", "")
     return SYMBOL_ALIASES.get(symbol.strip().upper(), SYMBOL_ALIASES.get(clean, clean))
+
+
+def expand_mids_with_aliases(mids: Dict[str, float]) -> Dict[str, float]:
+    """Copies exchange mids onto canonical names and user aliases (GOLD, OIL, …)."""
+    if not mids:
+        return {}
+    expanded: Dict[str, float] = {}
+    for key, price in mids.items():
+        try:
+            px = float(price)
+        except (TypeError, ValueError):
+            continue
+        raw = str(key)
+        expanded[raw] = px
+        canon = resolve_symbol(raw)
+        expanded[canon] = px
+        for alias in REVERSE_ALIASES.get(raw.upper(), []) + REVERSE_ALIASES.get(canon, []):
+            expanded[alias] = px
+    return expanded
+
+
+def lookup_mid(mids: Dict[str, float], symbol: str, fallback: float = 0.0) -> float:
+    """Resolves a mid price from whitelist names, aliases, or canonical coins."""
+    if not mids or not symbol:
+        return float(fallback)
+    key = symbol.strip().upper()
+    if key in mids:
+        return float(mids[key])
+    canon = resolve_symbol(key)
+    if canon in mids:
+        return float(mids[canon])
+    for alias in REVERSE_ALIASES.get(canon, []):
+        if alias in mids:
+            return float(mids[alias])
+    return float(fallback)
 
 
 class AsyncRateLimiter:
@@ -100,6 +170,12 @@ class AsyncRateLimiter:
         if target > self._cooldown_until:
             self._cooldown_until = target
             logger.warning("Global rate limit cooldown triggered for %.1f seconds.", seconds)
+
+
+def _absorb_candles(all_candles_map: Dict[int, Dict[str, Any]], candles: List[Dict[str, Any]]) -> None:
+    """First occurrence of each candle timestamp wins (earlier chunk data is authoritative)."""
+    for c in candles:
+        all_candles_map.setdefault(c.get("t", 0), c)
 
 
 class HyperliquidClient:
@@ -259,7 +335,9 @@ class HyperliquidClient:
         try:
             data = await self._post_info({"type": "allMids"})
             if isinstance(data, dict):
-                return {k: float(v) for k, v in data.items() if v is not None}
+                return expand_mids_with_aliases(
+                    {k: float(v) for k, v in data.items() if v is not None}
+                )
             return {}
         except Exception as exc:
             logger.error("Failed to fetch allMids from Hyperliquid: %s", exc)
@@ -275,9 +353,9 @@ class HyperliquidClient:
         Returns:
             Optional[float]: Price or None if unavailable.
         """
-        resolved_sym = SYMBOL_ALIASES.get(symbol.upper(), symbol)
         all_mids = await self.get_all_mids()
-        return all_mids.get(resolved_sym) or all_mids.get(symbol)
+        px = lookup_mid(all_mids, symbol, 0.0)
+        return px if px > 0 else None
 
     async def fetch_fallback_historical_klines(
         self,
@@ -302,15 +380,7 @@ class HyperliquidClient:
             "SILVER": "XAGUSDT",
         }
         binance_symbol = sym_map.get(coin.upper(), f"{coin.upper()}USDT")
-        interval_ms_map = {
-            "1m": 60 * 1000,
-            "5m": 5 * 60 * 1000,
-            "15m": 15 * 60 * 1000,
-            "1h": 60 * 60 * 1000,
-            "4h": 4 * 60 * 60 * 1000,
-            "1d": 24 * 60 * 60 * 1000,
-        }
-        step_ms = interval_ms_map.get(interval, 5 * 60 * 1000)
+        step_ms = timeframe_to_ms(interval)
         all_candles: List[Dict[str, Any]] = []
         curr_start = start_time_ms
 
@@ -321,19 +391,17 @@ class HyperliquidClient:
                     curr_end = min(curr_start + (1000 * step_ms), end_time_ms)
                     url = f"https://api.binance.com/api/v3/klines?symbol={binance_symbol}&interval={interval}&startTime={curr_start}&endTime={curr_end}&limit=1000"
                     
-                    raw = None
+                    raw: Optional[list] = None
                     for attempt in range(1, 4):
                         try:
                             res = await client.get(url)
                             if res.status_code == 200:
                                 raw = res.json()
                                 break
-                            elif res.status_code == 400:
+                            if res.status_code == 400:  # Bad request (unsupported symbol): stop retrying
                                 break
-                            elif res.status_code == 429:
-                                await asyncio.sleep(2.0 * attempt)
-                            else:
-                                await asyncio.sleep(0.5 * attempt)
+                            # 429 gets a longer backoff than other transient statuses
+                            await asyncio.sleep((2.0 if res.status_code == 429 else 0.5) * attempt)
                         except (httpx.RequestError, httpx.TimeoutException):
                             if attempt == 3:
                                 break
@@ -341,19 +409,7 @@ class HyperliquidClient:
 
                     if not raw or not isinstance(raw, list):
                         break
-                    for row in raw:
-                        all_candles.append({
-                            "t": int(row[0]),
-                            "T": int(row[6]),
-                            "s": coin,
-                            "i": interval,
-                            "o": float(row[1]),
-                            "h": float(row[2]),
-                            "l": float(row[3]),
-                            "c": float(row[4]),
-                            "v": float(row[5]),
-                            "n": int(row[8]),
-                        })
+                    all_candles.extend(_binance_kline_row(row, coin, interval) for row in raw)
                     last_open = int(raw[-1][0])
                     if last_open <= curr_start:
                         break
@@ -386,15 +442,7 @@ class HyperliquidClient:
             List[Dict[str, Any]]: List of candle dicts sorted chronologically
         """
         resolved_coin = SYMBOL_ALIASES.get(coin.upper(), coin)
-        interval_ms_map = {
-            "1m": 60 * 1000,
-            "5m": 5 * 60 * 1000,
-            "15m": 15 * 60 * 1000,
-            "1h": 60 * 60 * 1000,
-            "4h": 4 * 60 * 60 * 1000,
-            "1d": 24 * 60 * 60 * 1000,
-        }
-        step_ms = interval_ms_map.get(interval, 5 * 60 * 1000)
+        step_ms = timeframe_to_ms(interval)
         chunk_candle_limit = 3500
         chunk_duration_ms = chunk_candle_limit * step_ms
 
@@ -413,9 +461,8 @@ class HyperliquidClient:
             }
             try:
                 candles = await self._post_info(payload)
-                if isinstance(candles, list) and len(candles) > 0:
-                    for c in candles:
-                        all_candles_map[c.get("t", 0)] = c
+                if isinstance(candles, list):
+                    _absorb_candles(all_candles_map, candles)
             except Exception as exc:
                 logger.warning("Failed to fetch candles for %s (%s): %s", coin, interval, exc)
         else:
@@ -435,10 +482,7 @@ class HyperliquidClient:
                 try:
                     chunk = await self._post_info(payload)
                     if isinstance(chunk, list):
-                        for c in chunk:
-                            t = c.get("t", 0)
-                            if t not in all_candles_map:
-                                all_candles_map[t] = c
+                        _absorb_candles(all_candles_map, chunk)
                 except Exception as exc:
                     logger.warning("Failed to fetch chunk for %s (%s) [%d - %d]: %s", coin, interval, curr_start, curr_end, exc)
 
@@ -461,10 +505,7 @@ class HyperliquidClient:
                 start_time_ms=start_time_ms,
                 end_time_ms=earliest_hl_time,
             )
-            for c in fallback_candles:
-                t = c.get("t", 0)
-                if t not in all_candles_map:
-                    all_candles_map[t] = c
+            _absorb_candles(all_candles_map, fallback_candles)
 
         sorted_candles = sorted(all_candles_map.values(), key=lambda x: x.get("t", 0))
         return sorted_candles
@@ -486,16 +527,7 @@ class HyperliquidClient:
         Returns:
             List[Dict[str, Any]]: List of candle dictionaries sorted chronologically.
         """
-        timeframe_ms_map = {
-            "1m": 60 * 1000,
-            "5m": 5 * 60 * 1000,
-            "15m": 15 * 60 * 1000,
-            "1h": 60 * 60 * 1000,
-            "4h": 4 * 60 * 60 * 1000,
-            "1d": 24 * 60 * 60 * 1000,
-        }
-
-        candle_duration = timeframe_ms_map.get(timeframe.lower(), 15 * 60 * 1000)
+        candle_duration = timeframe_to_ms(timeframe)
         end_time_ms = int(time.time() * 1000)
         start_time_ms = end_time_ms - int(candle_duration * (n + 10) * 1.5)
 

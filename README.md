@@ -6,16 +6,13 @@ The engine scans perpetual markets for multi-timeframe Fair Value Gaps (4H Highe
 
 ---
 
-## 📌 Dual Strategy Suite Overview
+## 📌 Strategy Overview
 
 For full technical and algorithmic specifications, see **[STRATEGIES.md](STRATEGIES.md)**.
 
-### 🏛️ Strategy 1: 2-Stage Standard Multi-Timeframe FVG
-* **Phase 1 (4H Macro Anchor)**: Checks if price is inside or recently retraced into an active 4H FVG zone. Supports `ANY_VALID`, `RECENT_FORMED`, and `TOUCH_WINDOW` modes with wick/close invalidation.
-* **Phase 2 (15m/5m Micro Confirmation)**: Identifies matching LTF FVG and ranks opportunities via composite scoring (Tightness + Center Proximity).
-* **Stop Loss Reference**: Extreme wick of the 3 candles forming the LTF FVG.
+Strategy 1 (2-stage standard FVG) has been removed. The product runs **Strategy 2 only**.
 
-### ⚡ Strategy 2: ⚡ Extreme LTF FVG Strategy
+### ⚡ Strategy 2: Extreme LTF FVG Strategy
 * **4H Touch Anchor**: Pinpoints the exact timestamp when price first touched an active 4H FVG post-close (`first_touch_timestamp`).
 * **Post-Touch LTF Discovery**: Scans LTF FVGs (15m) formed strictly post-touch with a minimum gap threshold ($\ge 0.05\%$).
 * **#1 Extreme Ranking**: Selects the deepest FVG closest to the 4H zone (Lowest for Longs, Highest for Shorts).
@@ -29,17 +26,21 @@ For full technical and algorithmic specifications, see **[STRATEGIES.md](STRATEG
 ```
 crypto-fvg-screener/
 ├── .env.example                # Configuration template
-├── .env                        # Local environment variables
 ├── requirements.txt            # Python dependencies
+├── app_config.py               # Leaf module: env constants, runtime state, logging
 ├── hyperliquid_client.py       # Async Hyperliquid client (Token Bucket, 429 Cooldown)
-├── strategy.py                 # Strategy 1 (Standard 2-Stage FVG math & scoring)
-├── strategy_extreme_fvg.py     # Strategy 2 (Extreme LTF FVG engine & state machine)
-├── extreme_trade_tracker.py    # Strategy 2 Immutable Active Trade Ledger
-├── backtest.py                 # Strategy 1 backtester engine
-├── backtest_extreme_fvg.py     # Strategy 2 Extreme backtester engine
+├── market_data/                # Pluggable data providers (Hyperliquid, Binance, CCXT)
+├── candle_store.py             # Canonical candle persistence + TIMEFRAME_MS
+├── strategy_extreme_fvg.py     # Extreme LTF FVG engine & state machine
+├── extreme_trade_tracker.py    # Immutable Active Trade Ledger
+├── live_screener_extreme.py    # Standalone single-cycle scanner
+├── backtest_extreme_fvg.py     # Extreme backtester engine
 ├── chart_generator.py          # High-contrast TradingView-style candlestick chart generator
 ├── telegram_client.py          # Telegram alert dispatcher & photo attachments
-├── main.py                     # FastAPI app, dual background daemons & Web UI
+├── screener_cycle.py           # Scan-cycle orchestrator, alert dispatch, daemon loop
+├── dashboard_ws.py             # WebSocket manager + /ws/extreme-live
+├── api/                        # Routers: system.py (health/status/config), extreme.py (scan/backtest/trades)
+├── main.py                     # FastAPI app facade (run with: uvicorn main:app)
 ├── templates/
 │   └── index.html              # Real-time Web Dashboard interface
 ├── STRATEGIES.md               # Complete Strategy Architecture & Math Specs
@@ -104,9 +105,10 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 When started:
 * The screener runs an immediate initial scan on startup.
 * Continues running scans automatically every `SCAN_INTERVAL_MINUTES` in the background.
-* Open `http://localhost:8000/` in your browser to verify `{"status": "screener running"}`.
+* Open `http://localhost:8000/` in your browser to verify the dashboard loads.
 * Open `http://localhost:8000/health` to view operational metrics and latest scan results.
-* Trigger a manual scan anytime via `http://localhost:8000/scan` or `curl -X POST http://localhost:8000/scan`.
+* Trigger a manual scan anytime via `curl -X POST http://localhost:8000/api/extreme/scan`.
+* Live trade events stream over the WebSocket at `ws://localhost:8000/ws/extreme-live`.
 
 ---
 
@@ -132,14 +134,16 @@ Score: 0.81
 
 ## ⚙️ Customization & Adjustments
 
-All core strategy parameters are centralized in `strategy.py` and configurable via `.env`:
+All core strategy parameters are centralized in `strategy_extreme_fvg.py` and configurable via `.env`:
 
 ### 1. Change Timeframes & Lookback
-In `.env` or at top of `strategy.py`:
-```python
-HTF_TIMEFRAME = "4h"       # Higher timeframe: "1h", "4h", "1d"
-LTF_TIMEFRAME = "15m"      # Lower timeframe: "5m", "15m", "1h"
-LOOKBACK_CANDLES = 50      # Number of historical candles inspected
+In `.env`:
+```ini
+HTF_TIMEFRAME="4h"              # Higher timeframe: "1h", "4h", "1d"
+EXTREME_LTF_TIMEFRAME="15m"     # Lower timeframe used for post-touch discovery
+LOOKBACK_CANDLES=50             # Number of historical HTF candles inspected
+MAX_HTF_RETRACE_CANDLES=6       # HTF freshness: candles since FVG formation
+USE_CLOSE_BASED_INVALIDATION=true
 ```
 
 ### 2. Change Scan Interval & Alert Count
@@ -149,21 +153,17 @@ SCAN_INTERVAL_MINUTES=15    # Scan frequency in minutes
 TOP_N_ALERTS=10             # Number of highest-scoring setups to alert
 ```
 
-### 3. Adjust Scoring Weights
-In `strategy.py`:
-```python
-WEIGHT_HTF_TIGHTNESS = 0.35    # Weight for 4H gap tightness
-WEIGHT_LTF_TIGHTNESS = 0.35    # Weight for 15m gap tightness
-WEIGHT_CENTER_PROXIMITY = 0.30 # Weight for price being centered in 4H FVG
+### 3. Enable Session Filtering (London / NY / Asia)
+In `.env`:
+```ini
+SESSION_FILTER_ENABLED=true   # Restrict fills/scans to major crypto sessions
 ```
 
-### 4. Enable Session Filtering (London / NY / Asia)
-In `strategy.py`, edit the `is_major_session` function:
-```python
-def is_major_session(timestamp_ms: Optional[int] = None) -> bool:
-    # Example: Restrict scans to active London & New York session hours (08:00 - 21:00 UTC)
-    now_utc = datetime.now(timezone.utc)
-    return 8 <= now_utc.hour < 21
+### 4. Choose the Market Data Provider
+In `.env`:
+```ini
+DATA_PROVIDER=hyperliquid            # hyperliquid | binance | ccxt
+FALLBACK_DATA_PROVIDER=binance       # Used when the primary provider fails
 ```
 
 ---
@@ -190,7 +190,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ## 🧪 Testing
 
-Run the automated test suite:
+Run the full offline test suite (251 tests):
 ```bash
-pytest test_screener.py -v
+pytest -q
 ```

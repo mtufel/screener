@@ -1,0 +1,6 @@
+schema: openspec-change-proposal
+version: 1.0.0
+name: telegram-alert-threading
+title: Telegram Alert Threading and Stale Alert Suppression for Trade Lifecycles
+created: 2026-09-13
+status: proposed

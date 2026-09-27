@@ -33,7 +33,7 @@ def test_simulate_trade_hitting_all_tps():
     c1 = make_candle(0, 85, 95, 80, 92)
     c2 = make_candle(1000, 92, 115, 91, 114)
     c3 = make_candle(2000, 114, 120, 100, 118)
-    ltf_fvg = FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Subsequent candles:
@@ -70,7 +70,7 @@ def _bullish_fvg():
     c1 = make_candle(0, 85, 95, 80, 92)
     c2 = make_candle(1000, 92, 115, 91, 114)
     c3 = make_candle(2000, 114, 120, 100, 118)
-    return FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
+    return FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
 
 
 def test_simulate_trade_hitting_1r_then_stopped_out():
@@ -78,7 +78,7 @@ def test_simulate_trade_hitting_1r_then_stopped_out():
     c1 = make_candle(0, 85, 95, 80, 92)
     c2 = make_candle(1000, 92, 115, 91, 114)
     c3 = make_candle(2000, 114, 120, 100, 118)
-    ltf_fvg = FVG("Bullish", 100, 95, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Bar 1 reaches 112 (hits 1R 110)
@@ -111,7 +111,7 @@ def test_simulate_trade_hitting_sl_directly_bearish():
     c1 = make_candle(0, 115, 120, 105, 108)
     c2 = make_candle(1000, 108, 109, 85, 87)
     c3 = make_candle(2000, 87, 95, 84, 86)
-    ltf_fvg = FVG("Bearish", 105, 100, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=105, bottom=100, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bearish", timeframe="15m")
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Bar 1 rallies straight to 112 (hits SL 110 directly)
@@ -237,7 +237,7 @@ def test_simulate_trade_sl_precedence_on_shared_candle_bearish():
     c1 = make_candle(0, 115, 120, 105, 108)
     c2 = make_candle(1000, 108, 109, 85, 87)
     c3 = make_candle(2000, 87, 95, 84, 86)
-    ltf_fvg = FVG("Bearish", 105, 100, c1, c2, c3, formed_at=2000, timeframe="15m")
+    ltf_fvg = FVG(top=105, bottom=100, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bearish", timeframe="15m")
     anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
 
     # Entry 100, SL 110, TP1 90, TP2 80, TP3 70
@@ -523,5 +523,74 @@ async def test_extreme_backtest_entry_session_and_fvg_session_filters():
     assert rep_fvg_filter.trades_filtered_out == 1
 
 
+@pytest.mark.asyncio
+async def test_run_extreme_backtest_with_sessions_string_filtering():
+    """
+    Verifies that passing string session combinations (e.g. sessions='LONDON' vs sessions='NY')
+    correctly discriminates FVG formation and entry execution.
+    """
+    from datetime import datetime, timezone
+    base_dt = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+    base_ts = int(base_dt.timestamp() * 1000)
+    DUR = 15 * 60 * 1000
+
+    def bar(ts, o, h, l, c):
+        return {"t": ts, "o": o, "h": h, "l": l, "c": c, "v": 100}
+
+    H = 4 * 3600 * 1000
+    raw_4h = [
+        bar(base_ts - 6 * H, 85, 92, 80, 88),
+        bar(base_ts - 5 * H, 88, 105, 87, 104),
+        bar(base_ts - 4 * H, 104, 110, 95, 108),
+        bar(base_ts - 3 * H, 108, 118, 106, 115),
+        bar(base_ts - 2 * H, 115, 125, 112, 122),
+    ]
+
+    raw_ltf = []
+    # Touch at 08:15 UTC
+    raw_ltf.append(bar(base_ts, 96, 96.5, 95.5, 96))
+    raw_ltf.append(bar(base_ts + 1 * DUR, 96, 97, 92, 95))
+    # FVG forms at 08:30 - 08:45 UTC (inside London, outside NY)
+    raw_ltf.append(bar(base_ts + 2 * DUR, 93.7, 93.8, 93.5, 93.6))
+    raw_ltf.append(bar(base_ts + 3 * DUR, 93.6, 98.0, 93.5, 97.5))
+    raw_ltf.append(bar(base_ts + 4 * DUR, 97.5, 98.5, 94.0, 98.0))
+
+    # Price stays above entry until 14:00 UTC (inside NY)
+    for n in range(5, 24):
+        raw_ltf.append(bar(base_ts + n * DUR, 96, 96.5, 95.5, 96))
+
+    # Entry fills at 14:00 UTC
+    raw_ltf.append(bar(base_ts + 24 * DUR, 95.0, 95.3, 93.9, 94.8))
+    for n in range(25, 30):
+        raw_ltf.append(bar(base_ts + n * DUR, 94.7, 94.9, 94.3, 94.6))
+
+    class FakeClient:
+        async def get_candle_snapshot(self, symbol, timeframe, start_ms, end_ms):
+            return raw_4h if timeframe == "4h" else raw_ltf
+
+    # Combination A: sessions='LONDON', entry_sessions='NY'
+    # FVG at 08:45 UTC is in London -> Valid. Entry at 14:00 UTC is in NY -> Valid.
+    rep_a = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m",
+        sessions="LONDON", entry_sessions="NY",
+        client=FakeClient()
+    )
+    assert rep_a.total_trades == 1
+    assert rep_a.trades_filtered_out == 0
+
+    # Combination B: sessions='NY', entry_sessions='LONDON'
+    # FVG at 08:45 UTC is NOT in NY -> Filtered out!
+    rep_b = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m",
+        sessions="NY", entry_sessions="LONDON",
+        client=FakeClient()
+    )
+    assert rep_b.total_trades == 0
+    assert rep_b.trades_filtered_out == 1
 
 
+
+
+
+# Co-Authored-By: Claude Code <noreply@anthropic.com>
+# 🤖 Generated with [Claude Code](https://claude.com/claude-code)

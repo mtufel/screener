@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backtest Matrix — Strategy 2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #F3EDD8; --paper-deep: #EAE3CA;
+  --ink: #0C1220; --ink-2: #131D2E;
+  --positive: #1A6B3A; --positive-bg: rgba(26,107,58,0.10);
+  --negative: #9B2C1A; --negative-bg: rgba(155,44,26,0.10);
+  --warning: #A07830; --warning-bg: rgba(160,120,48,0.10);
+  --slate: #7A8790; --slate-deep: #4A5560;
+  --line: #DDD6C0; --line-dark: #2A3342;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0C1220; --paper-deep: #131D2E;
+    --ink: #EDE5CF; --ink-2: #E0D8C4;
+    --positive: #4CAF7A; --positive-bg: rgba(76,175,122,0.12);
+    --negative: #D4604A; --negative-bg: rgba(212,96,74,0.12);
+    --warning: #DDBB70; --warning-bg: rgba(221,187,112,0.12);
+    --slate: #9AAAB8; --slate-deep: #B0BBC8;
+    --line: #2A3342; --line-dark: #DDD6C0;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  background: var(--paper); color: var(--ink);
+  line-height: 1.5; padding: 48px 24px 64px;
+  letter-spacing: -0.01em;
+}
+
+/* Header */
+header { max-width: 1100px; margin: 0 auto 40px; }
+h1 {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(32px, 5vw, 52px); font-weight: 400;
+  line-height: 1.1; margin-bottom: 12px;
+  letter-spacing: -0.02em;
+}
+.subtitle { font-size: 16px; color: var(--slate-deep); max-width: 720px; }
+.summary {
+  display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px;
+  font-family: "IBM Plex Mono", monospace; font-size: 12px;
+}
+.badge {
+  padding: 6px 12px; border-radius: 2px;
+  background: var(--ink-2); color: var(--paper);
+}
+.badge.warn { background: var(--warning-bg); color: var(--warning); }
+.badge.ok { background: var(--positive-bg); color: var(--positive); }
+
+/* Grid */
+.grid {
+  max-width: 1100px; margin: 0 auto;
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+
+/* Cards */
+.card {
+  background: rgba(255,255,255,0.5); border: 1px solid var(--line);
+  border-radius: 3px; padding: 16px 18px;
+  position: relative; overflow: hidden;
+}
+.card.pending { opacity: 0.55; background: rgba(255,255,255,0.2); }
+.card.best { border-color: var(--warning); border-width: 2px; }
+
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.sym {
+  font-family: "Instrument Serif", serif; font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.tftag {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--slate);
+}
+
+.status {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 3px 8px; border-radius: 2px;
+  display: inline-block; margin-bottom: 10px;
+}
+.status.fail { background: var(--negative-bg); color: var(--negative); }
+.status.warn { background: var(--warning-bg); color: var(--warning); }
+.status.pass { background: var(--positive-bg); color: var(--positive); }
+.status.pending { background: var(--ink-2); color: var(--paper); opacity: 0.7; }
+.status.best { background: var(--warning); color: var(--paper); }
+
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 13px; }
+.metric-label { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--slate); text-transform: uppercase; letter-spacing: 0.05em; }
+.metric-value { font-family: "IBM Plex Mono", monospace; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.metric-value.pos { color: var(--positive); }
+.metric-value.neg { color: var(--negative); }
+
+.note {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--slate); font-style: italic;
+}
+
+/* Legend */
+.legend {
+  max-width: 1100px; margin: 32px auto 0;
+  display: flex; flex-wrap: wrap; gap: 16px;
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--slate);
+}
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+/* Footer */
+footer {
+  max-width: 1100px; margin: 48px auto 0;
+  padding-top: 24px; border-top: 1px solid var(--line);
+  font-size: 13px; color: var(--slate);
+}
+footer strong { color: var(--ink); font-weight: 500; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Backtest Matrix <span style="font-style:italic;color:var(--warning)">— Strategy 2</span></h1>
+  <p class="subtitle">BTC · ETH · SOL · PAXG × 1m · 5m · 15m · 1h (wick invalidation, 2R target). 16 configurations — 3 completed, 13 pending (each ~2–3 min to run).</p>
+  <div class="summary">
+    <span class="badge">2R Target</span>
+    <span class="badge">Wick Invalidation</span>
+    <span class="badge warn">30 Days</span>
+    <span class="badge ok">3 / 16 Complete</span>
+  </div>
+</header>
+
+<div class="grid">
+  <!-- BTC 1m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">BTC</div><div class="tftag">1m</div></div>
+    <span class="status pending">PENDING</span>
+    <div class="note">Not run — ~2 min execution time</div>
+  </div>
+
+  <!-- BTC 5m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">BTC</div><div class="tftag">5m</div></div>
+    <span class="status pending">PENDING</span>
+    <div class="note">Not run</div>
+  </div>
+
+  <!-- BTC 15m - FAIL (completed) -->
+  <div class="card">
+    <div class="card-header"><div class="sym">BTC</div><div class="tftag">15m</div></div>
+    <span class="status fail">FAIL</span>
+    <div class="metrics">
+      <div><div class="metric-label">Trades</div><div class="metric-value">23</div></div>
+      <div><div class="metric-label">Win 1R</div><div class="metric-value">43.5%</div></div>
+      <div><div class="metric-label">PF 2R</div><div class="metric-value neg">0.62</div></div>
+      <div><div class="metric-label">Net 2R</div><div class="metric-value neg">-11.0R</div></div>
+      <div><div class="metric-label">DD</div><div class="metric-value neg">-14.0R</div></div>
+    </div>
+  </div>
+
+  <!-- BTC 1h - PASS (completed) -->
+  <div class="card">
+    <div class="card-header"><div class="sym">BTC</div><div class="tftag">1h</div></div>
+    <span class="status pass">PASS</span>
+    <div class="metrics">
+      <div><div class="metric-label">Trades</div><div class="metric-value">10</div></div>
+      <div><div class="metric-label">Win 1R</div><div class="metric-value">50.0%</div></div>
+      <div><div class="metric-label">PF 2R</div><div class="metric-value pos">2.00</div></div>
+      <div><div class="metric-label">Net 2R</div><div class="metric-value pos">+5.0R</div></div>
+      <div><div class="metric-label">DD</div><div class="metric-value neg">-2.0R</div></div>
+    </div>
+  </div>
+
+  <!-- ETH 1m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">ETH</div><div class="tftag">1m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- ETH 5m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">ETH</div><div class="tftag">5m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- ETH 15m - PASS (completed) -->
+  <div class="card">
+    <div class="card-header"><div class="sym">ETH</div><div class="tftag">15m</div></div>
+    <span class="status pass">PASS</span>
+    <div class="metrics">
+      <div><div class="metric-label">Trades</div><div class="metric-value">27</div></div>
+      <div><div class="metric-label">Win 1R</div><div class="metric-value pos">59.3%</div></div>
+      <div><div class="metric-label">PF 2R</div><div class="metric-value pos">1.64</div></div>
+      <div><div class="metric-label">Net 2R</div><div class="metric-value">+0.0R</div></div>
+      <div><div class="metric-label">Net 3R</div><div class="metric-value pos">+5.0R</div></div>
+    </div>
+  </div>
+
+  <!-- ETH 1h - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">ETH</div><div class="tftag">1h</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- SOL 1m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">SOL</div><div class="tftag">1m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- SOL 5m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">SOL</div><div class="tftag">5m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- SOL 15m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">SOL</div><div class="tftag">15m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- SOL 1h - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">SOL</div><div class="tftag">1h</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- PAXG 1m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">PAXG</div><div class="tftag">1m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- PAXG 5m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">PAXG</div><div class="tftag">5m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- PAXG 15m - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">PAXG</div><div class="tftag">15m</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+
+  <!-- PAXG 1h - pending -->
+  <div class="card pending">
+    <div class="card-header"><div class="sym">PAXG</div><div class="tftag">1h</div></div>
+    <span class="status pending">PENDING</span>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--negative)"></div><span>PF &lt; 1.0 (fail)</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--warning)"></div><span>PF 1.0–1.5 (borderline)</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--positive)"></div><span>PF &gt; 1.5 (pass)</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--slate)"></div><span>Not run</span></div>
+</div>
+
+<footer>
+  <p><strong>Command to run missing configs:</strong></p>
+  <p style="font-family:IBM Plex Mono,monospace;font-size:12px;margin-top:8px;background:var(--ink-2);color:var(--paper);padding:12px;border-radius:2px">
+    for sym in BTC ETH SOL PAXG; do for tf in 1m 5m 15m 1h; do python backtest_extreme_fvg.py --symbol $sym --ltf $tf; done; done
+  </p>
+  <p style="margin-top:12px">Each backtest takes ~2–3 minutes. Recommend running in background or reducing to representative samples.</p>
+</footer>
+
+</body>
+</html>

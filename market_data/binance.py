@@ -40,10 +40,39 @@ class BinanceProvider(BaseMarketDataProvider):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._cached_universe: List[str] = []
         self._universe_cache_time = 0.0
+        self._ws_client: Optional[Any] = None
 
     @property
     def name(self) -> str:
         return "binance_futures" if self.use_futures else "binance_spot"
+
+    @property
+    def supports_websocket(self) -> bool:
+        return True
+
+    @property
+    def is_websocket_connected(self) -> bool:
+        return self._ws_client is not None and getattr(self._ws_client, "is_connected", False)
+
+    async def start_websocket(self, symbols: Optional[List[str]] = None, timeframes: Optional[List[str]] = None) -> bool:
+        from market_data.binance_ws import BinanceWSClient
+        if self._ws_client is None:
+            self._ws_client = BinanceWSClient(
+                use_futures=self.use_futures,
+                store=self._store,
+                symbols=symbols,
+                timeframes=timeframes,
+                resolve_symbol_func=self.resolve_symbol,
+            )
+        elif symbols:
+            self._ws_client.update_subscriptions(symbols, timeframes)
+        await self._ws_client.start()
+        return True
+
+    async def stop_websocket(self):
+        if self._ws_client:
+            await self._ws_client.stop()
+            self._ws_client = None
 
     def _get_http(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
@@ -97,12 +126,28 @@ class BinanceProvider(BaseMarketDataProvider):
 
     async def get_all_mids(self) -> Dict[str, float]:
         """Fetches all ticker prices in a single bulk request with local caching and rate-limit guard."""
-        cached = self._store.get_cached_mids(self.name)
+        cached = self._store.get_cached_mids(self.name, ignore_ttl=self.is_websocket_connected)
         if cached is not None:
             return cached
 
         if self._store.is_rate_limited(self.name):
-            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown", self.name)
+            # Rate-limit cooldown active: consult the fallback on EVERY call while
+            # primary is cooling down, instead of serving empty mids (~57s of every
+            # 60s cooldown window). Cache fallback result for the remaining cooldown.
+            if self.fallback_provider:
+                logger.warning(
+                    "[ProviderFallback] %s rate limited -> Delegating get_all_mids to %s (cooldown active)",
+                    self.name,
+                    self.fallback_provider.name,
+                )
+                fb_mids = await self.fallback_provider.get_all_mids()
+                if fb_mids:
+                    self._store.set_cached_mids(
+                        self.name, fb_mids,
+                        ttl_seconds=self._store.rate_limit_remaining(self.name) or self.mids_ttl_seconds,
+                    )
+                    return fb_mids
+            logger.warning("[RateLimit] Serving empty mids for %s due to active rate limit cooldown (no fallback available)", self.name)
             return {}
 
         client = self._get_http()
@@ -157,21 +202,31 @@ class BinanceProvider(BaseMarketDataProvider):
         """Fetches latest N candles for symbol and timeframe with delta updates and in-memory store."""
         # 1. Instant Cache Hit Check
         cached = self._store.get_candles(self.name, symbol, timeframe, n=n)
-        if cached and len(cached) >= min(n, 50) and self._store.is_fresh(self.name, symbol, timeframe):
+        if cached and len(cached) >= min(n, 50) and (self.is_websocket_connected or self._store.is_fresh(self.name, symbol, timeframe)):
             logger.info("[BinanceProvider] [CACHE HIT] %s %s -> Serving %d bars from CandleStore memory (0 network calls)", symbol, timeframe, len(cached))
             return cached
 
         # 2. Rate-Limit Guard
         if self._store.is_rate_limited(self.name):
-            if cached:
+            if cached and len(cached) >= min(n, 50):
                 logger.warning("[BinanceProvider] [RATE LIMITED] Serving %d cached bars for %s %s", len(cached), symbol, timeframe)
                 return cached
             if self.fallback_provider:
-                logger.warning("[ProviderFallback] %s is rate limited with no cache for %s %s -> Delegating to %s", self.name, symbol, timeframe, self.fallback_provider.name)
+                logger.warning(
+                    "[ProviderFallback] %s is rate limited with insufficient cache (%d bars) for %s %s -> Delegating to %s",
+                    self.name,
+                    len(cached) if cached else 0,
+                    symbol,
+                    timeframe,
+                    self.fallback_provider.name,
+                )
                 fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
                 if fb_candles:
                     self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
                     return fb_candles
+            if cached:
+                logger.warning("[BinanceProvider] [RATE LIMITED] Serving %d cached bars for %s %s (no fallback available)", len(cached), symbol, timeframe)
+                return cached
             logger.warning("[BinanceProvider] [RATE LIMITED] Rate limited and no cache available for %s %s", symbol, timeframe)
             return []
 
@@ -224,15 +279,15 @@ class BinanceProvider(BaseMarketDataProvider):
             elif resp.status_code in (418, 429):
                 self._store.set_rate_limited(self.name, 60.0)
                 logger.warning("[BinanceProvider] [HTTP %d] Rate limit hit for %s (%s): %s", resp.status_code, symbol, timeframe, resp.text[:200])
-                if cached:
+                if cached and len(cached) >= min(n, 50):
                     return cached
                 if self.fallback_provider:
-                    logger.warning("[ProviderFallback] %s hit HTTP %d for %s (%s) -> Delegating to %s", self.name, resp.status_code, symbol, timeframe, self.fallback_provider.name)
+                    logger.warning("[ProviderFallback] %s hit HTTP %d for %s (%s) with insufficient cache -> Delegating to %s", self.name, resp.status_code, symbol, timeframe, self.fallback_provider.name)
                     fb_candles = await self.fallback_provider.get_last_n_candles(symbol=symbol, timeframe=timeframe, n=n)
                     if fb_candles:
                         self._store.merge_candles(self.name, symbol, timeframe, fb_candles)
                         return fb_candles
-                return self._store.get_candles(self.name, symbol, timeframe, n=n) or []
+                return self._store.get_candles(self.name, symbol, timeframe, n=n) or cached or []
             elif resp.status_code == 400 and self.use_futures:
                 logger.info("[BinanceProvider] Symbol %s not found on Futures, falling back to Binance Spot klines", binance_sym)
                 spot_url = f"https://api.binance.com/api/v3/klines"
@@ -405,6 +460,7 @@ class BinanceProvider(BaseMarketDataProvider):
         return ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PAXG"]
 
     async def close(self):
+        await self.stop_websocket()
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
             self._http_client = None
