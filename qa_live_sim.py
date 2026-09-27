@@ -179,6 +179,18 @@ def configure_state(main, symbols, ltf="5m"):
     main.state["extreme_weekday_filter"] = False
     main.state["extreme_entry_session_filter"] = False
     main.state["extreme_entry_weekday_filter"] = False
+    # Bias filters are pinned OFF for the scripted scenarios. Their product
+    # defaults (max_gap_pct=0.3, max_dist_from_4h_pct=2.0) are research-backed
+    # and intentionally narrow; ltf_formation() builds a 0.4539% gap inside the
+    # 0.3-0.6% band that the ceiling exists to reject, so leaving the ceiling
+    # live would make every scripted setup vanish. These scenarios assert
+    # trade LIFECYCLE mechanics (fill / SL / TP / invalidation), not
+    # candidate selection, so selection filters are disabled here to keep the
+    # fixture deterministic. Product defaults are unchanged.
+    main.state["extreme_max_gap_pct"] = 0.0
+    main.state["extreme_max_dist_from_4h_pct"] = 0.0
+    main.state["extreme_require_momentum"] = False
+    main.state["extreme_max_ltf_fvg_age_candles"] = 9999
     main.state["data_provider"] = "fake"
     main.state["extreme_is_running"] = True
     main.state["extreme_interval_seconds"] = 30
