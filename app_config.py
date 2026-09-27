@@ -40,7 +40,7 @@ EXTREME_SCAN_INTERVAL_SECONDS = int(os.getenv("EXTREME_SCAN_INTERVAL_SECONDS", "
 EXTREME_LTF_TIMEFRAME = os.getenv("EXTREME_LTF_TIMEFRAME", "5m")
 EXTREME_COMPLETION_TARGET = os.getenv("EXTREME_COMPLETION_TARGET", "2R")
 EXTREME_MIN_GAP_PCT = float(os.getenv("EXTREME_MIN_GAP_PCT", "0.05"))
-EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "false").strip().lower() in ("true", "1", "yes")
+EXTREME_USE_CLOSE_INVALIDATION = os.getenv("EXTREME_USE_CLOSE_INVALIDATION", "true").strip().lower() in ("true", "1", "yes")
 EXTREME_SESSION_FILTER_ENABLED = os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_ENTRY_SESSION_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
@@ -81,6 +81,7 @@ state: Dict[str, Any] = {
     "extreme_entry_weekday_filter": EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     "extreme_sessions": EXTREME_SESSIONS,
     "extreme_entry_sessions": EXTREME_ENTRY_SESSIONS,
+    # Bias filter state (mirrors env defaults from research)
     "extreme_max_dist_from_4h_pct": EXTREME_MAX_DIST_FROM_4H_PCT,
     "extreme_require_momentum": EXTREME_REQUIRE_MOMENTUM,
     "extreme_max_gap_pct": EXTREME_MAX_GAP_PCT,
