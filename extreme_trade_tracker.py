@@ -167,6 +167,11 @@ class ExtremeTradeTracker:
         self.storage_path = Path(storage_path)
         self.active_trades: Dict[str, TrackedExtremeTrade] = {}
         self.history: List[TrackedExtremeTrade] = []
+        # Redis persistence kill-switch for isolated instances (openspec change
+        # `unified-strategy-ui-replay-backtest`, task 3.2): replay trackers run
+        # with False so save_async/load_async skip the shared Redis namespace
+        # entirely. Default True = live tracker behavior byte-identical.
+        self.redis_persistence_enabled = True
 
         if session_config is not None:
             self.session_config = session_config
@@ -237,7 +242,7 @@ class ExtremeTradeTracker:
         """
         try:
             from redis_client import redis_client
-            if redis_client.is_configured():
+            if self.redis_persistence_enabled and redis_client.is_configured():
                 redis_key = redis_client.get_key("extreme_trades")
                 data = await redis_client.get_json(redis_key)
                 if data and isinstance(data, dict):
@@ -285,7 +290,7 @@ class ExtremeTradeTracker:
         self._save_local()
         try:
             from redis_client import redis_client
-            if redis_client.is_configured():
+            if self.redis_persistence_enabled and redis_client.is_configured():
                 redis_key = redis_client.get_key("extreme_trades")
                 data = {
                     "active_trades": {k: t.to_dict() for k, t in self.active_trades.items()},
@@ -776,8 +781,11 @@ class ExtremeTradeTracker:
         e.g. ("NEW_SETUP", trade), ("ENTRY_FILLED", trade), ("TP_HIT", trade), ("SL_HIT", trade)
         """
         events = []
-        now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
-        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        # Virtual-clock aware: under replay the installed clock supplies "now";
+        # without one this is real time (behavior identical to before).
+        from clock import now_ms as _clock_now_ms
+        now_ist_str = datetime.fromtimestamp(_clock_now_ms() / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+        now_ts = _clock_now_ms()
         session_config = self._resolve_live_session_config(
             session_config,
             session_filter,

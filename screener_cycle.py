@@ -233,11 +233,23 @@ def _extreme_setup_payload(
     }
 
 
-async def _fetch_recent_candles_map(provider: Any, ltf: str, symbols: List[str], tracker: Any) -> Dict[str, List[Any]]:
-    """Fetches LTF candles for whitelisted + ledger symbols; sizes history to cover open trades."""
+async def _fetch_recent_candles_map(
+    provider: Any,
+    ltf: str,
+    symbols: List[str],
+    tracker: Any,
+    pace_seconds: float = 0.1,
+) -> Dict[str, List[Any]]:
+    """Fetches LTF candles for whitelisted + ledger symbols; sizes history to cover open trades.
+
+    ``pace_seconds`` spaces out provider requests for live politeness; callers
+    running against in-memory data (replay/backtest) pass 0.0 to skip the waits.
+    """
     import main
 
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    from clock import now_ms as _clock_now_ms
+
+    now_ms = _clock_now_ms()
     dur_ms = 5 * 60 * 1000 if ltf == "5m" else (15 * 60 * 1000 if ltf == "15m" else (60 * 60 * 1000 if ltf == "1h" else 60 * 1000))
     symbols_to_fetch = set(symbols) | {t.symbol.strip().upper() for t in tracker.active_trades.values()}
 
@@ -251,7 +263,8 @@ async def _fetch_recent_candles_map(provider: Any, ltf: str, symbols: List[str],
                 if earliest_ts > 0 and dur_ms > 0:
                     n_candles = max(50, min(500, int((now_ms - earliest_ts) / dur_ms) + 10))
             candles_map[sym] = await main.get_last_n_candles(symbol=provider.resolve_symbol(sym), timeframe=ltf, n=n_candles, client=provider)
-            await asyncio.sleep(0.1)
+            if pace_seconds > 0:
+                await asyncio.sleep(pace_seconds)
         except Exception as exc:
             logger.debug("Failed to fetch recent candles for %s: %s", sym, exc)
     return candles_map
@@ -419,36 +432,70 @@ async def _dispatch_trade_alert(evt_type: str, trade: Any, msg: str, chart_img: 
         await _send_alert(msg, image_bytes=chart_img, reply_to_message_id=trade.telegram_message_id)
 
 
-async def _broadcast_trade_event(evt_type: str, trade: Any) -> None:
-    """Pushes a trade ledger event to connected dashboard WebSockets (best-effort)."""
+async def _broadcast_trade_event(evt_type: str, trade: Any, tracker: Any = None) -> None:
+    """Pushes a trade ledger event to connected dashboard WebSockets (best-effort).
+
+    ``tracker`` defaults to the global ledger (live path); replay passes its
+    isolated instance so broadcast history reflects the replay ledger.
+    """
     import main
 
-    from extreme_trade_tracker import extreme_trade_tracker
+    if tracker is None:
+        from extreme_trade_tracker import extreme_trade_tracker
+        tracker = extreme_trade_tracker
     try:
         await main.dashboard_ws_manager.broadcast({
             "type": "trade_event",
             "event": evt_type,
             "trade": trade.to_dict(),
-            "history_data": extreme_trade_tracker.get_filtered_trades(),
+            "history_data": tracker.get_filtered_trades(),
         })
     except Exception as exc:
         logger.debug("Error broadcasting trade event to dashboard WS: %s", exc)
 
 
-async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
-    """Runs a single background scan across whitelisted coins for Extreme LTF setups."""
+async def execute_extreme_screener_cycle(
+    *,
+    cfg_override: Optional[Dict[str, Any]] = None,
+    provider_override: Any = None,
+    tracker_override: Any = None,
+    broadcast: bool = True,
+    persist_results: bool = True,
+    dispatch_alerts: bool = True,
+    cycle_label: str = "",
+) -> List[Dict[str, Any]]:
+    """Runs a single background scan across whitelisted coins for Extreme LTF setups.
+
+    Injection points (all default-identical — ``None`` uses live state/services):
+      - cfg_override:      full config dict shaped like ``_runtime_extreme_config()`` (replay passes its own)
+      - provider_override: market-data provider (replay passes ReplayMarketDataProvider)
+      - tracker_override:  trade ledger (replay passes an isolated in-memory ExtremeTradeTracker)
+      - broadcast:         when False, skip the dashboard WS scan_complete broadcast (replay emits its own)
+      - persist_results:   when False, skip mirroring cycle results into ``state`` counters (replay runs must not touch live state)
+      - dispatch_alerts:   when False, skip Redis dedup + Telegram dispatch (replay broadcasts ledger events only)
+    """
     import main
 
     from strategies import get_strategy
-    from extreme_trade_tracker import extreme_trade_tracker
+    from extreme_trade_tracker import extreme_trade_tracker as _global_tracker
 
+    tracker = tracker_override if tracker_override is not None else _global_tracker
     start_time_ist = datetime.now(IST)
-    cfg = _runtime_extreme_config()
-    provider = main.get_market_data_provider(state.get("data_provider", "binance"))
-    logger.info(
-        "[ScreenerCycle] Starting Extreme scan cycle for %d symbol(s): %s (LTF: %s, Target: %s, Provider: %s)",
-        len(cfg["coin_list"]), cfg["coin_list"], cfg["ltf"], cfg["target"], provider.name
-    )
+    cfg = cfg_override if cfg_override is not None else _runtime_extreme_config()
+    provider = provider_override or main.get_market_data_provider(state.get("data_provider", "binance"))
+    if cycle_label:
+        from clock import now_ms as _clock_now_ms
+        logger.info(
+            "[ScreenerCycle%s] Starting cycle at virtual-time %s for %d symbol(s): %s (LTF: %s, Target: %s, Provider: %s)",
+            cycle_label,
+            datetime.fromtimestamp(_clock_now_ms() / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST"),
+            len(cfg["coin_list"]), cfg["coin_list"], cfg["ltf"], cfg["target"], provider.name,
+        )
+    else:
+        logger.info(
+            "[ScreenerCycle] Starting Extreme scan cycle for %d symbol(s): %s (LTF: %s, Target: %s, Provider: %s)",
+            len(cfg["coin_list"]), cfg["coin_list"], cfg["ltf"], cfg["target"], provider.name
+        )
     mids = await provider.get_all_mids()
 
     # Resolve the active strategy by name (freqtrade StrategyResolver analog) and
@@ -476,7 +523,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         # 1. LEDGER CHECK: open TRADE_ACTIVE positions are immutable; report as-is.
         # Scoped to the active strategy ("") so a shadow trade on this symbol
         # never suppresses the active strategy's own scan.
-        active_trade = extreme_trade_tracker.get_active_trade_for_symbol_and_scope(sym, "")
+        active_trade = tracker.get_active_trade_for_symbol_and_scope(sym, "")
         if active_trade:
             setups_out.append(_active_trade_setup_payload(sym, active_trade, curr_px))
             continue
@@ -492,7 +539,8 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                     strategy_name=cfg["active_strategy"],
                     strategy_params=strategy_params,
                 ))
-            await asyncio.sleep(0.1)
+            if dispatch_alerts:
+                await asyncio.sleep(0.1)
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
 
@@ -514,7 +562,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         for sym in cfg["coin_list"]:
             # A shadow trade (own scope) already ACTIVE on this symbol is
             # immutable — report it as-is, do not scan a replacement.
-            shadow_active = extreme_trade_tracker.get_active_trade_for_symbol_and_scope(sym, shadow_name)
+            shadow_active = tracker.get_active_trade_for_symbol_and_scope(sym, shadow_name)
             if shadow_active:
                 curr_px_s = lookup_mid(mids, sym, float(mids.get(provider.resolve_symbol(sym), 0.0)))
                 setups_out.append(_active_trade_setup_payload(sym, shadow_active, curr_px_s))
@@ -531,18 +579,22 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
                         strategy_params=shadow_params,
                     ))
                     shadow_found += 1
-                await asyncio.sleep(0.1)
+                if dispatch_alerts:
+                    await asyncio.sleep(0.1)
             except Exception as exc:
                 logger.warning("[Shadow:%s] Error scanning %s: %s", shadow_name, sym, exc)
         if shadow_found or shadow_active:
             logger.info("[Shadow:%s] cycle found %d setup(s).", shadow_name, shadow_found)
 
-    recent_candles_map = await _fetch_recent_candles_map(provider, cfg["ltf"], cfg["coin_list"], extreme_trade_tracker)
+    recent_candles_map = await _fetch_recent_candles_map(
+        provider, cfg["ltf"], cfg["coin_list"], tracker,
+        pace_seconds=0.1 if dispatch_alerts else 0.0,
+    )
 
     # Process all setups through ExtremeTradeTracker. The active strategy's
     # pass runs first (isolation scope ""), then one pass per shadow scope so
     # each strategy owns its own ledger slots without cross-blocking.
-    events = extreme_trade_tracker.process_live_setups(
+    events = tracker.process_live_setups(
         [s for s in setups_out if s.get("strategy") == cfg["active_strategy"]],
         mids,
         recent_candles_map=recent_candles_map,
@@ -555,7 +607,7 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     for shadow_name in cfg.get("shadow_strategies", []):
         if shadow_name == cfg["active_strategy"]:
             continue
-        events.extend(extreme_trade_tracker.process_live_setups(
+        events.extend(tracker.process_live_setups(
             [s for s in setups_out if s.get("strategy") == shadow_name],
             mids,
             recent_candles_map=recent_candles_map,
@@ -567,6 +619,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
 
     for evt_type, tr in events:
         is_shadow = bool(getattr(tr, "isolation_scope", ""))
+
+        # Replay (dispatch_alerts=False): ledger events go to the dashboard WS
+        # only — never Telegram, never the Redis alert-dedup namespace.
+        if not dispatch_alerts:
+            await _broadcast_trade_event(evt_type, tr, tracker)
+            continue
 
         # Redis dedup prevents duplicate alerts across restarts
         if await main.redis_client.is_alert_sent(tr.symbol, evt_type, tr.trade_id):
@@ -590,11 +648,12 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
     act_count = len([s for s in setups_out if s["state"] == "TRADE_ACTIVE"])
     pend_count = len([s for s in setups_out if s["state"] == "PENDING_RETRACE"])
 
-    state["extreme_setups"] = setups_out
-    state["extreme_active_count"] = act_count
-    state["extreme_pending_count"] = pend_count
-    state["extreme_last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
-    state["extreme_total_cycles"] += 1
+    if persist_results:
+        state["extreme_setups"] = setups_out
+        state["extreme_active_count"] = act_count
+        state["extreme_pending_count"] = pend_count
+        state["extreme_last_scan_time_ist"] = start_time_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
+        state["extreme_total_cycles"] += 1
 
     elapsed_sec = (datetime.now(IST) - start_time_ist).total_seconds()
     logger.info(
@@ -602,19 +661,19 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         elapsed_sec, len(setups_out), act_count, pend_count
     )
 
-    try:
-        from extreme_trade_tracker import extreme_trade_tracker
-        await main.dashboard_ws_manager.broadcast({
-            "type": "scan_complete",
-            "is_running": state.get("extreme_is_running", False),
-            "interval_seconds": state.get("extreme_interval_seconds", 30),
-            "last_scan_time_ist": state.get("extreme_last_scan_time_ist", "--"),
-            "total_cycles": state.get("extreme_total_cycles", 0),
-            "setups": setups_out,
-            "history_data": extreme_trade_tracker.get_filtered_trades(),
-        })
-    except Exception as b_exc:
-        logger.debug("Error broadcasting scan_complete to dashboard WS: %s", b_exc)
+    if broadcast:
+        try:
+            await main.dashboard_ws_manager.broadcast({
+                "type": "scan_complete",
+                "is_running": state.get("extreme_is_running", False),
+                "interval_seconds": state.get("extreme_interval_seconds", 30),
+                "last_scan_time_ist": state.get("extreme_last_scan_time_ist", "--"),
+                "total_cycles": state.get("extreme_total_cycles", 0),
+                "setups": setups_out,
+                "history_data": tracker.get_filtered_trades(),
+            })
+        except Exception as b_exc:
+            logger.debug("Error broadcasting scan_complete to dashboard WS: %s", b_exc)
 
     return setups_out
 

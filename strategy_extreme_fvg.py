@@ -14,6 +14,8 @@ import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from dotenv import load_dotenv
+
+from clock import now_ms as clock_now_ms
 from market_data_provider import market_data_provider, BaseMarketDataProvider
 from hyperliquid_client import HyperliquidClient, hyperliquid_client
 
@@ -116,7 +118,7 @@ def filter_closed_candles(
     A candle is fully closed if: candle.timestamp + duration_ms <= current_time_ms.
     If current_time_ms is not provided, defaults to system current time.
     """
-    now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
+    now_ms = clock_now_ms() if current_time_ms is None else current_time_ms
     return [c for c in candles if (c.timestamp + duration_ms) <= now_ms]
 
 
@@ -318,7 +320,7 @@ class HTFFVGCache:
         last_ts = self.last_processed_candle_ts.get(key, 0)
 
         # 1. Filter for newly closed candles only (ts > last_ts AND fully closed)
-        now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
+        now_ms = clock_now_ms() if current_time_ms is None else current_time_ms
         new_closed_candles = [
             c for c in recent_candles_4h
             if c.timestamp > last_ts and (not enforce_closed_filter or (c.timestamp + HTF_CANDLE_DURATION_MS) <= now_ms)
@@ -511,6 +513,12 @@ def fvg_from_dict(d: Dict[str, Any]) -> FVG:
 # Global Singleton Cache Instance
 htf_fvg_cache = HTFFVGCache()
 
+# Replay guard (openspec change `unified-strategy-ui-replay-backtest`, D3):
+# when True, the cache skips Redis persistence entirely (load & save). Replay
+# runs set this around their cycles so simulated HTF state can never leak into
+# or out of Redis. Default False = live behavior byte-identical.
+htf_cache_persistence_paused = False
+
 
 async def get_active_4h_fvgs_for_symbol(
     symbol: str,
@@ -524,7 +532,8 @@ async def get_active_4h_fvgs_for_symbol(
     non-invalidated 4H FVGs using the incremental cache with Redis persistence.
     """
     # 1. Attempt restore from Redis if not currently in memory and not forcing a bootstrap
-    if not force_bootstrap and not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
+    # (skipped while replay has paused persistence — see htf_cache_persistence_paused)
+    if not htf_cache_persistence_paused and not force_bootstrap and not htf_fvg_cache.is_bootstrapped(symbol, use_close_invalidation=use_close_invalidation):
         await htf_fvg_cache.load_from_redis(symbol, use_close_invalidation=use_close_invalidation)
 
     candles = candles_4h
@@ -556,14 +565,15 @@ async def get_active_4h_fvgs_for_symbol(
             enforce_closed_filter=True,
         )
 
-    # Sync updated cache state to Redis asynchronously
-    try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-        if loop and loop.is_running():
-            loop.create_task(htf_fvg_cache.save_to_redis(symbol, use_close_invalidation=use_close_invalidation))
-    except Exception as exc:
-        logger.debug("Failed to schedule Redis save for HTF cache %s: %s", symbol, exc)
+    # Sync updated cache state to Redis asynchronously (skipped during replay)
+    if not htf_cache_persistence_paused:
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                loop.create_task(htf_fvg_cache.save_to_redis(symbol, use_close_invalidation=use_close_invalidation))
+        except Exception as exc:
+            logger.debug("Failed to schedule Redis save for HTF cache %s: %s", symbol, exc)
 
     return fvgs
 
@@ -664,7 +674,7 @@ def get_4h_fvg_first_touch_ts(
 
     # 3. If live price is currently inside the 4H FVG zone post-close
     if current_price > 0 and fvg.bottom <= current_price <= fvg.top:
-        now_ms = int(time.time() * 1000)
+        now_ms = clock_now_ms()
         if now_ms >= fvg_close_ts:
             return (now_ms, "live")
 
@@ -683,7 +693,7 @@ def get_4h_fvg_most_recent_touch_ts(
     for determining which 4H FVG is touched most recently.
     """
     fvg_close_ts = fvg.close_timestamp
-    now_ms = int(time.time() * 1000)
+    now_ms = clock_now_ms()
 
     # 1. Price is currently inside the zone right now
     if current_price > 0 and fvg.bottom <= current_price <= fvg.top and now_ms >= fvg_close_ts:
@@ -966,13 +976,13 @@ def evaluate_ltf_setup_lifecycle(
                     return ("INVALIDATED", None, 0.0)
                 elif current_price <= entry_price:
                     state = "TRADE_ACTIVE"
-                    entry_ts = int(time.time() * 1000)
+                    entry_ts = clock_now_ms()
             else:
                 if current_price >= stop_loss:
                     return ("INVALIDATED", None, 0.0)
                 elif current_price >= entry_price:
                     state = "TRADE_ACTIVE"
-                    entry_ts = int(time.time() * 1000)
+                    entry_ts = clock_now_ms()
 
         elif state == "TRADE_ACTIVE":
             if direction == "Bullish":
@@ -1015,7 +1025,7 @@ def find_unmitigated_ltf_fvgs(
     - Discards STOPPED_OUT, COMPLETED, and INVALIDATED.
     """
     duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 15 * 60 * 1000)
-    now_ms = int(time.time() * 1000) if current_time_ms is None else current_time_ms
+    now_ms = clock_now_ms() if current_time_ms is None else current_time_ms
 
     # Only closed LTF candles
     closed_ltf = filter_closed_candles(candles_ltf, duration_ms, current_time_ms=now_ms)

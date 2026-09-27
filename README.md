@@ -38,8 +38,11 @@ crypto-fvg-screener/
 ├── chart_generator.py          # High-contrast TradingView-style candlestick chart generator
 ├── telegram_client.py          # Telegram alert dispatcher & photo attachments
 ├── screener_cycle.py           # Scan-cycle orchestrator, alert dispatch, daemon loop
-├── dashboard_ws.py             # WebSocket manager + /ws/extreme-live
-├── api/                        # Routers: system.py (health/status/config), extreme.py (scan/backtest/trades)
+├── clock.py                    # Virtual clock (contextvar-based; replay backtests)
+├── replay_provider.py          # As-of historical data provider (no lookahead)
+├── replay_manager.py           # Replay run lifecycle (start/pause/resume/abort/report)
+├── dashboard_ws.py             # WebSocket manager + /ws/extreme-live + /ws/replay
+├── api/                        # Routers: system.py, extreme.py, replay.py
 ├── main.py                     # FastAPI app facade (run with: uvicorn main:app)
 ├── templates/
 │   └── index.html              # Real-time Web Dashboard interface
@@ -194,17 +197,16 @@ Per-strategy stats: `GET /api/{strategy}/status` → `ledger_summary`, or `pytho
 
 Note: removing a name from the list leaves its still-open paper trades frozen in the ledger (visible in history, no longer monitored); re-enable the name to resume tracking them.
 
-### 7. Strategy 3 Dashboard Tab & Backtest Lab
-The dashboard has a dedicated **Strategy 3** section with two inner tabs:
+### 7. Unified Strategy Dashboard (all registered strategies)
+The dashboard has a single **strategy panel** covering every registered strategy (see `GET /api/strategies`):
 
-- **Live Shadow & Setup Scan** — one-click shadow-mode toggle, S3 shadow ledger (paper trades with TP mode / sweep pool / MFE per trade), and an on-demand setup scan across symbols (`GET /api/{strategy}/scan?symbols=BTC,ETH,SOL`).
-- **Backtest Lab (Parameters)** — replay history with any combination of S3 knobs and compare runs side by side:
-  - Core: symbol, days (14–90), LTF timeframe, invalidation mode, min gap %, entry session (NY killzone / London / ALL).
-  - Gates: require fresh sweep (≤ 2h), anchor-age guard (skip 24–48h anchors), exclude gap band 0.10–0.20%.
-  - Take-profit: liquidity-first vs fixed-R, min RR for a liquidity target, fallback R.
-  - Results: win rate / net R / profit factor / max drawdown / MFE KPIs, a **gate-rejection breakdown** (why setups were filtered), the full executed-trade table, and a **variant comparison** — pin any run, change parameters, re-run, and A/B the rows.
-
-The lab calls `GET /api/{strategy}/backtest` (same endpoint the CLI numbers come from), so UI results match `backtest_liquidity_sweep_fvg.py` exactly. Defaults in the UI are the validated config (NY killzone, sweep gate on, liquidity TP @ ≥1.5RR).
+- **Strategy dropdown** — lists all registered strategies with the active one flagged; selecting an inactive strategy activates it via `POST /api/{strategy}/activate`.
+- **Live tab** — strategy-aware *Scan Now* (`GET /api/{strategy}/scan`), daemon controls, setups grid, 4H FVG map, live trade log (filterable by strategy), and the `/ws/extreme-live` real-time feed.
+- **Backtest tab** — two engines:
+  - *Analytic (fast)*: the strategy's vector backtest via `GET /api/{strategy}/backtest?mode=analytic` (same numbers as the CLI backtesters).
+  - *Replay (live path)*: runs the actual scan-cycle + trade-ledger execution against historical candles under a virtual clock (`POST /api/replay/start`, or `mode=replay` on the backtest route). Watchable speeds (1×–60 virtual-min/s) stream progress over `/ws/replay`: virtual time, progress bar, and a live ledger event feed; MAX speed runs to completion and renders the report. Pause/Resume/Abort are available mid-run and partial reports are kept.
+- **Strategy params** — rendered automatically from `GET /api/{strategy}/info` `default_params` (bool→checkbox, number→input, session→preset select, timeframe/target/TP-mode→select), so new strategies appear in the UI with zero dashboard changes.
+- **Variant comparison** — pin any run (either engine, any strategy), change parameters, re-run, and A/B the rows.
 
 ---
 
@@ -230,7 +232,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ## 🧪 Testing
 
-Run the full offline test suite (251 tests):
+Run the full offline test suite:
 ```bash
 pytest -q
 ```
