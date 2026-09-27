@@ -23,6 +23,7 @@ from app_config import (
     ENABLE_STRATEGY_2,
     EXTREME_ACTIVE_STRATEGY,
     EXTREME_COMPLETION_TARGET,
+    EXTREME_SHADOW_STRATEGIES,
     EXTREME_ENTRY_SESSIONS,
     EXTREME_ENTRY_SESSION_FILTER_ENABLED,
     EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
@@ -110,6 +111,10 @@ def _runtime_extreme_config() -> Dict[str, Any]:
     entry_wkday_filter = state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED)
     return {
         "active_strategy": state.get("extreme_active_strategy", EXTREME_ACTIVE_STRATEGY),
+    "shadow_strategies": [
+        s.strip() for s in str(state.get("extreme_shadow_strategies", EXTREME_SHADOW_STRATEGIES) or "").split(",")
+        if s.strip()
+    ],
         "coin_list": [c.strip().upper() for c in state.get("coins_whitelist", COINS_WHITELIST).strip().split(",") if c.strip()],
         "ltf": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
         "target": state.get("extreme_target", EXTREME_COMPLETION_TARGET),
@@ -468,8 +473,10 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         raw_sym = provider.resolve_symbol(sym)
         curr_px = lookup_mid(mids, sym, float(mids.get(raw_sym, 0.0)))
 
-        # 1. LEDGER CHECK: open TRADE_ACTIVE positions are immutable; report as-is
-        active_trade = extreme_trade_tracker.get_active_trade_for_symbol(sym)
+        # 1. LEDGER CHECK: open TRADE_ACTIVE positions are immutable; report as-is.
+        # Scoped to the active strategy ("") so a shadow trade on this symbol
+        # never suppresses the active strategy's own scan.
+        active_trade = extreme_trade_tracker.get_active_trade_for_symbol_and_scope(sym, "")
         if active_trade:
             setups_out.append(_active_trade_setup_payload(sym, active_trade, curr_px))
             continue
@@ -489,11 +496,54 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         except Exception as exc:
             logger.warning("Error in background extreme scan for %s: %s", sym, exc)
 
+    # ------------------------------------------------------------------
+    # SHADOW STRATEGIES: scanned in the same cycle and tracked in the ledger
+    # under their own isolation scope, but never alerted via Telegram and
+    # never blocking the active strategy's setups on the same symbol.
+    # ------------------------------------------------------------------
+    for shadow_name in cfg.get("shadow_strategies", []):
+        if shadow_name == cfg["active_strategy"]:
+            continue
+        try:
+            shadow_strategy = get_strategy(shadow_name)
+        except KeyError:
+            logger.warning("[Shadow] Unknown shadow strategy %r; skipping.", shadow_name)
+            continue
+        shadow_params = shadow_strategy.resolve_params({})
+        shadow_found = 0
+        for sym in cfg["coin_list"]:
+            # A shadow trade (own scope) already ACTIVE on this symbol is
+            # immutable — report it as-is, do not scan a replacement.
+            shadow_active = extreme_trade_tracker.get_active_trade_for_symbol_and_scope(sym, shadow_name)
+            if shadow_active:
+                curr_px_s = lookup_mid(mids, sym, float(mids.get(provider.resolve_symbol(sym), 0.0)))
+                setups_out.append(_active_trade_setup_payload(sym, shadow_active, curr_px_s))
+                continue
+            try:
+                setups = await shadow_strategy.find_setups(sym, provider, shadow_params)
+                for setup in setups:
+                    curr_px_s = lookup_mid(mids, sym, float(mids.get(provider.resolve_symbol(sym), 0.0)))
+                    if curr_px_s == 0.0:
+                        curr_px_s = float(setup.entry_price)
+                    setups_out.append(_extreme_setup_payload(
+                        sym, setup, curr_px_s,
+                        strategy_name=shadow_name,
+                        strategy_params=shadow_params,
+                    ))
+                    shadow_found += 1
+                await asyncio.sleep(0.1)
+            except Exception as exc:
+                logger.warning("[Shadow:%s] Error scanning %s: %s", shadow_name, sym, exc)
+        if shadow_found or shadow_active:
+            logger.info("[Shadow:%s] cycle found %d setup(s).", shadow_name, shadow_found)
+
     recent_candles_map = await _fetch_recent_candles_map(provider, cfg["ltf"], cfg["coin_list"], extreme_trade_tracker)
 
-    # Process all setups through ExtremeTradeTracker
+    # Process all setups through ExtremeTradeTracker. The active strategy's
+    # pass runs first (isolation scope ""), then one pass per shadow scope so
+    # each strategy owns its own ledger slots without cross-blocking.
     events = extreme_trade_tracker.process_live_setups(
-        setups_out,
+        [s for s in setups_out if s.get("strategy") == cfg["active_strategy"]],
         mids,
         recent_candles_map=recent_candles_map,
         session_config=cfg["session_config"],
@@ -502,11 +552,31 @@ async def execute_extreme_screener_cycle() -> List[Dict[str, Any]]:
         entry_session_filter=cfg["entry_sess_filter"],
         entry_weekday_filter=cfg["entry_wkday_filter"],
     )
+    for shadow_name in cfg.get("shadow_strategies", []):
+        if shadow_name == cfg["active_strategy"]:
+            continue
+        events.extend(extreme_trade_tracker.process_live_setups(
+            [s for s in setups_out if s.get("strategy") == shadow_name],
+            mids,
+            recent_candles_map=recent_candles_map,
+            session_config=cfg["session_config"],
+            entry_session_filter=None,
+            entry_weekday_filter=None,
+            isolation_scope=shadow_name,
+        ))
 
     for evt_type, tr in events:
+        is_shadow = bool(getattr(tr, "isolation_scope", ""))
+
         # Redis dedup prevents duplicate alerts across restarts
         if await main.redis_client.is_alert_sent(tr.symbol, evt_type, tr.trade_id):
             logger.info("Skipping already sent alert: %s %s (%s)", tr.symbol, evt_type, tr.trade_id)
+            continue
+
+        # Shadow trades NEVER send Telegram alerts — dashboard only.
+        if is_shadow:
+            logger.info("[Shadow:%s] %s for %s %s (dashboard only, no Telegram)", tr.isolation_scope, evt_type, tr.symbol, tr.direction)
+            await _broadcast_trade_event(evt_type, tr)
             continue
 
         side = "LONG" if tr.direction == "Bullish" else "SHORT"
@@ -607,6 +677,8 @@ async def lifespan(app):
                     state["extreme_entry_sessions"] = str(saved_cfg["entry_sessions"]).strip()
                 if "coins_whitelist" in saved_cfg:
                     state["coins_whitelist"] = str(saved_cfg["coins_whitelist"])
+                if "shadow_strategies" in saved_cfg:
+                    state["extreme_shadow_strategies"] = str(saved_cfg["shadow_strategies"]).strip()
                 if "data_provider" in saved_cfg:
                     state["data_provider"] = str(saved_cfg["data_provider"]).strip().lower()
                 from extreme_trade_tracker import extreme_trade_tracker

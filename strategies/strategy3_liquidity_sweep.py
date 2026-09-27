@@ -6,10 +6,70 @@ Registry name: ``liquidity_sweep_fvg``. Implements the video model
 the shared 4H machinery, with data-proven gates. Strategy 2 files are untouched.
 """
 
+from datetime import datetime
 from typing import Any, Dict, List
 
 from strategies.base import BaseStrategy
 from strategies.registry import register
+
+
+class _SetupAttrView:
+    """Attribute view over the S3 engine's setup dict.
+
+    The daemon payload builder (screener_cycle._extreme_setup_payload) reads
+    setups via attribute access, matching S2's ``ExtremeTradeSetup`` dataclass.
+    The S3 engine returns a plain dict, so the adapter wraps it once here.
+    """
+
+    def __init__(self, data: Dict[str, Any]):
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return object.__getattribute__(self, "_data")[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    @property
+    def risk_pct(self) -> float:
+        return self._data.get("risk_pct", 0.0)
+
+    @property
+    def entry_time_ist(self) -> Any:
+        """IST clock-close string of the entry bar, mirroring S2's setup property."""
+        entry_ts = self._data.get("entry_timestamp")
+        if not entry_ts:
+            return None
+        from candle_store import TIMEFRAME_MS
+        from app_config import IST
+        dur = TIMEFRAME_MS.get(self._data.get("ltf_timeframe", "5m"), 5 * 60 * 1000)
+        return datetime.fromtimestamp((entry_ts + dur) / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+
+
+def _normalize_setup(raw: Dict[str, Any]) -> _SetupAttrView:
+    """Wraps an S3 engine setup dict and fills daemon-required defaults.
+
+    The engine emits signal-level fields only; the ledger expects lifecycle
+    defaults (state, risk_pct) present on S2's setup dataclass.
+    """
+    view = _SetupAttrView(raw)
+    raw.setdefault("state", "PENDING_RETRACE")
+    raw.setdefault("entry_timestamp", None)
+    raw.setdefault("floating_r", 0.0)
+    # The engine dict does not carry this field, but the daemon payload builder
+    # (_extreme_setup_payload) reads it off the setup object.
+    raw.setdefault("completion_target", "2R")
+    entry_price = float(raw.get("entry_price") or 0.0)
+    raw.setdefault(
+        "risk_pct",
+        (float(raw.get("risk_r", 0.0)) / entry_price * 100.0) if entry_price > 0 else 0.0,
+    )
+    # The ledger tracks tp_1r/tp_2r/tp_3r for display and 1R MFE logic; the
+    # engine precomputes the same grid under "targets".
+    targets = raw.get("targets") or {}
+    for mult, key in ((1, "tp_1r"), (2, "tp_2r"), (3, "tp_3r")):
+        raw.setdefault(f"tp_{mult}r", targets.get(f"{mult}R"))
+    return view
 
 
 @register
@@ -64,7 +124,7 @@ class Strategy3LiquiditySweepFVG(BaseStrategy):
             fallback_target_r=params.get("fallback_target_r", 2.0),
             session_config=session_config,
         )
-        return [setup] if setup is not None else []
+        return [_normalize_setup(setup)] if setup is not None else []
 
     async def backtest(self, symbol: str, days: int, provider: Any, params: Dict[str, Any]) -> Any:
         from backtest_liquidity_sweep_fvg import run_liquidity_sweep_backtest

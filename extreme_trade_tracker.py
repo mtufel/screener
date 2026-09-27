@@ -133,6 +133,10 @@ class TrackedExtremeTrade:
     # params dict at open time. Allows one ledger to serve all strategies.
     strategy: str = "extreme_fvg"
     strategy_params: Dict[str, Any] = field(default_factory=dict)
+    # Isolation scope: "" = active strategy (blocks same-symbol setups from the
+    # active strategy); a shadow-strategy name (e.g. "liquidity_sweep_fvg") =
+    # shadow paper trade that never blocks the active strategy's ledger slots.
+    isolation_scope: str = ""
 
     def __post_init__(self):
         if not self.trade_id:
@@ -325,6 +329,37 @@ class ExtremeTradeTracker:
                 return trade
         return None
 
+    def get_active_trade_for_symbol_and_scope(self, symbol: str, isolation_scope: str = "") -> Optional[TrackedExtremeTrade]:
+        """Returns the active open trade for a symbol within one isolation scope.
+
+        ``isolation_scope=""`` (the active strategy) matches only trades whose
+        ``isolation_scope == ""``, so a shadow trade can never lock a symbol
+        against the active strategy. A shadow strategy passes its own name and
+        matches only its own trades, so concurrent shadow strategies stay
+        independent too.
+        """
+        clean_sym = symbol.strip().upper()
+        for trade in self.active_trades.values():
+            if (
+                trade.symbol.strip().upper() == clean_sym
+                and trade.state == "TRADE_ACTIVE"
+                and trade.isolation_scope == isolation_scope
+            ):
+                return trade
+        return None
+
+    def get_pending_trade_for_symbol_and_scope(self, symbol: str, isolation_scope: str = "") -> Optional[TrackedExtremeTrade]:
+        """Pending-retrace variant of ``get_active_trade_for_symbol_and_scope``."""
+        clean_sym = symbol.strip().upper()
+        for trade in self.active_trades.values():
+            if (
+                trade.symbol.strip().upper() == clean_sym
+                and trade.state == "PENDING_RETRACE"
+                and trade.isolation_scope == isolation_scope
+            ):
+                return trade
+        return None
+
     def _resolve_live_session_config(
         self,
         session_config: Optional[SessionFilterConfig],
@@ -358,12 +393,19 @@ class ExtremeTradeTracker:
         now_ts: int,
         now_ist_str: str,
         events: List[Tuple[str, TrackedExtremeTrade]],
+        isolation_scope: str = "",
     ) -> Set[str]:
-        """Registers/refreshes trades from scanner emissions; returns symbols seen this cycle.
+        """Registers/refreshes trades from scanner emissions; returns scope-keys seen this cycle.
+
+        Keys are ``"<SYMBOL>|<isolation_scope>"`` so the absent-setup expiry in the
+        pending monitor only counts emissions from the trade's own scope (a shadow
+        strategy stopping emission must not expire the active strategy's pending
+        trade, and vice versa).
 
         Invariants (why this is structured the way it is):
-        - A symbol with a TRADE_ACTIVE ledger record is locked: entry/SL are immutable,
-          so later scanner emissions for it are ignored.
+        - A symbol with a TRADE_ACTIVE ledger record *in the same scope* is locked:
+          entry/SL are immutable, so later scanner emissions for it are ignored.
+          Other scopes are unaffected (shadow trades never block the active one).
         - An unfilled pending record follows the FRESHEST FVG emission in place (newer
           formed_at wins); anchor/FVG metadata is replaced without duplicate events.
         - Out-of-session fills are never ingested as active; the setup stays pending.
@@ -371,18 +413,24 @@ class ExtremeTradeTracker:
         seen_symbols: Set[str] = set()
         for s in setups:
             sym = s["symbol"].strip().upper()
+            scope_key = f"{sym}|{isolation_scope}"
             curr_px = lookup_mid(current_mids, sym, float(s.get("current_price", s["entry_price"])))
 
-            # If symbol already has an ACTIVE trade in the ledger, its entry price is LOCKED.
-            existing_active = self.get_active_trade_for_symbol(sym)
+            # If this scope already has an ACTIVE trade in the ledger, its entry
+            # price is LOCKED.
+            existing_active = self.get_active_trade_for_symbol_and_scope(sym, isolation_scope)
             if existing_active:
-                seen_symbols.add(sym)
+                seen_symbols.add(scope_key)
                 continue
 
             fvg_formed_at = s.get("target_fvg", {}).get("formed_at", 0)
             entry_px = s["entry_price"]
+            # Legacy trade_id format is preserved for the active strategy; shadow
+            # scopes get a suffix so identical setups across scopes never collide.
             trade_id = f"{sym}:{fvg_formed_at}:{entry_px:.2f}"
-            seen_symbols.add(sym)
+            if isolation_scope:
+                trade_id = f"{trade_id}:{isolation_scope}"
+            seen_symbols.add(scope_key)
 
             # Check FVG formation session/weekday filters
             dur_ms = TIMEFRAME_MS.get(s.get("ltf_timeframe", "15m"), 15 * 60 * 1000)
@@ -390,7 +438,7 @@ class ExtremeTradeTracker:
             if not session_config.is_fvg_valid(fvg_close_ts):
                 continue
 
-            existing_pending = self.get_pending_trade_for_symbol(sym)
+            existing_pending = self.get_pending_trade_for_symbol_and_scope(sym, isolation_scope)
             if existing_pending is not None and existing_pending.trade_id != trade_id:
                 # Scanner offers a different setup for a symbol with an unfilled pending
                 # record. The pending record must follow the FRESHEST emission (newer
@@ -420,6 +468,7 @@ class ExtremeTradeTracker:
                         ltf_fvg=s.get("target_fvg", {}),
                         strategy=s.get("strategy", "extreme_fvg"),
                         strategy_params=s.get("strategy_params", {}) or {},
+                        isolation_scope=isolation_scope,
                         state="PENDING_RETRACE",
                         status_detail="Waiting for Retrace (refreshed to latest emission)",
                         created_at_ist=setup_created_ist,
@@ -465,6 +514,7 @@ class ExtremeTradeTracker:
                     ltf_fvg=s.get("target_fvg", {}),
                     strategy=s.get("strategy", "extreme_fvg"),
                     strategy_params=s.get("strategy_params", {}) or {},
+                    isolation_scope=isolation_scope,
                     state="TRADE_ACTIVE" if is_active else s.get("state", "PENDING_RETRACE"),
                     status_detail=status_det,
                     created_at_ist=setup_created_ist,
@@ -617,8 +667,10 @@ class ExtremeTradeTracker:
             to_close.append((trade_id, "SETUP_INVALIDATED", trade))
             return
 
-        # Absent-setup expiry: scanner stopped emitting this symbol.
-        if trade.symbol.strip().upper() not in seen_symbols:
+        # Absent-setup expiry: this scope's scanner stopped emitting this symbol.
+        # seen_symbols holds "<SYMBOL>|<isolation_scope>" keys, so a shadow scope
+        # going quiet never expires the active strategy's pending trade.
+        if f"{trade.symbol.strip().upper()}|{trade.isolation_scope}" not in seen_symbols:
             trade.absent_cycles += 1
             if trade.absent_cycles >= PENDING_ABSENT_EXPIRY_CYCLES:
                 _close_trade(
@@ -710,10 +762,16 @@ class ExtremeTradeTracker:
         sessions: Optional[str] = None,
         entry_sessions: Optional[str] = None,
         session_config: Optional[SessionFilterConfig] = None,
+        isolation_scope: str = "",
     ) -> List[Tuple[str, TrackedExtremeTrade]]:
         """
         Ingests live scanner setups, tracks new entries, monitors open positions,
         and resolves TP / SL exits.
+
+        ``isolation_scope`` partitions the ledger: trades recorded under a scope
+        never block same-symbol setups from another scope (``""`` = the active
+        strategy; shadow strategies pass their registry name).
+
         Returns a list of event tuples: (event_type, trade)
         e.g. ("NEW_SETUP", trade), ("ENTRY_FILLED", trade), ("TP_HIT", trade), ("SL_HIT", trade)
         """
@@ -730,15 +788,27 @@ class ExtremeTradeTracker:
             entry_sessions,
         )
 
-        # 1. Ingest/Update setups from scanner (register new, refresh stale pendings)
+        # 1. Ingest/Update setups from scanner (register new, refresh stale pendings).
+        # Note: ingest only registers setups for THIS scope; the monitor below
+        # manages all open trades regardless of scope.
         seen_symbols = self._ingest_scanner_setups(
             setups, current_mids, session_config, now_ts, now_ist_str, events,
+            isolation_scope=isolation_scope,
         )
 
-        # 2. Monitor all open trades: check both TRADE_ACTIVE (for TP/SL) and PENDING_RETRACE (for invalidation / breach)
+        # 2. Monitor open trades of THIS scope only: check both TRADE_ACTIVE (for TP/SL)
+        # and PENDING_RETRACE (for invalidation / breach). Scoping the monitor prevents
+        # double-processing when the daemon runs one process_live_setups call per
+        # strategy scope per cycle (e.g. absent-expiry counters would double-increment).
+        # Trade safety: fills/resolutions are candle-replay-driven and idempotent, but
+        # ownership stays explicit — each open trade is managed by exactly one scope.
         from hyperliquid_client import SYMBOL_ALIASES
         to_close = []
-        for trade_id, trade in list(self.active_trades.items()):
+        scope_trades = [
+            (tid, tr) for tid, tr in list(self.active_trades.items())
+            if tr.isolation_scope == isolation_scope
+        ]
+        for trade_id, trade in scope_trades:
             raw_sym = SYMBOL_ALIASES.get(trade.symbol.strip().upper(), trade.symbol.strip().upper())
             curr_px = lookup_mid(current_mids, trade.symbol, trade.entry_price)
             risk_r = trade.risk_r if trade.risk_r > 0 else (trade.entry_price * 0.001)

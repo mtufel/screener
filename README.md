@@ -180,6 +180,32 @@ EXTREME_S3_ENTRY_SESSIONS=NY_KZ      # Entry fills restricted to 13:00–16:00 U
 ```
 Run its backtester: `python backtest_liquidity_sweep_fvg.py --symbol BTC --days 90 --ltf 5m --invalidation close`
 
+### 6. Shadow (Paper) Mode — Run S3 Alongside Strategy 2
+```ini
+EXTREME_SHADOW_STRATEGIES=liquidity_sweep_fvg   # comma-separated registry names; empty = off
+```
+When set, the daemon scans the listed strategies in the **same cycle** as the active strategy. Shadow setups/trades:
+- are tracked in the shared ledger under their own isolation scope — they **never block** the active strategy's setups on the same symbol (and vice versa);
+- appear in the dashboard **Live History** with a violet `SHADOW` badge; filter with the **Strategy** dropdown;
+- are broadcast to the dashboard WebSocket and persisted like normal trades, but **never send Telegram alerts**;
+- use the strategy's validated defaults (`strategies/strategy3_liquidity_sweep.py::default_params`), not the daemon's shared config.
+
+Per-strategy stats: `GET /api/{strategy}/status` → `ledger_summary`, or `python -c "from extreme_trade_tracker import extreme_trade_tracker as t; print(t.get_summary(strategy='liquidity_sweep_fvg'))"`. Compare shadow vs active over ~2 weeks before promoting S3 (`EXTREME_ACTIVE_STRATEGY=liquidity_sweep_fvg`).
+
+Note: removing a name from the list leaves its still-open paper trades frozen in the ledger (visible in history, no longer monitored); re-enable the name to resume tracking them.
+
+### 7. Strategy 3 Dashboard Tab & Backtest Lab
+The dashboard has a dedicated **Strategy 3** section with two inner tabs:
+
+- **Live Shadow & Setup Scan** — one-click shadow-mode toggle, S3 shadow ledger (paper trades with TP mode / sweep pool / MFE per trade), and an on-demand setup scan across symbols (`GET /api/{strategy}/scan?symbols=BTC,ETH,SOL`).
+- **Backtest Lab (Parameters)** — replay history with any combination of S3 knobs and compare runs side by side:
+  - Core: symbol, days (14–90), LTF timeframe, invalidation mode, min gap %, entry session (NY killzone / London / ALL).
+  - Gates: require fresh sweep (≤ 2h), anchor-age guard (skip 24–48h anchors), exclude gap band 0.10–0.20%.
+  - Take-profit: liquidity-first vs fixed-R, min RR for a liquidity target, fallback R.
+  - Results: win rate / net R / profit factor / max drawdown / MFE KPIs, a **gate-rejection breakdown** (why setups were filtered), the full executed-trade table, and a **variant comparison** — pin any run, change parameters, re-run, and A/B the rows.
+
+The lab calls `GET /api/{strategy}/backtest` (same endpoint the CLI numbers come from), so UI results match `backtest_liquidity_sweep_fvg.py` exactly. Defaults in the UI are the validated config (NY killzone, sweep gate on, liquidity TP @ ≥1.5RR).
+
 ---
 
 ## 🚢 Production Deployment

@@ -217,6 +217,17 @@ With `tp_mode="LIQUIDITY"` (default): TP = nearest opposing pool at least `min_r
 
 Per-trade expectancy improves ~3–6×; drawdown drops 3–17×. Live stays on `extreme_fvg` until a shadow run of `liquidity_sweep_fvg` confirms parity.
 
+### Strategy 3 Shadow (Paper) Mode
+
+Set `EXTREME_SHADOW_STRATEGIES=liquidity_sweep_fvg` to run S3 **alongside** the active strategy in the same daemon cycle — no second process needed. Mechanics (see `test_shadow_strategies.py`):
+
+* **Isolation scope**: the ledger partitions trades by scope (`""` = active strategy, registry name = shadow). Active/pending checks are scope-aware, so a shadow trade on BTC never suppresses the active strategy's BTC scan, and the absent-setup expiry counter only sees its own scope's emissions. Shadow trade IDs carry a `:<strategy>` suffix to avoid collisions.
+* **Params**: shadow strategies resolve their own `default_params` (S3's validated gates: NY_KZ entry, sweep ≤2h, gap-band, anchor-age guard, LIQUIDITY TP) — shared daemon config (ltf/target/min_gap) applies only to the active strategy.
+* **Silence**: shadow lifecycle events broadcast to the dashboard and persist to Redis/disk, but never reach Telegram; the dashboard's Live History tags them `SHADOW` with a per-strategy filter.
+* **Promotion**: after ~2 weeks, compare `get_summary(strategy=...)` win rate / net R / drawdown vs the S2 live ledger, then promote via `EXTREME_ACTIVE_STRATEGY=liquidity_sweep_fvg` (and clear `EXTREME_SHADOW_STRATEGIES`).
+
+Adapter note: the S3 engine returns setup **dicts**; `strategies/strategy3_liquidity_sweep.py` normalizes them into the attribute view the daemon payload builder expects (adds `state`, `risk_pct`, `tp_1r/2r/3r`, `entry_timestamp`).
+
 ---
 
 ## 🔬 Backtesting Engines & Validation

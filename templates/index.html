@@ -376,6 +376,11 @@
                 <option value="PAXG">PAXG</option>
                 <option value="GOLD">GOLD</option>
               </select>
+              <select id="liveFilterStrategy" onchange="onLiveHistFilterChange()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300" title="Filter by strategy">
+                <option value="">All Strategies</option>
+                <option value="extreme_fvg">S2 · Extreme</option>
+                <option value="liquidity_sweep_fvg">S3 · Liquidity Sweep (shadow)</option>
+              </select>
               <button
                 onclick="fetchExtremeLiveHistory()"
                 class="px-3 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-750 text-slate-300 hover:text-white border border-dark-700 text-xs font-mono font-semibold flex items-center space-x-1.5 transition-all"
@@ -609,8 +614,298 @@
           </div>
         </div>
       </div>
-    </div>
-  </main>
+    </div><!-- /#strat2Wrapper -->
+
+    <!-- ===================================================================== -->
+    <!-- STRATEGY 3 WRAPPER (LIQUIDITY-SWEEP FVG)                              -->
+    <!-- ===================================================================== -->
+    <div id="strat3Wrapper" class="space-y-6">
+      <!-- Strategy 3 Sub-Navigation (Inner Tabs) -->
+      <div class="flex items-center justify-between border-b border-dark-700/80 pb-3">
+        <div class="flex items-center space-x-1.5 p-1 rounded-xl bg-dark-800 border border-dark-700">
+          <button
+            onclick="switchStrat3Tab('live')"
+            id="s3InnerTabLive"
+            class="px-4 py-1.5 rounded-lg text-xs font-bold transition-all bg-violet-500 text-white shadow-sm flex items-center space-x-1.5"
+          >
+            <i class="fa-solid fa-wave-square text-xs"></i>
+            <span>Live Shadow & Setup Scan</span>
+          </button>
+          <button
+            onclick="switchStrat3Tab('backtest')"
+            id="s3InnerTabBacktest"
+            class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5"
+          >
+            <i class="fa-solid fa-flask text-xs"></i>
+            <span>Backtest Lab (Parameters)</span>
+          </button>
+        </div>
+        <div class="text-xs text-slate-400 font-mono hidden md:flex items-center space-x-2">
+          <span class="px-2 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 font-bold">Strategy 3</span>
+          <span>4H Bias → Liquidity Sweep → LTF FVG Entry → Liquidity Target</span>
+        </div>
+      </div>
+
+      <!-- STRATEGY 3 INNER TAB 1: LIVE SHADOW & SETUP SCAN -->
+      <div id="s3LiveView" class="space-y-6">
+        <!-- Shadow mode status banner -->
+        <div id="s3ShadowBanner" class="p-4 rounded-2xl bg-dark-800/90 border border-dark-700 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center space-x-3">
+            <span id="s3ShadowStatusDot" class="inline-block w-2.5 h-2.5 rounded-full bg-slate-500"></span>
+            <div>
+              <span id="s3ShadowStatusText" class="text-sm font-bold text-white">Shadow mode: checking…</span>
+              <span class="text-xs text-slate-400 block">Strategy 3 paper-trades alongside Strategy 2 with no Telegram alerts and its own ledger scope.</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              onclick="toggleS3ShadowMode()"
+              id="btnS3ShadowToggle"
+              class="px-3 py-1.5 rounded-lg text-xs font-bold bg-violet-500/10 text-violet-300 border border-violet-500/30 hover:bg-violet-500/20 transition-colors"
+            >
+              Enable Shadow Mode
+            </button>
+            <button
+              onclick="scanS3Setups()"
+              id="btnS3Scan"
+              class="px-3 py-1.5 rounded-lg text-xs font-bold bg-dark-700 hover:bg-dark-600 text-slate-200 border border-dark-600 transition-colors"
+            >
+              <i class="fa-solid fa-magnifying-glass-chart mr-1"></i>Scan S3 Setups Now
+            </button>
+          </div>
+        </div>
+
+        <!-- S3 shadow ledger summary cards -->
+        <div id="s3ShadowSummary" class="grid grid-cols-2 lg:grid-cols-5 gap-4"></div>
+
+        <!-- S3 shadow trade history -->
+        <div class="rounded-2xl bg-dark-800/80 border border-dark-700 overflow-hidden shadow-xl">
+          <div class="p-4 border-b border-dark-700 text-xs font-semibold text-slate-300 flex items-center justify-between">
+            <span>S3 Shadow Ledger (paper trades)</span>
+            <button onclick="fetchS3ShadowLedger()" class="text-[10px] text-violet-300 hover:text-violet-200 font-mono"><i class="fa-solid fa-rotate mr-1"></i>Refresh</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="bg-dark-900/60 text-slate-400 border-b border-dark-700 text-[11px]">
+                <tr>
+                  <th class="p-3">State</th>
+                  <th class="p-3">Symbol</th>
+                  <th class="p-3">Entry</th>
+                  <th class="p-3">Stop</th>
+                  <th class="p-3">Target</th>
+                  <th class="p-3">R</th>
+                  <th class="p-3">TP Mode</th>
+                  <th class="p-3">Sweep</th>
+                  <th class="p-3">MFE</th>
+                  <th class="p-3">Detail</th>
+                </tr>
+              </thead>
+              <tbody id="s3ShadowTableBody" class="divide-y divide-dark-700/50 text-slate-200">
+                <tr><td colspan="10" class="p-8 text-center text-slate-500">No S3 shadow trades yet. Enable shadow mode and wait for a NY killzone scan (13:00–16:00 UTC weekdays).</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- One-off S3 setup scan (killzone-aware) -->
+        <div class="rounded-2xl bg-dark-800/80 border border-dark-700 overflow-hidden shadow-xl">
+          <div class="p-4 border-b border-dark-700 text-xs font-semibold text-slate-300 flex items-center justify-between">
+            <span>Current S3 Setup Scan (on-demand)</span>
+            <span class="text-[10px] text-slate-500 font-mono">uses strategy default params</span>
+          </div>
+          <div class="p-4">
+            <div class="grid grid-cols-2 lg:grid-cols-3 gap-4" id="s3ScanResults">
+              <div class="p-6 text-center text-slate-500 text-xs font-mono col-span-full">Click "Scan S3 Setups Now" to probe the current sweep→FVG setup per symbol.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STRATEGY 3 INNER TAB 2: BACKTEST LAB -->
+      <div id="s3BacktestView" class="hidden space-y-8">
+        <!-- S3 Backtest Controls -->
+        <div class="p-6 rounded-3xl bg-dark-800/90 border border-dark-700/80 shadow-lg">
+          <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+            <div>
+              <h3 class="text-lg font-bold text-white flex items-center space-x-2">
+                <i class="fa-solid fa-flask text-violet-400"></i>
+                <span>Liquidity-Sweep FVG Backtest Lab</span>
+              </h3>
+              <p class="text-xs text-slate-400 mt-1">
+                Tune the S3 gates and take-profit model, run 90-day replays, and compare variants side by side.
+              </p>
+            </div>
+            <div class="flex flex-wrap items-end gap-3 w-full lg:w-auto">
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Symbol</label>
+                <input type="text" id="s3BtSymbol" value="BTC" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-24 focus:outline-none focus:border-violet-500" />
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Days</label>
+                <select id="s3BtDays" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-200">
+                  <option value="14">14</option>
+                  <option value="30">30</option>
+                  <option value="60">60</option>
+                  <option value="90" selected>90</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Timeframe</label>
+                <select id="s3BtLtf" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="5m" selected>5m</option>
+                  <option value="15m">15m</option>
+                  <option value="1h">1h</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Invalidation</label>
+                <select id="s3BtInval" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="wick">Wick</option>
+                  <option value="close" selected>Close</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Min Gap %</label>
+                <input type="number" id="s3BtMinGap" value="0.05" step="0.01" min="0" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-20 focus:outline-none focus:border-violet-500" />
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Entry Session</label>
+                <select id="s3BtEntrySession" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="NY_KZ" selected>NY KZ (13-16 UTC)</option>
+                  <option value="NY">NY (13-22 UTC)</option>
+                  <option value="LONDON_KZ">London KZ (07-10 UTC)</option>
+                  <option value="LONDON">London (07-16 UTC)</option>
+                  <option value="LONDON,NY">London + NY</option>
+                  <option value="ALL">24/7 (ALL)</option>
+                </select>
+              </div>
+              <div class="self-end">
+                <button
+                  onclick="runS3Backtest()"
+                  id="btnS3Backtest"
+                  class="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-violet-500 to-fuchsia-600 hover:from-violet-400 hover:to-fuchsia-500 text-white shadow-lg shadow-violet-500/20 active:scale-95 transition-all flex items-center space-x-2"
+                >
+                  <i class="fa-solid fa-play"></i>
+                  <span>Run S3 Backtest</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- Gate toggles row -->
+          <div class="flex flex-wrap items-end gap-5 mt-5 pt-5 border-t border-dark-700/70">
+            <label class="flex items-center gap-2 text-xs font-semibold text-slate-300 cursor-pointer select-none">
+              <input type="checkbox" id="s3BtRequireSweep" checked class="w-4 h-4 rounded bg-dark-900 border-dark-600 text-violet-500 focus:ring-violet-500/50" />
+              Require fresh sweep (≤ 2h)
+            </label>
+            <label class="flex items-center gap-2 text-xs font-semibold text-slate-300 cursor-pointer select-none">
+              <input type="checkbox" id="s3BtAnchorGuard" checked class="w-4 h-4 rounded bg-dark-900 border-dark-600 text-violet-500 focus:ring-violet-500/50" />
+              Anchor-age guard (skip 24–48h)
+            </label>
+            <label class="flex items-center gap-2 text-xs font-semibold text-slate-300 cursor-pointer select-none">
+              <input type="checkbox" id="s3BtGapBand" checked class="w-4 h-4 rounded bg-dark-900 border-dark-600 text-violet-500 focus:ring-violet-500/50" />
+              Exclude gap band 0.10–0.20%
+            </label>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-400 mb-1">TP Mode</label>
+              <select id="s3BtTpMode" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                <option value="LIQUIDITY" selected>Liquidity-first</option>
+                <option value="FIXED_R">Fixed R</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-400 mb-1">Min RR (liq TP)</label>
+              <input type="number" id="s3BtMinRr" value="1.5" step="0.1" min="0" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-20 focus:outline-none focus:border-violet-500" />
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-400 mb-1">Fallback R</label>
+            <input type="number" id="s3BtFallbackR" value="2.0" step="0.5" min="0" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-20 focus:outline-none focus:border-violet-500" />
+            </div>
+            <div class="ml-auto">
+              <button
+                onclick="resetS3Params()"
+                class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-dark-700 hover:bg-dark-600 text-slate-300 border border-dark-600 transition-colors"
+                title="Restore validated defaults"
+              >
+                <i class="fa-solid fa-rotate-left mr-1"></i>Reset to Validated Defaults
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- S3 KPI Summary Cards -->
+        <div id="s3BacktestSummary" class="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          <div class="p-8 text-center text-slate-500 font-mono text-xs col-span-full">Configure parameters above and click "Run S3 Backtest".</div>
+        </div>
+
+        <!-- S3 Gate-reject breakdown -->
+        <div id="s3GateRejects" class="hidden rounded-2xl bg-dark-800/80 border border-dark-700 p-4">
+          <div class="text-xs font-semibold text-slate-300 mb-2">Gate Rejections (why setups were filtered)</div>
+          <div id="s3GateRejectChips" class="flex flex-wrap gap-2"></div>
+        </div>
+
+        <!-- S3 trades table -->
+        <div class="rounded-2xl bg-dark-800/80 border border-dark-700 overflow-hidden shadow-xl">
+          <div class="p-4 border-b border-dark-700 text-xs font-semibold text-slate-300 flex items-center justify-between">
+            <span>Executed Trades (actual R by TP mode)</span>
+            <span id="s3TradesMeta" class="text-[10px] text-slate-500 font-mono"></span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="bg-dark-900/60 text-slate-400 border-b border-dark-700 text-[11px]">
+                <tr>
+                  <th class="p-3">Direction</th>
+                  <th class="p-3">4H Anchor Zone</th>
+                  <th class="p-3">LTF FVG</th>
+                  <th class="p-3">Entry (IST)</th>
+                  <th class="p-3">Stop</th>
+                  <th class="p-3">Result</th>
+                  <th class="p-3">Realized R</th>
+                  <th class="p-3">TP Mode</th>
+                  <th class="p-3">Sweep Pool</th>
+                  <th class="p-3">Anchor Age</th>
+                  <th class="p-3">MFE</th>
+                  <th class="p-3">Exit</th>
+                </tr>
+              </thead>
+              <tbody id="s3TradesTableBody" class="divide-y divide-dark-700/50 text-slate-200">
+                <tr><td colspan="12" class="p-8 text-center text-slate-500">Run a backtest to see trades.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Variant comparison (A/B) -->
+        <div class="rounded-2xl bg-dark-800/80 border border-dark-700 overflow-hidden shadow-xl">
+          <div class="p-4 border-b border-dark-700 text-xs font-semibold text-slate-300 flex items-center justify-between">
+            <span>Variant Comparison (this session)</span>
+            <div class="flex items-center gap-2">
+              <button onclick="saveS3Variant()" class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-violet-500/10 text-violet-300 border border-violet-500/30 hover:bg-violet-500/20 transition-colors" title="Snapshot the latest run for comparison">Pin Last Run</button>
+              <button onclick="clearS3Variants()" class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-dark-700 hover:bg-dark-600 text-slate-300 border border-dark-600 transition-colors">Clear</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="bg-dark-900/60 text-slate-400 border-b border-dark-700 text-[11px]">
+                <tr>
+                  <th class="p-3">#</th>
+                  <th class="p-3">Parameters</th>
+                  <th class="p-3">Trades</th>
+                  <th class="p-3">Win Rate</th>
+                  <th class="p-3">Net R</th>
+                  <th class="p-3">PF</th>
+                  <th class="p-3">Max DD</th>
+                  <th class="p-3">Avg MFE</th>
+                  <th class="p-3">Liq TP %</th>
+                </tr>
+              </thead>
+              <tbody id="s3VariantsTableBody" class="divide-y divide-dark-700/50 text-slate-200">
+                <tr><td colspan="9" class="p-6 text-center text-slate-500">Pin runs to compare parameter sets side by side.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div><!-- /#strat3Wrapper -->
 
   <!-- Extreme TradingView Chart Modal -->
   <div id="extremeChartModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
@@ -1124,6 +1419,10 @@
             } else if (msg.type === 'trade_event') {
               fetchExtremeLiveHistory();
             }
+            // S3 shadow ledger follows daemon activity when shadow mode is on
+            if (typeof s3ShadowOn === 'boolean' && s3ShadowOn) {
+              fetchS3ShadowLedger();
+            }
           } catch (parseErr) {
             console.debug('Error parsing WS message:', parseErr);
           }
@@ -1177,11 +1476,13 @@
       try {
         const state = document.getElementById('liveFilterState')?.value || '';
         const symbol = document.getElementById('liveFilterSymbol')?.value || '';
+        const strategy = document.getElementById('liveFilterStrategy')?.value || '';
         const params = new URLSearchParams();
         params.set('page', String(liveHistPage));
         params.set('per_page', String(liveHistPerPage));
         if (state) params.set('state', state);
         if (symbol) params.set('symbol', symbol);
+        if (strategy) params.set('strategy', strategy);
         const resp = await fetchWithRetry('/api/extreme/live-history?' + params.toString(), {}, 10000, 1);
         if (!resp.ok) return;
         const data = await resp.json();
@@ -1231,6 +1532,9 @@
       tbody.innerHTML = trades.map((t, idx) => {
         const isBull = t.direction === 'Bullish';
         const dirBadge = isBull ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold text-[10px]">LONG</span>' : '<span class="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-[10px]">SHORT</span>';
+        const stratTag = t.strategy && t.strategy !== 'extreme_fvg'
+          ? `<span class="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/30 font-bold text-[10px]" title="Shadow paper trade (${t.strategy}) — no Telegram alerts">SHADOW</span>`
+          : '';
         
         let stateBadge = '';
         const isActive = t.state === 'TRADE_ACTIVE';
@@ -1255,6 +1559,7 @@
               <div class="flex items-center space-x-1.5">
                 <span class="font-bold text-white">${t.symbol}</span>
                 ${dirBadge}
+                ${stratTag}
               </div>
               <span class="text-[10px] text-slate-500 block">${t.ltf_timeframe}</span>
             </td>
@@ -1667,6 +1972,394 @@
       }
     }
 
+    // ========================================================================
+    // STRATEGY 3 (LIQUIDITY-SWEEP FVG) — shadow ledger + backtest lab
+    // ========================================================================
+    let currentStrat3Tab = 'live';   // 'live' | 'backtest'
+    let s3Variants = [];             // pinned backtest runs for A/B comparison
+    let s3VariantSeq = 0;
+    let s3LastRun = null;            // latest backtest result for pinning
+    let s3ShadowOn = false;          // last-known shadow-mode state (gates WS refreshes)
+
+    function switchStrat3Tab(tab) {
+      currentStrat3Tab = tab;
+      const live = document.getElementById('s3LiveView');
+      const bt = document.getElementById('s3BacktestView');
+      const tLive = document.getElementById('s3InnerTabLive');
+      const tBt = document.getElementById('s3InnerTabBacktest');
+
+      if (tab === 'live') {
+        live.classList.remove('hidden');
+        bt.classList.add('hidden');
+      } else {
+        bt.classList.remove('hidden');
+        live.classList.add('hidden');
+      }
+      if (tab === 'live') {
+        tLive.className = 'px-4 py-1.5 rounded-lg text-xs font-bold transition-all bg-violet-500 text-white shadow-sm flex items-center space-x-1.5';
+        tBt.className = 'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5';
+      } else {
+        tBt.className = 'px-4 py-1.5 rounded-lg text-xs font-bold transition-all bg-violet-500 text-white shadow-sm flex items-center space-x-1.5';
+        tLive.className = 'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5';
+      }
+    }
+
+    function _s3Err(el, msg) {
+      el.innerHTML = `<div class="col-span-full p-6 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center text-rose-400 text-xs">${msg}</div>`;
+    }
+
+    async function fetchS3ShadowStatus() {
+      try {
+        const resp = await fetchWithRetry('/api/liquidity_sweep_fvg/status', {}, 15000, 1);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const dot = document.getElementById('s3ShadowStatusDot');
+        let txt;
+        if (data.is_shadow) {
+          txt = 'Shadow mode: ON — S3 paper-trades alongside Strategy 2 in the same daemon cycle';
+        } else if (data.is_running) {
+          txt = 'Shadow mode: OFF — daemon runs Strategy 2 only';
+        } else {
+          txt = 'Shadow mode: OFF — daemon not running';
+        }
+        document.getElementById('s3ShadowStatusText').innerText = txt;
+        dot.className = data.is_shadow
+          ? 'inline-block w-2.5 h-2.5 rounded-full bg-violet-400 animate-pulse'
+          : 'inline-block w-2.5 h-2.5 rounded-full bg-slate-500';
+        document.getElementById('btnS3ShadowToggle').innerText = data.is_shadow ? 'Disable Shadow Mode' : 'Enable Shadow Mode';
+        s3ShadowOn = !!data.is_shadow;
+        return data;
+      } catch (err) {
+        document.getElementById('s3ShadowStatusText').innerText = 'Shadow status unavailable (daemon offline?)';
+      }
+    }
+
+    async function toggleS3ShadowMode() {
+      const btn = document.getElementById('btnS3ShadowToggle');
+      const enabling = btn.innerText.trim().startsWith('Enable');
+      btn.disabled = true;
+      try {
+        const url = '/api/extreme/config?shadow_strategies=' + (enabling ? 'liquidity_sweep_fvg' : '');
+        const resp = await fetchWithRetry(url, { method: 'POST' }, 15000, 1);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        showToast(enabling ? 'S3 shadow mode enabled' : 'S3 shadow mode disabled', 'success');
+        await fetchS3ShadowStatus();
+        if (enabling) fetchS3ShadowLedger();
+      } catch (err) {
+        showToast('Failed to toggle shadow mode: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function s3ShadowSummaryHtml(m) {
+      const fmtR = v => (v > 0 ? '+' : '') + Number(v || 0).toFixed(1) + 'R';
+      const rColor = v => v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+      return `
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">TRACKED</span>
+          <span class="text-lg font-black text-white font-mono">${m.total_tracked_trades ?? 0}</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">CLOSED</span>
+          <span class="text-lg font-black text-white font-mono">${m.total_closed_trades ?? 0}</span>
+          <span class="text-[10px] text-slate-400 block font-mono">${m.wins ?? 0}W / ${m.losses ?? 0}L</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">WIN RATE</span>
+          <span class="text-lg font-black ${rColor(m.win_rate_pct - 50)} font-mono">${m.win_rate_pct ?? 0}%</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">NET R</span>
+          <span class="text-lg font-black ${rColor(m.net_realized_r)} font-mono">${fmtR(m.net_realized_r)}</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">ACTIVE / PENDING</span>
+          <span class="text-lg font-black text-white font-mono">${m.active_now ?? 0} / ${m.pending_now ?? 0}</span>
+         </div>`;
+    }
+
+    async function fetchS3ShadowLedger() {
+      try {
+        const resp = await fetchWithRetry('/api/extreme/live-history?strategy=liquidity_sweep_fvg&per_page=50', {}, 15000, 1);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const m = data.metrics || data.summary || {};
+        document.getElementById('s3ShadowSummary').innerHTML = s3ShadowSummaryHtml(m);
+        renderS3ShadowTrades(data.trades || []);
+      } catch (err) {
+        _s3Err(document.getElementById('s3ShadowSummary'), 'Failed to load S3 ledger: ' + err.message);
+      }
+    }
+
+    function renderS3ShadowTrades(trades) {
+      const tbody = document.getElementById('s3ShadowTableBody');
+      if (!trades.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="p-8 text-center text-slate-500">No S3 shadow trades yet. Enable shadow mode and wait for a NY killzone scan (13:00-16:00 UTC weekdays).</td></tr>';
+        return;
+      }
+      tbody.innerHTML = trades.map(t => {
+        const isBull = t.direction === 'Bullish';
+        const isActive = t.state === 'TRADE_ACTIVE';
+        let stateBadge;
+        if (isActive) {
+          stateBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">ACTIVE</span>`;
+        } else if (t.state === 'COMPLETED_TP') {
+          stateBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">WIN</span>';
+        } else if (t.state === 'STOPPED_OUT') {
+          stateBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">LOSS</span>';
+        } else if (t.state === 'PENDING_RETRACE') {
+          stateBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-300 border border-amber-500/30">PENDING</span>';
+        } else {
+          stateBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 border border-dark-600">${t.state}</span>`;
+        }
+        const sp = (t.strategy_params || {});
+        const fmt = v => '$' + formatNumber(v);
+        return `
+          <tr class="hover:bg-dark-750/50 transition-colors">
+            <td class="p-3">${stateBadge}</td>
+            <td class="p-3"><span class="font-bold text-white">${t.symbol}</span> <span class="${isBull ? 'text-emerald-400' : 'text-rose-400'} text-[10px] font-bold">${isBull ? 'LONG' : 'SHORT'}</span>
+              <span class="text-[10px] text-slate-500 block">${t.ltf_timeframe}</span></td>
+            <td class="p-3 text-white font-bold">${fmt(t.entry_price)}</td>
+            <td class="p-3 text-rose-300">${fmt(t.stop_loss)}</td>
+            <td class="p-3 text-amber-300">${fmt(t.completion_target === '1R' ? t.tp_1r : (t.completion_target === '3R' ? t.tp_3r : t.tp_2r))}</td>
+            <td class="p-3 font-bold ${t.realized_r > 0 ? 'text-emerald-400' : (t.realized_r < 0 ? 'text-rose-400' : 'text-slate-400')}">${t.realized_r !== 0 ? ((t.realized_r > 0 ? '+' : '') + t.realized_r.toFixed(1) + 'R') : (isActive ? ((t.floating_r > 0 ? '+' : '') + t.floating_r.toFixed(2) + 'R fl') : '--')}</td>
+            <td class="p-3 text-slate-400 text-[10px]">${(sp.tp_mode || '--')}</td>
+            <td class="p-3 text-slate-400 text-[10px]">${sp.require_sweep ? 'required' : 'off'}</td>
+            <td class="p-3 text-slate-300">+${(t.mfe_r || 0).toFixed(2)}R</td>
+            <td class="p-3 text-slate-500 text-[10px]">${t.status_detail || ''}</td>
+          </tr>`;
+      }).join('');
+    }
+
+    async function scanS3Setups() {
+      const btn = document.getElementById('btnS3Scan');
+      const el = document.getElementById('s3ScanResults');
+      btn.disabled = true;
+      el.innerHTML = '<div class="col-span-full p-6 text-center text-slate-400 text-xs font-mono"><i class="fa-solid fa-spinner fa-spin text-violet-400 mr-2"></i>Probing current sweep→FVG setup per symbol…</div>';
+      try {
+        const resp = await fetchWithRetry('/api/liquidity_sweep_fvg/scan?symbols=BTC,ETH,SOL', {}, 45000, 1);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const setups = data.setups || [];
+        if (!setups.length) {
+          el.innerHTML = '<div class="col-span-full p-6 rounded-xl bg-dark-900 border border-dark-700 text-center text-slate-400 text-xs">No S3 setups right now. Remember: entries only fill in the NY killzone (13:00-16:00 UTC weekdays) after a fresh liquidity sweep.</div>';
+          return;
+        }
+        el.innerHTML = setups.map(s => `
+          <div class="p-4 rounded-xl bg-dark-900 border border-violet-500/30">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-bold text-white font-mono text-sm">${s.symbol}</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold ${s.direction === 'Bullish' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'} border ${s.direction === 'Bullish' ? 'border-emerald-500/20' : 'border-rose-500/20'}">${s.direction === 'Bullish' ? 'LONG' : 'SHORT'}</span>
+            </div>
+            <div class="text-[11px] font-mono text-slate-300 space-y-1">
+              <div>Entry <span class="text-white font-bold">$${formatNumber(s.entry_price)}</span> · SL <span class="text-rose-300">$${formatNumber(s.stop_loss)}</span></div>
+              <div>Target <span class="text-amber-300">$${formatNumber(s.tp_2r)}</span> · Gap ${s.target_fvg ? s.target_fvg.gap_pct : '--'}%</div>
+              <div class="text-slate-500">State: ${s.state} · dist ${(s.dist_pct > 0 ? '+' : '') + s.dist_pct}%</div>
+            </div>
+          </div>`).join('');
+        showToast(`Found ${setups.length} S3 setup(s)`, 'success');
+      } catch (err) {
+        _s3Err(el, 'S3 scan failed: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function s3BtParams() {
+      return {
+        symbol: document.getElementById('s3BtSymbol').value.trim() || 'BTC',
+        days: document.getElementById('s3BtDays').value,
+        ltf: document.getElementById('s3BtLtf').value,
+        invalidation: document.getElementById('s3BtInval').value,
+        min_gap_pct: document.getElementById('s3BtMinGap').value,
+        require_sweep: document.getElementById('s3BtRequireSweep').checked,
+        anchor_age_guard: document.getElementById('s3BtAnchorGuard').checked,
+        gap_band_exclude: document.getElementById('s3BtGapBand').checked ? '0.10,0.20' : 'none',
+        tp_mode: document.getElementById('s3BtTpMode').value,
+        min_rr_for_liquidity: document.getElementById('s3BtMinRr').value,
+        fallback_target_r: document.getElementById('s3BtFallbackR').value,
+        entry_sessions: document.getElementById('s3BtEntrySession').value,
+      };
+    }
+
+    function s3BtParamsLabel(p) {
+      return [
+        p.symbol, p.days + 'd', p.ltf, p.invalidation,
+        p.require_sweep ? 'sweep' : 'nosweep',
+        p.anchor_age_guard ? 'ageguard' : 'noageguard',
+        p.gap_band_exclude === 'none' ? 'nogapband' : 'gapband',
+        'TP:' + p.tp_mode, 'rr' + p.min_rr_for_liquidity, 'fb' + p.fallback_target_r,
+        p.entry_sessions,
+      ].join(' · ');
+    }
+
+    async function runS3Backtest() {
+      const btn = document.getElementById('btnS3Backtest');
+      const summary = document.getElementById('s3BacktestSummary');
+      const tbody = document.getElementById('s3TradesTableBody');
+      const p = s3BtParams();
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting…</span>';
+      summary.innerHTML = '<div class="col-span-full p-8 text-center text-slate-400 font-mono text-xs"><i class="fa-solid fa-circle-notch fa-spin text-violet-400 text-lg mb-2"></i><br>Replaying ' + p.days + ' days of 4H anchors, sweeps & LTF FVGs…</div>';
+      tbody.innerHTML = '';
+
+      try {
+        const qs = Object.entries(p).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+        const resp = await fetchWithRetry('/api/liquidity_sweep_fvg/backtest?' + qs, {}, 120000, 1);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        s3LastRun = { params: p, label: s3BtParamsLabel(p), data: data };
+        renderS3BacktestResult(data);
+        showToast('S3 backtest done: ' + data.total_trades + ' trades, ' + data.win_rate + '% WR', 'success');
+      } catch (err) {
+        _s3Err(summary, 'S3 backtest failed: ' + err.message);
+        showToast('S3 backtest failed', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-play"></i><span>Run S3 Backtest</span>';
+      }
+    }
+
+    function renderS3BacktestResult(data) {
+      const pfInf = data.profit_factor === Infinity || data.profit_factor === null;
+      const pfTxt = pfInf ? '∞' : Number(data.profit_factor).toFixed(2);
+      const rColor = v => v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+      const liqPct = data.total_trades > 0 ? Math.round(100 * (data.liquidity_tp_count || 0) / data.total_trades) : 0;
+
+      document.getElementById('s3BacktestSummary').innerHTML = `
+        <div class="p-4 rounded-xl bg-dark-900 border border-violet-500/30 text-center bg-violet-500/5">
+          <span class="text-[11px] text-violet-300 block font-mono">WIN RATE (ACTUAL TP)</span>
+          <span class="text-lg font-black text-white font-mono">${data.win_rate}%</span>
+          <span class="text-[10px] text-slate-400 block font-mono">${data.wins}W / ${data.losses}L</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">NET R</span>
+          <span class="text-lg font-black ${rColor(data.net_r)} font-mono">${data.net_r > 0 ? '+' : ''}${Number(data.net_r).toFixed(1)}R</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">PROFIT FACTOR</span>
+          <span class="text-lg font-black text-white font-mono">${pfTxt}</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">MAX DD</span>
+          <span class="text-lg font-black text-rose-400 font-mono">-${Number(data.max_drawdown_r).toFixed(1)}R</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">TRADES / MFE</span>
+          <span class="text-lg font-black text-white font-mono">${data.total_trades}</span>
+          <span class="text-[10px] text-slate-400 block font-mono">avg +${Number(data.avg_mfe_r || 0).toFixed(2)}R · ${liqPct}% liq-TP</span>
+        </div>`;
+
+      // Gate rejects
+      const gr = data.gate_rejects || {};
+      const grEntries = Object.entries(gr).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+      const grBox = document.getElementById('s3GateRejects');
+      if (grEntries.length) {
+        grBox.classList.remove('hidden');
+        document.getElementById('s3GateRejectChips').innerHTML = grEntries.map(([k, v]) =>
+          `<span class="px-2 py-1 rounded-lg text-[10px] font-mono bg-dark-900 border border-dark-600 text-slate-300" title="Setups rejected by the ${k} gate">${k}: <span class="text-amber-300 font-bold">${v}</span></span>`
+        ).join('');
+      } else {
+        grBox.classList.add('hidden');
+      }
+
+      // Trades table
+      const tbody = document.getElementById('s3TradesTableBody');
+      document.getElementById('s3TradesMeta').innerText = (data.symbol || '') + ' · ' + (data.ltf_timeframe || '') + ' · ' + (data.days || '') + 'd · ' + (data.invalidation_mode || '') + '-inval';
+      if (!data.trades || !data.trades.length) {
+        tbody.innerHTML = '<tr><td colspan="12" class="p-8 text-center text-slate-500">No trades for this parameter set — loosen a gate and re-run.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.trades.slice().reverse().map(t => {
+        const isBull = t.direction === 'Bullish';
+        const win = t.realized_r > 0;
+        const fmt = v => '$' + formatNumber(v);
+        const sweepTxt = t.sweep_pool_kind ? (t.sweep_pool_kind + ' @ ' + formatNumber(t.sweep_pool_price)) : '—';
+        const ageTxt = (t.anchor_age_h_at_fill != null) ? Number(t.anchor_age_h_at_fill).toFixed(1) + 'h' : '—';
+        return `
+          <tr class="hover:bg-dark-750/50 transition-colors">
+            <td class="p-3 ${isBull ? 'text-emerald-400' : 'text-rose-400'} font-bold">${isBull ? 'LONG' : 'SHORT'}</td>
+            <td class="p-3 text-slate-300">
+              <span class="block font-semibold">${fmt(t.htf_fvg_bottom)} – ${fmt(t.htf_fvg_top)}</span>
+              <span class="text-[9px] text-slate-500 block">touch ${t.htf_first_touch_timestamp ? new Date(t.htf_first_touch_timestamp).toISOString().slice(0, 16).replace('T', ' ') + 'Z' : '—'}</span>
+            </td>
+            <td class="p-3 text-slate-300">
+              <span class="block font-semibold">${fmt(t.ltf_fvg_bottom)} – ${fmt(t.ltf_fvg_top)}</span>
+              <span class="text-[10px] text-amber-400 block">gap ${t.ltf_gap_pct}%</span>
+            </td>
+            <td class="p-3 text-white font-bold">${fmt(t.entry_price)}<span class="text-[10px] text-slate-400 block">${t.entry_time || ''}</span></td>
+            <td class="p-3 text-rose-300">${fmt(t.stop_loss)}</td>
+            <td class="p-3">${win ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400 font-bold">LOSS</span>'}</td>
+            <td class="p-3 font-bold ${win ? 'text-emerald-400' : 'text-rose-400'}">${t.realized_r > 0 ? '+' : ''}${Number(t.realized_r).toFixed(1)}R</td>
+            <td class="p-3 text-[10px] ${t.tp_mode === 'LIQUIDITY' ? 'text-violet-300' : 'text-slate-400'}">${t.tp_mode}${t.tp_pool_kind ? '<span class="block text-slate-500">' + t.tp_pool_kind + '</span>' : ''}</td>
+            <td class="p-3 text-[10px] text-slate-400">${sweepTxt}</td>
+            <td class="p-3 text-[10px] text-slate-400">${ageTxt}</td>
+            <td class="p-3 text-amber-300 font-bold">+${Number(t.mfe_r || 0).toFixed(2)}R</td>
+            <td class="p-3 text-[10px] text-slate-400">${t.exit_reason || ''}</td>
+          </tr>`;
+      }).join('');
+    }
+
+    function saveS3Variant() {
+      if (!s3LastRun) { showToast('Run a backtest first', 'error'); return; }
+      s3VariantSeq += 1;
+      s3Variants.push({ n: s3VariantSeq, label: s3LastRun.label, data: s3LastRun.data });
+      renderS3Variants();
+      showToast('Run pinned — change parameters and re-run to compare', 'success');
+    }
+
+    function clearS3Variants() {
+      s3Variants = [];
+      renderS3Variants();
+    }
+
+    function renderS3Variants() {
+      const tbody = document.getElementById('s3VariantsTableBody');
+      if (!s3Variants.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="p-6 text-center text-slate-500">Pin runs to compare parameter sets side by side.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = s3Variants.map(v => {
+        const d = v.data;
+        const pfTxt = (d.profit_factor === Infinity || d.profit_factor === null) ? '∞' : Number(d.profit_factor).toFixed(2);
+        const liqPct = d.total_trades > 0 ? Math.round(100 * (d.liquidity_tp_count || 0) / d.total_trades) : 0;
+        const rColor = v2 => v2 >= 0 ? 'text-emerald-400' : 'text-rose-400';
+        return `
+          <tr class="hover:bg-dark-750/50 transition-colors">
+            <td class="p-3 font-bold text-violet-300">#${v.n}</td>
+            <td class="p-3 text-[10px] text-slate-300">${v.label}</td>
+            <td class="p-3 text-white font-bold">${d.total_trades}</td>
+            <td class="p-3 font-bold">${d.win_rate}%</td>
+            <td class="p-3 font-bold ${rColor(d.net_r)}">${d.net_r > 0 ? '+' : ''}${Number(d.net_r).toFixed(1)}R</td>
+            <td class="p-3">${pfTxt}</td>
+            <td class="p-3 text-rose-300">-${Number(d.max_drawdown_r).toFixed(1)}R</td>
+            <td class="p-3 text-amber-300">+${Number(d.avg_mfe_r || 0).toFixed(2)}R</td>
+            <td class="p-3 text-slate-400">${liqPct}%</td>
+          </tr>`;
+      }).join('');
+    }
+
+    function resetS3Params() {
+      document.getElementById('s3BtSymbol').value = 'BTC';
+      document.getElementById('s3BtDays').value = '90';
+      document.getElementById('s3BtLtf').value = '5m';
+      document.getElementById('s3BtInval').value = 'close';
+      document.getElementById('s3BtMinGap').value = '0.05';
+      document.getElementById('s3BtRequireSweep').checked = true;
+      document.getElementById('s3BtAnchorGuard').checked = true;
+      document.getElementById('s3BtGapBand').checked = true;
+      document.getElementById('s3BtTpMode').value = 'LIQUIDITY';
+      document.getElementById('s3BtMinRr').value = '1.5';
+      document.getElementById('s3BtFallbackR').value = '2.0';
+      document.getElementById('s3BtEntrySession').value = 'NY_KZ';
+      showToast('S3 parameters reset to validated defaults', 'success');
+    }
+
+    // S3 boot: status + ledger on load; ledger refresh on WS scan_complete
+    fetchS3ShadowStatus();
+    fetchS3ShadowLedger();
     pollExtremeStatus();
   </script>
 
