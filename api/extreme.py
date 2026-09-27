@@ -692,6 +692,51 @@ async def api_extreme_clear_live_history():
 
 
 # ==============================================================================
+# Strategy enumeration & runtime activation (unified dashboard dropdown source).
+# ==============================================================================
+
+@router.get("/api/strategies", summary="List Registered Strategies (name, display name, active flag)")
+async def api_strategies_list():
+    from strategies import list_strategy_names, get_strategy, registry_snapshot
+
+    active = state.get("extreme_active_strategy", "extreme_fvg")
+    strategies = []
+    for name in list_strategy_names():
+        try:
+            display = get_strategy(name).display_name
+        except Exception:
+            display = registry_snapshot().get(name, name)
+        strategies.append({
+            "name": name,
+            "display_name": display,
+            "is_active": name == active,
+        })
+    return JSONResponse(content={"status": "success", "active_strategy": active, "strategies": strategies})
+
+
+@router.post("/api/{strategy}/activate", summary="Set the Active Strategy for the Screener Daemon")
+async def api_strategy_activate(strategy: str):
+    from strategies import get_strategy, list_strategy_names
+
+    try:
+        strat = get_strategy(strategy)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown strategy {strategy!r}. Available: {', '.join(list_strategy_names())}",
+        )
+
+    state["extreme_active_strategy"] = strat.name
+    logger.info("Active strategy switched to %r via API", strat.name)
+    return JSONResponse(content={
+        "status": "success",
+        "active_strategy": strat.name,
+        "display_name": strat.display_name,
+        "message": f"Active strategy set to {strat.display_name}",
+    })
+
+
+# ==============================================================================
 # Strategy-parameterized routes (freqtrade StrategyResolver UX analog).
 # These coexist with the existing /api/extreme/* routes which remain unchanged.
 # ==============================================================================
@@ -756,6 +801,8 @@ async def api_strategy_backtest(
     strategy: str,
     symbol: str = Query(default="BTC", description="Coin symbol"),
     days: int = Query(default=14, ge=1, le=90, description="Lookback days"),
+    mode: str = Query(default="analytic", pattern="^(analytic|replay)$", description="Backtest engine: analytic (vector engines) or replay (live execution path)"),
+    speed: str = Query(default="MAX", description="Replay mode: virtual-min per real-second or MAX"),
     ltf: Optional[str] = Query(default=None, pattern="^(1m|5m|15m|1h)$", description="LTF timeframe override"),
     invalidation: Optional[str] = Query(default=None, pattern="^(wick|close)$", description="Invalidation mode"),
     min_gap_pct: Optional[float] = Query(default=None, ge=0.0, description="Min gap size %"),
@@ -774,7 +821,15 @@ async def api_strategy_backtest(
     min_rr_for_liquidity: Optional[float] = Query(default=None, ge=0.0, description="S3: min RR for a liquidity pool to be targeted"),
     fallback_target_r: Optional[float] = Query(default=None, ge=0.0, description="S3: fixed-R fallback target"),
 ):
-    """Run a historical backtest for the named strategy (e.g. ``extreme_fvg``)."""
+    """Run a historical backtest for the named strategy (e.g. ``extreme_fvg``).
+
+    Two engines:
+      - mode=analytic (default): the strategy's vector backtest engine (fast).
+      - mode=replay: the LIVE execution path (scan cycle + trade tracker) run
+        against historical candles under a virtual clock — identical logic to
+        the live screener, controllable data speed. Returns the replay report
+        (ledger metrics + closed trades) with ``engine: "replay"``.
+    """
     import math
     from strategies import get_strategy
 
@@ -782,6 +837,46 @@ async def api_strategy_backtest(
         strat = get_strategy(strategy)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc.args[0]))
+
+    if mode == "replay":
+        from replay_manager import replay_manager
+
+        replay_params = {k: v for k, v in {
+            "ltf_timeframe": ltf,
+            "use_close_invalidation": None if invalidation is None else (invalidation == "close"),
+            "min_gap_pct": min_gap_pct,
+            "session_filter": session_filter,
+            "weekday_filter": weekday_filter,
+            "entry_session_filter": entry_session_filter,
+            "entry_weekday_filter": entry_weekday_filter,
+            "sessions": sessions,
+            "entry_sessions": entry_sessions,
+            "require_sweep": require_sweep,
+            "sweep_max_age_h": sweep_max_age_h,
+            "gap_band_exclude": gap_band_exclude,
+            "anchor_age_guard": anchor_age_guard,
+            "tp_mode": tp_mode,
+            "min_rr_for_liquidity": min_rr_for_liquidity,
+            "fallback_target_r": fallback_target_r,
+        }.items() if v is not None}
+        try:
+            replay_id = await replay_manager.start(
+                strategy=strategy,
+                symbols=[symbol.strip().upper()],
+                days=days,
+                ltf_timeframe=ltf or "5m",
+                params=replay_params,
+                speed=speed,
+            )
+            run = replay_manager._runs[replay_id]
+            task = run.get("task")
+            if task:
+                await task  # run to completion (or failure); abort via /api/replay/* for partials
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0]))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return JSONResponse(content=replay_manager.report(replay_id))
 
     ltf_to_use = ltf or state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME)
     inval_to_use = invalidation or ("close" if state.get("extreme_use_close") else "wick")
