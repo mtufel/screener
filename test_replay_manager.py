@@ -157,3 +157,65 @@ def _fake_dataset_fn(dataset=None):
         return dataset or _synthetic_dataset()
 
     return _fn
+
+
+def test_report_closed_trades_exclude_invalidated_setups(manager):
+    """report()['closed_trades'] must align with metrics (entered trades only).
+
+    The ledger history also contains never-entered INVALIDATED setups; metrics
+    (win rate, net R) count only TP/SL resolutions, so the closed_trades list
+    the UI renders must exclude them (or the table is longer than the metric
+    card). Invalidations are still exposed via 'invalidated_setups'.
+    """
+    from extreme_trade_tracker import ExtremeTradeTracker
+
+    tracker = ExtremeTradeTracker(storage_path=None)  # in-memory
+
+    def _rec(state, suffix):
+        from extreme_trade_tracker import TrackedExtremeTrade
+
+        return TrackedExtremeTrade(
+            symbol="BTC",
+            direction="Bullish",
+            entry_price=100.0,
+            stop_loss=90.0,
+            risk_r=10.0,
+            risk_pct=9.09,
+            tp_1r=110.0,
+            tp_2r=120.0,
+            tp_3r=130.0,
+            completion_target="2R",
+            trade_id=f"BTC:1:{suffix}",
+            state=state,
+            realized_r=2.0 if state == "COMPLETED_TP" else (0.0 if state == "INVALIDATED" else -1.0),
+        )
+
+    tracker.history = [
+        _rec("COMPLETED_TP", "1"),
+        _rec("STOPPED_OUT", "2"),
+        _rec("INVALIDATED", "3"),
+    ]
+
+    m = ReplayManager()
+    m._runs["r1"] = {
+        "replay_id": "r1",
+        "strategy": "extreme_fvg",
+        "symbols": ["BTC"],
+        "days": 2,
+        "ltf_timeframe": "5m",
+        "speed": "MAX",
+        "status": "COMPLETED",
+        "cycles": 3,
+        "error": None,
+        "started_at": "x",
+        "finished_at": "y",
+        "events": [],
+        "tracker": tracker,
+        "params": {},
+        "clock": None,
+    }
+    rep = m.report("r1")["report"]
+    assert len(rep["closed_trades"]) == 2
+    assert all(t["state"] in ("COMPLETED_TP", "STOPPED_OUT") for t in rep["closed_trades"])
+    assert len(rep["invalidated_setups"]) == 1
+    assert rep["metrics"]["total_closed_trades"] == 2

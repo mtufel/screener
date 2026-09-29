@@ -703,12 +703,16 @@ async def api_strategies_list():
     strategies = []
     for name in list_strategy_names():
         try:
-            display = get_strategy(name).display_name
+            strat = get_strategy(name)
+            display = strat.display_name
+            description = getattr(strat, "description", "") or ""
         except Exception:
             display = registry_snapshot().get(name, name)
+            description = ""
         strategies.append({
             "name": name,
             "display_name": display,
+            "description": description,
             "is_active": name == active,
         })
     return JSONResponse(content={"status": "success", "active_strategy": active, "strategies": strategies})
@@ -812,6 +816,7 @@ async def api_strategy_backtest(
     entry_weekday_filter: Optional[bool] = Query(default=None, description="Entry fill weekday filter"),
     sessions: Optional[str] = Query(default=None, description="Session filter ('ALL', 'NY', etc.)"),
     entry_sessions: Optional[str] = Query(default=None, description="Entry session filter"),
+    completion_target: Optional[str] = Query(default=None, pattern="^(1R|2R|3R|RIDE)$", description="Analytic exit policy: 1R/2R/3R exits at that target like replay/live; RIDE keeps the legacy ride-to-3R/SL scorecard"),
     # Strategy 3 (liquidity_sweep_fvg) knobs — ignored by strategies that don't declare them.
     require_sweep: Optional[bool] = Query(default=None, description="S3: require fresh opposing-pool sweep before FVG"),
     sweep_max_age_h: Optional[float] = Query(default=None, ge=0.0, le=48.0, description="S3: sweep must be within this many hours"),
@@ -924,6 +929,9 @@ async def api_strategy_backtest(
         "entry_weekday_filter": entry_wkday_filter,
         "sessions": sessions or strat_defaults.get("sessions") or state.get("extreme_sessions", EXTREME_SESSIONS),
         "entry_sessions": entry_sessions or strat_defaults.get("entry_sessions") or state.get("extreme_entry_sessions", EXTREME_ENTRY_SESSIONS),
+        # Exit policy for the analytic engine (strategy2/3 map 1R/2R/3R to
+        # target-exit mode and RIDE to the legacy ride-to-3R/SL scorecard).
+        **({"completion_target": completion_target} if completion_target is not None else {}),
         # S3 knobs pass through resolve_params so non-S3 strategies ignore them.
         **({k: v for k, v in {
             "require_sweep": require_sweep,
@@ -964,14 +972,24 @@ async def api_strategy_backtest(
             return val
         return _safe_float(val)
 
+    def _trade_payload(t: Any) -> Dict[str, Any]:
+        """Serialize a trade record for the dashboard.
+
+        Prefers the record's own ``to_dict()`` which emits the nested
+        ``htf_anchor``/``ltf_fvg`` objects (and ``entry_time`` strings) the UI
+        renders — ``vars()`` alone yields only flat dataclass fields, which left
+        the Anchor Zone / LTF FVG columns empty. Falls back to ``vars()`` for
+        records without ``to_dict``.
+        """
+        if hasattr(t, "to_dict") and callable(t.to_dict):
+            return t.to_dict()
+        return {**vars(t), **{f: _safe_float(v) for f, v in vars(t).items() if isinstance(v, float)}}
+
     return JSONResponse(content={
         "status": "success",
         "strategy": strategy,
         **{k: _report_value(v) for k, v in vars(report).items() if k not in ("trades",)},
-        "trades": [
-            {**vars(t), **{f: _safe_float(v) for f, v in vars(t).items() if isinstance(v, float)}}
-            for t in getattr(report, "trades", [])
-        ],
+        "trades": [_trade_payload(t) for t in getattr(report, "trades", [])],
     })
 
 
@@ -1034,6 +1052,7 @@ async def api_strategy_info(strategy: str):
         "status": "success",
         "name": strat.name,
         "display_name": strat.display_name,
+        "description": getattr(strat, "description", "") or "",
         "interface_version": strat.interface_version,
         "default_params": strat.default_params,
     })

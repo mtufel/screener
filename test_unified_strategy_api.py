@@ -121,8 +121,9 @@ class TestStrategiesList:
         names = [s["name"] for s in data["strategies"]]
         assert set(names) == set(list_strategy_names())
         for entry in data["strategies"]:
-            assert set(entry) == {"name", "display_name", "is_active"}
+            assert set(entry) == {"name", "display_name", "description", "is_active"}
             assert isinstance(entry["display_name"], str) and entry["display_name"]
+            assert isinstance(entry["description"], str)
 
     def test_exactly_one_active_flag(self, client):
         data = client.get("/api/strategies").json()

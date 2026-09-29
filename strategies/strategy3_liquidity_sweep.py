@@ -78,6 +78,7 @@ class Strategy3LiquiditySweepFVG(BaseStrategy):
 
     name = "liquidity_sweep_fvg"
     display_name = "Liquidity-Sweep FVG"
+    description = "4H FVG Bias + Liquidity Sweep Gate + LTF FVG Entry + Liquidity-First Target"
 
     default_params = {
         # Core scanning params (mirror S2 defaults)

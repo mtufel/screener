@@ -49,6 +49,9 @@ class BaseStrategy(ABC):
     name: str = ""
     display_name: str = ""
 
+    # One-line description rendered in the dashboard strategy header.
+    description: str = ""
+
     # Strategy interface version (freqtrade's `INTERFACE_VERSION` analog).
     interface_version: int = 1
 

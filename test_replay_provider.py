@@ -4,6 +4,13 @@ Tests for the replay data provider (replay_provider.py).
 Pins the no-lookahead contract: candles are only served once fully closed
 as-of the (virtual) current time, mids reflect the replay head, and the range
 fetch (chart path) is capped at the current time.
+
+Wire contract: get_last_n_candles appends a synthetic forming-bar placeholder
+as the last row (mirroring live Binance REST behavior), so the strategy
+wrapper's "drop the last bar" leaves the just-closed candle visible —
+candle-step parity between replay and the analytic backtest. Closed-candle
+assertions therefore expect the placeholder's head close appended after the
+closed series.
 """
 
 import pytest
@@ -38,8 +45,10 @@ async def test_no_lookahead_candle_access():
     vc = VirtualClock(start_ms=12 * 60 * 1000)  # 12 min: candles t=0,5 closed; t=10 closes at 15
     with install_virtual_clock(vc):
         out = await p.get_last_n_candles("BTC", "5m", 200)
-        closes = [c["c"] for c in out]
-        assert closes == [100.0, 101.0]  # strictly closed candles only
+        # Closed candles t=0,5 (closes 100,101) + forming-bar placeholder at the
+        # head close (101.0). No t=10 data leaks before it closes at 15.
+        assert [c["c"] for c in out] == [100.0, 101.0, 101.0]
+        assert out[-1]["v"] == 0.0  # zero-volume marker = forming bar
 
 
 @pytest.mark.asyncio
@@ -49,9 +58,9 @@ async def test_candles_appear_as_clock_advances():
     with install_virtual_clock(vc):
         assert len(await p.get_last_n_candles("BTC", "5m", 200)) == 0
         vc.advance_to(5 * 60 * 1000)   # candle t=0 closes at 5
-        assert len(await p.get_last_n_candles("BTC", "5m", 200)) == 1
+        assert len(await p.get_last_n_candles("BTC", "5m", 200)) == 2  # closed + placeholder
         vc.advance_to(26 * 60 * 1000)  # candles t=0..20 closed (t=25 closes at 30)
-        assert len(await p.get_last_n_candles("BTC", "5m", 200)) == 5
+        assert len(await p.get_last_n_candles("BTC", "5m", 200)) == 6  # 5 closed + placeholder
 
 
 @pytest.mark.asyncio
@@ -78,10 +87,10 @@ async def test_4h_timeframe_served_separately():
     vc = VirtualClock(start_ms=250 * 60 * 1000)  # 4h candle t=0 closed at 240; t=240 closes at 480
     with install_virtual_clock(vc):
         out = await p.get_last_n_candles("BTC", "4h", 10)
-        assert len(out) == 1
+        assert len(out) == 2  # closed t=0 + forming placeholder
         vc.advance_to(480 * 60 * 1000)
         out2 = await p.get_last_n_candles("BTC", "4h", 10)
-        assert len(out2) == 2
+        assert len(out2) == 3  # t=0, t=240 closed + placeholder
 
 
 @pytest.mark.asyncio

@@ -170,14 +170,25 @@ class ReplayManager:
         snap = self.snapshot(replay_id)
         tracker = run.get("tracker")
         closed = []
+        invalidated = []
         if tracker is not None:
-            closed = [t.to_dict() for t in tracker.history]
+            # Align the closed_trades list with the ledger summary: metrics
+            # (win rate, net R) count only entered trades that resolved to
+            # TP/SL, so the list must exclude never-entered INVALIDATED
+            # setups — otherwise the UI shows a table longer than the
+            # "closed trades" metric card on the same screen.
+            closed = [
+                t.to_dict() for t in tracker.history
+                if t.state in ("COMPLETED_TP", "STOPPED_OUT")
+            ]
+            invalidated = [t.to_dict() for t in tracker.history if t.state == "INVALIDATED"]
         snap["report"] = {
             "engine": "replay",
             "strategy": run["strategy"],
             "status": run["status"],
             "cycles_run": run["cycles"],
             "closed_trades": closed,
+            "invalidated_setups": invalidated,
             "metrics": tracker.get_summary() if tracker else {},
             "effective_params": run["params"],
         }

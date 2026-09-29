@@ -105,8 +105,30 @@ class ReplayMarketDataProvider(BaseMarketDataProvider):
         timeframe: str = "5m",
         n: int = 200,
     ) -> List[Dict[str, Any]]:
+        """Serves closed candles as-of virtual now, plus a forming-bar placeholder.
+
+        Live providers append the in-progress bar as their last row (Binance REST
+        does), and ``strategy_extreme_fvg.get_last_n_candles`` relies on that
+        convention to drop exactly one bar. Serving only closed candles made the
+        wrapper discard the JUST-CLOSED bar every replay cycle, delaying every
+        replay fill/exit by one candle versus the analytic engine. Appending a
+        synthetic forming bar (open = high = low = close = head close) restores
+        the live wire contract: the wrapper drops the placeholder, leaving the
+        just-closed candle visible — candle-step parity with the backtest.
+        """
         candles = self._candles_asof(symbol, timeframe)
-        return [_candle_to_dict(c) for c in candles[-n:]]
+        out = [_candle_to_dict(c) for c in candles[-n:]] if n > 0 else []
+        dur = TIMEFRAME_MS.get(
+            timeframe.strip().lower(),
+            TIMEFRAME_MS.get(self._ltf_timeframe, 300_000),
+        )
+        head_open = (candles[-1].timestamp + dur) if candles else 0
+        now = now_ms()
+        if head_open and head_open + dur > now:
+            head_close = candles[-1].close
+            out.append({"t": head_open, "o": head_close, "h": head_close,
+                        "l": head_close, "c": head_close, "v": 0.0})
+        return out
 
     async def get_historical_candles_range(
         self,

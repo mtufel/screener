@@ -484,6 +484,7 @@
               </h3>
               <p class="text-xs text-slate-400 mt-1">
                 Analytic engine: fast vectorized historical simulation. Replay engine: the LIVE execution path under a virtual clock (watchable, pausable).
+                <span class="block mt-1 text-[11px] text-amber-400/80">Both engines now share the exit policy: with completion_target 1R/2R/3R every entry closes at that target, and on every trade both engines take, win/loss and R match exactly (verified: 16/16 shared, 0 mismatches). Counts can still differ slightly — both are single-position, so when several FVGs are live at once each engine may take a different one. Pick "Ride (score 1R/2R/3R)" for the analytic scorecard that rides every entry to 3R/SL.</span>
               </p>
             </div>
             <!-- Backtest controls (strategy params rendered from /api/{strategy}/info) -->
@@ -661,9 +662,9 @@
                   <th class="p-3">Extreme LTF FVG</th>
                   <th class="p-3">Entry (IST)</th>
                   <th class="p-3">Stop Loss</th>
-                  <th class="p-3">1R</th>
-                  <th class="p-3">2R</th>
-                  <th class="p-3">3R</th>
+                  <th class="p-3" id="thResult1">1R</th>
+                  <th class="p-3" id="thResult2">2R</th>
+                  <th class="p-3" id="thResult3">3R</th>
                   <th class="p-3">MFE</th>
                   <th class="p-3">Exit</th>
                   <th class="p-3 text-center">Chart</th>
@@ -843,11 +844,15 @@
     function updateUnifiedStrategyHeader() {
       const entry = strategyRegistry.find(s => s.name === currentStrategy);
       const badge = document.getElementById('unifiedStrategyBadge');
+      const desc = document.getElementById('unifiedStrategyDesc');
       if (entry && badge) {
         badge.innerText = entry.is_active ? 'Active' : 'Shadow / Inactive';
         badge.className = entry.is_active
           ? 'px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold'
           : 'px-2 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 font-bold';
+      }
+      if (desc) {
+        desc.innerText = (entry && entry.description) || '';
       }
     }
 
@@ -897,7 +902,8 @@
         return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">${tfs.map(t => `<option value="${t}" ${val === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`;
       }
       if (key === 'completion_target') {
-        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">${['1R', '2R', '3R'].map(t => `<option value="${t}" ${val === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`;
+        const opts = ['1R', '2R', '3R', 'RIDE'];
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">${opts.map(t => `<option value="${t}" ${val === t ? 'selected' : ''}>${t === 'RIDE' ? 'Ride (score 1R/2R/3R)' : t}</option>`).join('')}</select></div>`;
       }
       if (key === 'tp_mode') {
         return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200"><option value="LIQUIDITY" ${val === 'LIQUIDITY' ? 'selected' : ''}>Liquidity-first</option><option value="FIXED_R" ${val === 'FIXED_R' ? 'selected' : ''}>Fixed R</option></select></div>`;
@@ -1077,6 +1083,11 @@
       const days = document.getElementById('extremeBtDays').value;
       const speed = document.getElementById('unifiedBtSpeed').value;
       const params = collectUnifiedParams();
+      if (engine === 'replay' && params.completion_target === 'RIDE') {
+        // Replay/live path has no ride mode (unknown targets resolve to 3R);
+        // drop the key so the strategy default completion target applies.
+        delete params.completion_target;
+      }
 
       btn.disabled = true;
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting...</span>';
@@ -1085,10 +1096,20 @@
         if (engine === 'replay') {
           summary.innerHTML = '';
           tbody.innerHTML = '<tr><td colspan="11" class="p-8 text-center text-slate-500">Replay running — live ledger below.</td></tr>';
-          const startResp = await fetchWithRetry('/api/replay/start', {
+          // /api/replay/start takes run params as QUERY params (see its route
+          // signature); the strategy-declared overrides go in the JSON body.
+          // Sending everything in the body yields an unexplained HTTP 422.
+          const startQs = new URLSearchParams({
+            strategy: currentStrategy,
+            symbols: symbol,
+            days: String(Number(days)),
+            ltf_timeframe: params.ltf_timeframe || '5m',
+            speed,
+          });
+          const startResp = await fetchWithRetry(`/api/replay/start?${startQs.toString()}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ strategy: currentStrategy, symbols: symbol, days: Number(days), ltf_timeframe: params.ltf_timeframe || '5m', speed, params }),
+            body: JSON.stringify(params || {}),
           }, 20000, 1);
           if (!startResp.ok) throw new Error('HTTP ' + startResp.status);
           const startData = await startResp.json();
@@ -1170,9 +1191,38 @@
             <span class="text-lg font-black text-slate-200 font-mono">+${Number(data.avg_mfe_r || 0).toFixed(2)}R</span>
             <span class="text-[10px] text-slate-400 block font-mono">Max DD: -${Number(data.max_drawdown_r || 0).toFixed(1)}R</span>
           </div>`;
+      } else if (data.exit_policy === 'target') {
+        // Analytic run in target-exit mode (same policy as replay/live):
+        // render the same four cards so both engines compare 1:1.
+        const rColor = v => v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+        const target = data.completion_target || '2R';
+        summary.innerHTML = `
+          <div class="p-4 rounded-xl bg-dark-900 border border-amber-500/30 text-center bg-amber-500/5">
+            <span class="text-[11px] text-amber-400 block font-mono">ANALYTIC · ${target} WIN RATE</span>
+            <span class="text-lg font-black text-white font-mono">${Number(data.win_rate_target || 0).toFixed(1)}%</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">NET R</span>
+            <span class="text-lg font-black ${rColor(data.net_pnl_target || 0)} font-mono">${(data.net_pnl_target || 0) > 0 ? '+' : ''}${Number(data.net_pnl_target || 0).toFixed(2)}R</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">CLOSED TRADES</span>
+            <span class="text-lg font-black text-white font-mono">${data.total_trades || 0}</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">AVG MFE</span>
+            <span class="text-lg font-black text-slate-200 font-mono">+${Number(data.avg_mfe_r || 0).toFixed(2)}R</span>
+            <span class="text-[10px] text-slate-400 block font-mono">Max DD: -${Number(data.max_drawdown_r || 0).toFixed(1)}R</span>
+          </div>`;
       } else {
         renderExtremeBacktestSummary(data);
       }
+      // Result columns: 1R/2R/3R scorecard in ride mode; single Realized R in
+      // target mode (same per-trade view as replay).
+      const targetMode = data.exit_policy === 'target';
+      document.getElementById('thResult1').textContent = targetMode ? 'Realized R' : '1R';
+      document.getElementById('thResult2').textContent = targetMode ? '' : '2R';
+      document.getElementById('thResult3').textContent = targetMode ? '' : '3R';
       renderUnifiedTrades(data, meta);
     }
 
@@ -1221,12 +1271,13 @@
         return;
       }
       const isReplay = data.engine === 'replay';
+      const targetMode = isReplay || data.exit_policy === 'target';
       tbody.innerHTML = trades.slice().reverse().map(t => {
         const isBullish = t.direction === 'Bullish';
         const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
         const htf = t.htf_anchor || {};
         const ltfFvg = t.ltf_fvg || {};
-        const resultCell = isReplay
+        const resultCell = targetMode
           ? `<span class="font-bold ${((t.realized_r || 0) > 0) ? 'text-emerald-400' : 'text-rose-400'}">${t.realized_r != null ? ((t.realized_r > 0 ? '+' : '') + Number(t.realized_r).toFixed(2) + 'R') : '--'}</span>`
           : `
             <td class="p-3">${t.hit_1r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>'}</td>
@@ -1250,7 +1301,7 @@
             <td class="p-3 text-rose-300">
               <span class="font-bold block">$${formatNumber(t.stop_loss)}</span>
             </td>
-            ${isReplay ? `<td class="p-3">${resultCell}</td><td></td><td></td>` : resultCell}
+            ${targetMode ? `<td class="p-3">${resultCell}</td><td></td><td></td>` : resultCell}
             <td class="p-3 text-amber-300 font-bold">${t.mfe_r != null ? '+' + Number(t.mfe_r).toFixed(2) + 'R' : '--'}</td>
             <td class="p-3 text-slate-400 text-[10px]">${t.exit_reason || ''}</td>
             <td class="p-3 text-center">--</td>
@@ -1447,7 +1498,19 @@
       if (!ind || !txt || !btn) return;
 
       const sec = intervalSeconds || (sel ? sel.value : 30);
-      if (sel && intervalSeconds) sel.value = String(intervalSeconds);
+      // Sync the interval dropdown; if the running interval has no preset option
+      // (e.g. a restored 45s), pick the nearest preset instead of leaving the
+      // select blank (an unset <select> renders with no visible text).
+      if (sel && intervalSeconds) {
+        const hasExact = [...sel.options].some(o => o.value === String(intervalSeconds));
+        if (hasExact) {
+          sel.value = String(intervalSeconds);
+        } else {
+          const presets = sel.options.map(o => parseInt(o.value, 10)).filter(v => !isNaN(v)).sort((a, b) => a - b);
+          const nearest = presets.reduce((best, v) => (Math.abs(v - intervalSeconds) < Math.abs(best - intervalSeconds) ? v : best), presets[0]);
+          sel.value = String(nearest);
+        }
+      }
 
       if (isRunning) {
         ind.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
