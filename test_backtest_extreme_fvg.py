@@ -589,6 +589,169 @@ async def test_run_extreme_backtest_with_sessions_string_filtering():
     assert rep_b.trades_filtered_out == 1
 
 
+# ==============================================================================
+# Target-exit mode (completion_target): live-daemon / replay exit parity
+# ==============================================================================
+
+def test_target_exit_2r_closes_at_target_not_3r():
+    """completion_target='2R': exit at TP2 (+2R) even when later candles reach TP3."""
+    c1 = make_candle(0, 85, 95, 80, 92)
+    c2 = make_candle(1000, 92, 115, 91, 114)
+    c3 = make_candle(2000, 114, 120, 100, 118)
+    ltf_fvg = FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
+    anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
+
+    sub = [
+        make_candle(3000, 100, 112, 98, 111),   # +1R
+        make_candle(4000, 111, 122, 109, 121),  # +2R -> EXIT here in target mode
+        make_candle(5000, 121, 132, 120, 131),  # would be +3R ride
+        make_candle(6000, 131, 140, 130, 139),  # beyond
+    ]
+
+    legacy = simulate_trade_execution(
+        symbol="BTC", direction="Bullish", entry_price=100.0, stop_loss=90.0,
+        entry_timestamp=3000, subsequent_candles=sub, anchor=anchor, ltf_fvg=ltf_fvg,
+    )
+    target = simulate_trade_execution(
+        symbol="BTC", direction="Bullish", entry_price=100.0, stop_loss=90.0,
+        entry_timestamp=3000, subsequent_candles=sub, anchor=anchor, ltf_fvg=ltf_fvg,
+        completion_target="2R",
+    )
+
+    # Legacy: rides to TP3. Target: closes at TP2.
+    assert legacy.exit_reason == "TP_3R"
+    assert legacy.realized_r_target is None  # scorecard mode: no single policy
+    assert target.exit_reason == "TP_2R"
+    assert target.realized_r_target == 2.0
+    assert target.exit_reason_target == "TP_2R"
+    assert target.completion_target == "2R"
+    # hit flags still record what was reached before the target exit
+    assert target.hit_1r is True and target.hit_2r is True and target.hit_3r is False
+    # Target mode exits no later than the ride (3R) exit
+    assert target.duration_minutes <= legacy.duration_minutes
+
+
+def test_target_exit_sl_before_target_realizes_minus_1r():
+    """SL hit before the target: -1R, exactly like the ledger/replay."""
+    c1 = make_candle(0, 85, 95, 80, 92)
+    c2 = make_candle(1000, 92, 115, 91, 114)
+    c3 = make_candle(2000, 114, 120, 100, 118)
+    ltf_fvg = FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
+    anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
+
+    sub = [
+        make_candle(3000, 100, 105, 99, 104),  # fill-candle area, no SL
+        make_candle(4000, 104, 106, 88, 92),   # SL 90 breached
+    ]
+    trade = simulate_trade_execution(
+        symbol="BTC", direction="Bullish", entry_price=100.0, stop_loss=90.0,
+        entry_timestamp=3000, subsequent_candles=sub, anchor=anchor, ltf_fvg=ltf_fvg,
+        completion_target="2R",
+    )
+    assert trade.exit_reason == "STOPPED_OUT"
+    assert trade.realized_r_target == -1.0
+
+
+def test_target_exit_gap_through_3r_still_exits_at_target():
+    """One candle gapping through TP3: target mode exits at the TARGET (+2R),
+    because the live daemon resolves TP at the completion target and never
+    tracks beyond it."""
+    c1 = make_candle(0, 85, 95, 80, 92)
+    c2 = make_candle(1000, 92, 115, 91, 114)
+    c3 = make_candle(2000, 114, 120, 100, 118)
+    ltf_fvg = FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
+    anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
+
+    gap = simulate_trade_execution(
+        symbol="BTC", direction="Bullish", entry_price=100.0, stop_loss=90.0,
+        entry_timestamp=3000, subsequent_candles=[make_candle(3000, 99, 135, 98, 134)],
+        anchor=anchor, ltf_fvg=ltf_fvg, completion_target="2R",
+    )
+    assert gap.exit_reason == "TP_2R"
+    assert gap.realized_r_target == 2.0
+    assert gap.hit_3r is False  # the 3R flag is a ride-mode concept
+
+
+def test_target_exit_sl_wins_on_shared_candle():
+    """SL-first conservative ordering holds in target mode on a shared candle."""
+    c1 = make_candle(0, 85, 95, 80, 92)
+    c2 = make_candle(1000, 92, 115, 91, 114)
+    c3 = make_candle(2000, 114, 120, 100, 118)
+    ltf_fvg = FVG(top=100, bottom=95, c1=c1, c2=c2, c3=c3, formed_at=2000, direction="Bullish", timeframe="15m")
+    anchor = TouchedAnchor(ltf_fvg, first_touch_timestamp=1000, most_recent_touch_timestamp=1000)
+
+    trade = simulate_trade_execution(
+        symbol="BTC", direction="Bullish", entry_price=100.0, stop_loss=90.0,
+        entry_timestamp=3000, subsequent_candles=[make_candle(3000, 99, 130, 89, 95)],
+        anchor=anchor, ltf_fvg=ltf_fvg, completion_target="2R",
+    )
+    assert trade.exit_reason == "STOPPED_OUT"
+    assert trade.realized_r_target == -1.0
+
+
+def _fill_candle_fixture():
+    """Compact single-trade fixture: same timeline as
+    test_backtest_resolves_exits_on_fill_candle (fill candle itself reaches TP2).
+    """
+    DUR = 15 * 60 * 1000
+    H = 16 * DUR
+
+    def bar(ts, o, h, l, cl):
+        return {"t": ts, "o": o, "h": h, "l": l, "c": cl, "v": 1.0}
+
+    raw_4h = [
+        bar(0, 85, 92, 80, 88),
+        bar(H, 88, 105, 87, 104),
+        bar(2 * H, 104, 110, 95, 108),
+        bar(3 * H, 108, 118, 106, 115),
+        bar(4 * H, 115, 125, 112, 122),
+    ]
+    raw_ltf = []
+    raw_ltf.extend(bar(n * DUR, 96, 96.5, 95.5, 96) for n in range(96))
+    raw_ltf.append(bar(96 * DUR, 96, 97, 92, 95))
+    raw_ltf.append(bar(97 * DUR, 93.7, 93.8, 93.5, 93.6))
+    raw_ltf.append(bar(98 * DUR, 93.6, 98.0, 93.5, 97.5))
+    raw_ltf.append(bar(99 * DUR, 97.5, 98.5, 94.0, 98.0))
+    raw_ltf.append(bar(100 * DUR, 95.0, 95.3, 93.9, 94.8))
+    raw_ltf.extend(bar(n * DUR, 94.7, 94.9, 94.3, 94.6) for n in range(101, 106))
+
+    class FakeClient:
+        async def get_candle_snapshot(self, symbol, timeframe, start_ms, end_ms):
+            return raw_4h if timeframe == "4h" else raw_ltf
+
+    return FakeClient()
+
+
+@pytest.mark.asyncio
+async def test_run_backtest_target_mode_aggregates(monkeypatch):
+    """run_extreme_backtest(completion_target='2R') reports target-policy wins/net
+    and marks exit_policy='target' (comparable with replay).
+    """
+    report = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m",
+        client=_fill_candle_fixture(), completion_target="2R",
+    )
+    assert report.total_trades >= 1  # fixture guarantees the fill-candle trade
+    assert report.exit_policy == "target"
+    assert report.completion_target == "2R"
+    assert report.wins_target == sum(1 for t in report.trades if (t.realized_r_target or 0) > 0)
+    assert report.net_pnl_target == sum(t.realized_r_target or 0.0 for t in report.trades)
+    assert report.win_rate_target == (
+        report.wins_target / report.total_trades * 100 if report.total_trades else 0.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_backtest_legacy_mode_marks_ride():
+    """No completion_target -> legacy scorecard: exit_policy='ride', empty target stats."""
+    report = await run_extreme_backtest(
+        symbol="BTC", days=1, ltf_timeframe="15m", client=_fill_candle_fixture(),
+    )
+    assert report.exit_policy == "ride"
+    assert report.completion_target == ""
+    assert report.wins_target == 0 and report.net_pnl_target == 0.0
+
+
 
 
 

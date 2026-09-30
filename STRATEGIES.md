@@ -21,7 +21,13 @@ This document provides complete architectural, mathematical, and algorithmic spe
    - [Step 4: Extreme Ranking & Selection](#step-4-extreme-ranking--selection)
    - [Step 5: Exact Execution Parameters (Entry, SL, Targets)](#step-5-exact-execution-parameters-entry-sl-targets)
    - [Step 6: Immutable Active Trade Ledger & Lifecycle State Machine](#step-6-immutable-active-trade-ledger--lifecycle-state-machine)
-4. [Backtesting Engines & Validation](#-backtesting-engines--validation)
+4. [Strategy 3: 🌊 Liquidity-Sweep FVG Strategy](#-strategy-3--liquidity-sweep-fvg-strategy)
+   - [Model & Registry Identity](#strategy-3-model--registry-identity)
+   - [Liquidity Module (liquidity.py)](#liquidity-module-liquiditypy)
+   - [Gating Pipeline](#strategy-3-gating-pipeline)
+   - [Liquidity-First Take Profit](#liquidity-first-take-profit)
+   - [Validation Results](#strategy-3-validation-results)
+5. [Backtesting Engines & Validation](#-backtesting-engines--validation)
 5. [System Architecture & Resilience](#-system-architecture--resilience)
 
 ---
@@ -161,6 +167,66 @@ From all valid, unmitigated LTF FVGs formed post-touch:
   * Evaluates post-entry closed candle extremes (`candle.high` and `candle.low` where `timestamp >= entry_timestamp`).
   * If `candle.high >= target_tp` (Bullish) or `candle.low <= target_tp` (Bearish) $\rightarrow$ `COMPLETED_TP` ($+2.0R$), moves to history, and frees the symbol for the next setup.
   * If `candle.low <= stop_loss` (Bullish) or `candle.high >= stop_loss` (Bearish) $\rightarrow$ `STOPPED_OUT` ($-1.0R$).
+
+---
+
+## 🌊 Strategy 3: Liquidity-Sweep FVG Strategy
+
+### Strategy 3 Model & Registry Identity
+
+Implements the reference video model ("Every Trader Should Know This 4H FVG Strategy"): **4H FVG for bias → liquidity sweep → LTF FVG entry → target opposing liquidity**. Registered in the pluggable framework (see `strategies/`) as:
+
+* **Registry name**: `liquidity_sweep_fvg` (adapter `strategies/strategy3_liquidity_sweep.py`)
+* **Engine**: `strategy_liquidity_sweep_fvg.py` · **Backtester**: `backtest_liquidity_sweep_fvg.py`
+* Reuses Strategy 2's proven 4H machinery by import (cache, touch anchors, extreme selection); Strategy 2 files are untouched and both strategies remain selectable by name.
+
+### Liquidity Module (liquidity.py)
+
+Pure-function module (style of `session_filter.py`):
+
+* **Swings**: k=2 fractal swing highs/lows; a swing contributes to pools only once its confirmation bar (k bars later) has opened — no lookahead.
+* **Liquidity pools** (`LiquidityPool`): leader-clustered swing extremes within 0.05% of price → `EQUAL_HIGHS`/`EQUAL_LOWS` (≥2 touches) or `MINOR`; plus prior UTC day high/low (`PDH`/`PDL`).
+* **Sweep detection** (`detect_sweep`): wick trades through the level AND candle closes back on the original side (stop-hunt signature).
+* **Freshness** (`has_fresh_sweep`): an opposing-side pool swept by a candle starting within `[to_ts − max_age, to_ts)`.
+* `build_pool_templates` + `pools_from_templates`: one full-series precompute, O(#pools) as-of reconstruction; `find_liquidity_pools` wraps both so live and backtest share a single code path.
+
+### Strategy 3 Gating Pipeline
+
+Candidates from the S2-style post-touch scan must pass, in order (all measured on 90-day backtests, see `strategy3_validation_report.html`):
+
+1. **Gap-band exclusion** (`gap_band_exclude="0.10,0.20"`): reject LTF FVGs whose gap % falls inside the measured losing band.
+2. **Fresh-sweep precondition** (`require_sweep=true`, `sweep_max_age_h=2`): an opposing-side structural pool must be swept within 2h before LTF FVG formation (the video's *sweep → FVG → entry*).
+3. **Entry session** (`entry_sessions="NY_KZ"`): fills only in the NY killzone 13:00–16:00 UTC (weekday-only by default).
+4. **Anchor-age guard** (`anchor_age_guard=true`): skip setups whose 4H anchor age at fill ∈ [24h, 48h) — the measured dead zone (2R WR 20% BTC / 11.8% ETH there).
+
+Survivors are ranked with S2's extreme rule (deepest for bullish, highest for bearish).
+
+### Liquidity-First Take Profit
+
+With `tp_mode="LIQUIDITY"` (default): TP = nearest opposing pool at least `min_rr_for_liquidity` (1.5) R beyond entry, buffered `buffer_pct` (0.02%) in front of the level; falls back to `fallback_target_r` (2R) when no qualifying pool exists. Realized R = distance-to-TP / risk; `tp_mode` and the pool are recorded per trade.
+
+### Strategy 3 Validation Results
+
+90-day, 5m CLOSE, BTC/ETH/SOL (full tables in `strategy3_validation_report.html`):
+
+| Metric | S2 baseline | S3 all gates ON |
+|---|---|---|
+| BTC win rate / net / PF / DD | 37.3% / +10R / 1.72 / −17R | **68.8% / +11.9R / 3.38 / −1R** (16 trades; 21 w/ gap band off) |
+| ETH | 34.7% / +4R | **50.0% / +14.3R / 1.65 / −4R** |
+| SOL | 32.1% / −3R | **52.0% / +17.5R / 1.73 / −5R** |
+
+Per-trade expectancy improves ~3–6×; drawdown drops 3–17×. Live stays on `extreme_fvg` until a shadow run of `liquidity_sweep_fvg` confirms parity.
+
+### Strategy 3 Shadow (Paper) Mode
+
+Set `EXTREME_SHADOW_STRATEGIES=liquidity_sweep_fvg` to run S3 **alongside** the active strategy in the same daemon cycle — no second process needed. Mechanics (see `test_shadow_strategies.py`):
+
+* **Isolation scope**: the ledger partitions trades by scope (`""` = active strategy, registry name = shadow). Active/pending checks are scope-aware, so a shadow trade on BTC never suppresses the active strategy's BTC scan, and the absent-setup expiry counter only sees its own scope's emissions. Shadow trade IDs carry a `:<strategy>` suffix to avoid collisions.
+* **Params**: shadow strategies resolve their own `default_params` (S3's validated gates: NY_KZ entry, sweep ≤2h, gap-band, anchor-age guard, LIQUIDITY TP) — shared daemon config (ltf/target/min_gap) applies only to the active strategy.
+* **Silence**: shadow lifecycle events broadcast to the dashboard and persist to Redis/disk, but never reach Telegram; the dashboard's Live History tags them `SHADOW` with a per-strategy filter.
+* **Promotion**: after ~2 weeks, compare `get_summary(strategy=...)` win rate / net R / drawdown vs the S2 live ledger, then promote via `EXTREME_ACTIVE_STRATEGY=liquidity_sweep_fvg` (and clear `EXTREME_SHADOW_STRATEGIES`).
+
+Adapter note: the S3 engine returns setup **dicts**; `strategies/strategy3_liquidity_sweep.py` normalizes them into the attribute view the daemon payload builder expects (adds `state`, `risk_pct`, `tp_1r/2r/3r`, `entry_timestamp`).
 
 ---
 

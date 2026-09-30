@@ -47,6 +47,14 @@ EXTREME_ENTRY_SESSION_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_SESSION_FILTER_E
 EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED = os.getenv("EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 EXTREME_SESSIONS = os.getenv("EXTREME_SESSIONS", "ALL").strip()
 EXTREME_ENTRY_SESSIONS = os.getenv("EXTREME_ENTRY_SESSIONS", "ALL").strip()
+# Strategy framework (freqtrade StrategyResolver analog): name of the active strategy.
+EXTREME_ACTIVE_STRATEGY = os.getenv("EXTREME_ACTIVE_STRATEGY", "extreme_fvg").strip()
+# Comma-separated shadow strategies scanned alongside the active one in the same
+# daemon cycle. Shadow setups/trades are tracked in the ledger (tagged by their
+# strategy name) and broadcast to the dashboard, but never send Telegram alerts
+# and never block the active strategy's setups on the same symbol.
+# Empty string = shadow mode off (legacy single-strategy behavior).
+EXTREME_SHADOW_STRATEGIES = os.getenv("EXTREME_SHADOW_STRATEGIES", "").strip()
 
 state: Dict[str, Any] = {
     "strategy_2_enabled": ENABLE_STRATEGY_2,
@@ -80,6 +88,8 @@ state: Dict[str, Any] = {
     "extreme_pending_count": 0,
     "extreme_total_cycles": 0,
     "extreme_background_task": None,
+    "extreme_active_strategy": EXTREME_ACTIVE_STRATEGY,
+    "extreme_shadow_strategies": EXTREME_SHADOW_STRATEGIES,
     "data_provider": os.getenv("DATA_PROVIDER", "binance").strip().lower(),
     "fallback_data_provider": os.getenv("FALLBACK_DATA_PROVIDER", "hyperliquid").strip().lower(),
 }

@@ -5,7 +5,7 @@ A production-ready cryptocurrency perpetuals day-trading engine and screener bui
 
 The system continuously scans crypto perpetuals markets for multi-timeframe Fair Value Gaps (4H Higher Timeframe + 15m Lower Timeframe), computes exact entry and stop-loss reference boundaries, enforces an **Immutable Active Trade Ledger**, and delivers real-time candlestick charts with visual annotations directly to Telegram and the browser.
 
-The product runs **Strategy 2 (Extreme LTF FVG) only** — the former Strategy 1 (2-stage standard FVG) has been removed.
+The product runs two registered strategies via the pluggable framework (`strategies/`): **Strategy 2 (Extreme LTF FVG, `extreme_fvg`)** — the live default — and **Strategy 3 (Liquidity-Sweep FVG, `liquidity_sweep_fvg`)**, which adds the video-model liquidity layer (structural sweep precondition + liquidity-first targets). The former Strategy 1 has been removed.
 
 ---
 
@@ -52,6 +52,13 @@ A high-precision day-trading strategy executing strictly post-4H-touch:
    * Once a trade is `TRADE_ACTIVE`, its entry price and SL are strictly locked.
    * Resolves exits using post-entry closed candle extremes (`high` / `low`).
 
+### 3. Strategy 3: 🌊 Liquidity-Sweep FVG (`liquidity_sweep_fvg`)
+Implements 4H FVG bias → **liquidity sweep** → LTF FVG entry → **liquidity target** (see `STRATEGIES.md` §Strategy 3 and `strategy3_validation_report.html`):
+1. **Liquidity module (`liquidity.py`)**: fractal swings → equal-highs/lows + PDH/PDL pools; stop-hunt sweep = wick through level, close back inside; freshness window queries; no-lookahead as-of reconstruction.
+2. **Gates**: fresh opposing-side sweep ≤2h before LTF FVG formation · anchor-age dead zone [24h,48h) · gap-band 0.10–0.20% exclusion · NY-killzone (13–16 UTC) fills.
+3. **Liquidity-first TP**: nearest opposing pool ≥1.5R beyond entry (buffered 0.02%), fallback fixed 2R.
+4. **Validation (90d)**: BTC 68.8% WR / PF 3.38 / DD −1R; ETH +14.3R; SOL +17.5R — vs S2 baseline 32–37% WR, PF ~1.5–1.7, DD −14 to −17R.
+
 ---
 
 ## 📂 Repository File Structure
@@ -81,6 +88,10 @@ crypto-fvg-screener/
 ├── extreme_trade_tracker.py    # Immutable Active Trade Ledger & State Machine
 ├── hyperliquid_client.py       # Async Hyperliquid client (Token Bucket, 429 Cooldown)
 ├── live_screener_extreme.py    # Standalone single-cycle scanner
+├── liquidity.py                # Liquidity pools, sweep detection, freshness (Strategy 3)
+├── strategy_liquidity_sweep_fvg.py # Strategy 3 gated engine (bias→sweep→entry→liquidity TP)
+├── backtest_liquidity_sweep_fvg.py  # Strategy 3 backtester
+├── strategies/                 # Pluggable strategy registry (BaseStrategy + @register)
 ├── main.py                     # FastAPI app facade (assembles routers; run with: uvicorn main:app)
 ├── screener_cycle.py           # Scan-cycle orchestrator, alert dispatch, daemon loop
 ├── strategy_extreme_fvg.py     # Extreme core engine & candidate filter

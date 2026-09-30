@@ -132,36 +132,44 @@
 
 
     <!-- ===================================================================== -->
-    <!-- STRATEGY 2 WRAPPER (EXTREME LTF STRATEGY)                             -->
+    <!-- UNIFIED STRATEGY PANEL (all registered strategies)                    -->
     <!-- ===================================================================== -->
-    <div id="strat2Wrapper" class="space-y-6">
-      <!-- Strategy 2 Sub-Navigation (Inner Tabs) -->
-      <div class="flex items-center justify-between border-b border-dark-700/80 pb-3">
-        <div class="flex items-center space-x-1.5 p-1 rounded-xl bg-dark-800 border border-dark-700">
-          <button
-            onclick="switchStrat2Tab('live')"
-            id="s2InnerTabLive"
-            class="px-4 py-1.5 rounded-lg text-xs font-bold transition-all bg-amber-500 text-dark-900 shadow-sm flex items-center space-x-1.5"
-          >
-            <i class="fa-solid fa-bolt text-xs"></i>
-            <span>Live Screener & Daemon</span>
-          </button>
-          <button
-            onclick="switchStrat2Tab('backtest')"
-            id="s2InnerTabBacktest"
-            class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5"
-          >
-            <i class="fa-solid fa-clock-rotate-left text-xs"></i>
-            <span>Historical Backtest (1R/2R/3R)</span>
-          </button>
+    <div id="stratUnifiedWrapper" class="space-y-6">
+      <!-- Strategy selector + Live/Backtest inner tabs -->
+      <div class="flex items-center justify-between border-b border-dark-700/80 pb-3 flex-wrap gap-3">
+        <div class="flex items-center gap-3 flex-wrap">
+          <div>
+            <label class="block text-[10px] font-semibold text-slate-500 mb-0.5 uppercase tracking-wider">Strategy</label>
+            <select id="strategySelect" onchange="onUnifiedStrategyChange()" class="px-3 py-1.5 rounded-lg bg-dark-800 border border-amber-500/40 text-xs font-bold text-amber-400 focus:outline-none focus:border-amber-500" title="Switch the active strategy for the screener daemon">
+              <option value="">Loading…</option>
+            </select>
+          </div>
+          <div class="flex items-center space-x-1.5 p-1 rounded-xl bg-dark-800 border border-dark-700">
+            <button
+              onclick="switchUnifiedTab('live')"
+              id="unifiedInnerTabLive"
+              class="px-4 py-1.5 rounded-lg text-xs font-bold transition-all bg-amber-500 text-dark-900 shadow-sm flex items-center space-x-1.5"
+            >
+              <i class="fa-solid fa-bolt text-xs"></i>
+              <span>Live Screener & Daemon</span>
+            </button>
+            <button
+              onclick="switchUnifiedTab('backtest')"
+              id="unifiedInnerTabBacktest"
+              class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white flex items-center space-x-1.5"
+            >
+              <i class="fa-solid fa-clock-rotate-left text-xs"></i>
+              <span>Backtest (Analytic / Replay)</span>
+            </button>
+          </div>
         </div>
         <div class="text-xs text-slate-400 font-mono hidden md:flex items-center space-x-2">
-          <span class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold">Strategy 2</span>
-          <span>4H Touched Anchor + Extreme LTF Outer Boundary + State Machine</span>
+          <span id="unifiedStrategyBadge" class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold">Active</span>
+          <span id="unifiedStrategyDesc">4H Touched Anchor + Extreme LTF Outer Boundary + State Machine</span>
         </div>
       </div>
 
-      <!-- STRATEGY 2 INNER TAB 1: LIVE SCREENER & DAEMON -->
+      <!-- UNIFIED INNER TAB 1: LIVE SCREENER & DAEMON -->
       <div id="s2LiveView" class="space-y-8">
         <!-- Control Bar -->
         <div class="p-5 rounded-2xl bg-dark-800/90 border border-dark-700 shadow-xl flex flex-wrap gap-4 items-center justify-between">
@@ -376,6 +384,11 @@
                 <option value="PAXG">PAXG</option>
                 <option value="GOLD">GOLD</option>
               </select>
+              <select id="liveFilterStrategy" onchange="onLiveHistFilterChange()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300" title="Filter by strategy">
+                <option value="">All Strategies</option>
+                <option value="extreme_fvg">S2 · Extreme</option>
+                <option value="liquidity_sweep_fvg">S3 · Liquidity Sweep (shadow)</option>
+              </select>
               <button
                 onclick="fetchExtremeLiveHistory()"
                 class="px-3 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-750 text-slate-300 hover:text-white border border-dark-700 text-xs font-mono font-semibold flex items-center space-x-1.5 transition-all"
@@ -459,7 +472,7 @@
         </div>
       </div>
 
-      <!-- STRATEGY 2 INNER TAB 2: HISTORICAL BACKTEST -->
+      <!-- UNIFIED INNER TAB 2: BACKTEST (ANALYTIC + REPLAY) -->
       <div id="s2BacktestView" class="hidden space-y-8">
         <!-- Extreme Backtest Controls Bar -->
         <div class="p-6 rounded-3xl bg-dark-800/90 border border-dark-700/80 shadow-lg">
@@ -470,11 +483,28 @@
                 <span>Extreme LTF Strategy Backtester (1R vs 2R vs 3R)</span>
               </h3>
               <p class="text-xs text-slate-400 mt-1">
-                Replays historical 4H anchors, extreme LTF discovery, and simulates forward multi-target resolution.
+                Analytic engine: fast vectorized historical simulation. Replay engine: the LIVE execution path under a virtual clock (watchable, pausable).
+                <span class="block mt-1 text-[11px] text-amber-400/80">Both engines now share the exit policy: with completion_target 1R/2R/3R every entry closes at that target, and on every trade both engines take, win/loss and R match exactly (verified: 16/16 shared, 0 mismatches). Counts can still differ slightly — both are single-position, so when several FVGs are live at once each engine may take a different one. Pick "Ride (score 1R/2R/3R)" for the analytic scorecard that rides every entry to 3R/SL.</span>
               </p>
             </div>
-            <!-- Backtest controls -->
+            <!-- Backtest controls (strategy params rendered from /api/{strategy}/info) -->
             <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Engine</label>
+                <select id="unifiedBtEngine" onchange="onUnifiedEngineChange()" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="analytic" selected>Analytic (fast)</option>
+                  <option value="replay">Replay (live path)</option>
+                </select>
+              </div>
+              <div id="unifiedBtSpeedWrap" class="hidden">
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Speed</label>
+                <select id="unifiedBtSpeed" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-200">
+                  <option value="MAX" selected>MAX</option>
+                  <option value="60">60 virtual-min/s</option>
+                  <option value="10">10 virtual-min/s</option>
+                  <option value="1">1× (realtime)</option>
+                </select>
+              </div>
               <div>
                 <label class="block text-[11px] font-semibold text-slate-400 mb-1">Symbol</label>
                 <input type="text" id="extremeBtSymbol" value="BTC" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-24 focus:outline-none focus:border-amber-500" />
@@ -562,14 +592,52 @@
               </div>
               <div class="self-end">
                 <button
-                  onclick="runExtremeBacktest()"
+                  onclick="runUnifiedBacktest()"
                   id="btnBacktestExtreme"
                   class="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white shadow-lg shadow-amber-500/20 active:scale-95 transition-all flex items-center space-x-2"
                 >
                   <i class="fa-solid fa-play"></i>
-                  <span>Run Extreme Backtest</span>
+                  <span>Run Backtest</span>
                 </button>
               </div>
+            </div>
+          </div>
+          <!-- Strategy-declared params (type-aware, populated from /api/{strategy}/info) -->
+          <div id="unifiedStrategyParams" class="flex flex-wrap items-end gap-3 mt-5 pt-5 border-t border-dark-700/70"></div>
+          <div class="flex justify-end mt-3">
+            <button
+              onclick="resetUnifiedParams()"
+              class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-dark-700 hover:bg-dark-600 text-slate-300 border border-dark-600 transition-colors"
+              title="Restore strategy default params"
+            >
+              <i class="fa-solid fa-rotate-left mr-1"></i>Reset to Strategy Defaults
+            </button>
+          </div>
+        </div>
+
+        <!-- Replay progress panel (visible during mode=replay runs) -->
+        <div id="unifiedReplayProgress" class="hidden p-6 rounded-3xl bg-dark-800/90 border border-amber-500/30 shadow-lg space-y-4">
+          <div class="flex items-center justify-between flex-wrap gap-3">
+            <div class="flex items-center space-x-3">
+              <i class="fa-solid fa-stopwatch text-amber-400 text-lg"></i>
+              <div>
+                <div class="text-sm font-bold text-white">Replay: <span id="replayStatus" class="font-mono text-amber-300">RUNNING</span></div>
+                <div class="text-[11px] text-slate-400 font-mono">Virtual time: <span id="replayVirtualTime">--</span> · Cycle <span id="replayCycles">0</span></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button onclick="pauseReplay()" id="btnReplayPause" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-dark-700 hover:bg-dark-600 text-slate-200 border border-dark-600">Pause</button>
+              <button onclick="resumeReplay()" id="btnReplayResume" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-dark-700 hover:bg-dark-600 text-slate-200 border border-dark-600 hidden">Resume</button>
+              <button onclick="abortReplay()" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30">Abort</button>
+            </div>
+          </div>
+          <div class="h-2 w-full rounded-full bg-dark-900 border border-dark-700 overflow-hidden">
+            <div id="replayProgressBar" class="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-200" style="width:0%"></div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">Live ledger (replay events)</div>
+            <div id="replayEventFeed" class="space-y-1.5 max-h-48 overflow-y-auto font-mono text-[11px] text-slate-300">
+              <div class="text-slate-600 italic">Waiting for replay events…</div>
             </div>
           </div>
         </div>
@@ -594,25 +662,53 @@
                   <th class="p-3">Extreme LTF FVG</th>
                   <th class="p-3">Entry (IST)</th>
                   <th class="p-3">Stop Loss</th>
-                  <th class="p-3">1R</th>
-                  <th class="p-3">2R</th>
-                  <th class="p-3">3R</th>
+                  <th class="p-3" id="thResult1">1R</th>
+                  <th class="p-3" id="thResult2">2R</th>
+                  <th class="p-3" id="thResult3">3R</th>
                   <th class="p-3">MFE</th>
                   <th class="p-3">Exit</th>
                   <th class="p-3 text-center">Chart</th>
                 </tr>
               </thead>
               <tbody id="extremeTradesTableBody" class="divide-y divide-dark-700/50 text-slate-200">
-                <tr><td colspan="11" class="p-8 text-center text-slate-500">Configure parameters above and click "Run Extreme Backtest".</td></tr>
+                <tr><td colspan="11" class="p-8 text-center text-slate-500">Configure parameters above and click "Run Backtest".</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Variant comparison (A/B, shared across engines/strategies) -->
+        <div class="rounded-2xl bg-dark-800/80 border border-dark-700 overflow-hidden shadow-xl">
+          <div class="p-4 border-b border-dark-700 text-xs font-semibold text-slate-300 flex items-center justify-between">
+            <span>Variant Comparison (this session)</span>
+            <div class="flex items-center gap-2">
+              <button onclick="pinUnifiedVariant()" class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-colors" title="Snapshot the latest run for comparison">Pin Last Run</button>
+              <button onclick="clearUnifiedVariants()" class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-dark-700 hover:bg-dark-600 text-slate-300 border border-dark-600 transition-colors">Clear</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="bg-dark-900/60 text-slate-400 border-b border-dark-700 text-[11px]">
+                <tr>
+                  <th class="p-3">#</th>
+                  <th class="p-3">Strategy / Engine</th>
+                  <th class="p-3">Parameters</th>
+                  <th class="p-3">Trades</th>
+                  <th class="p-3">Win Rate</th>
+                  <th class="p-3">Net R</th>
+                  <th class="p-3">PF</th>
+                  <th class="p-3">Max DD</th>
+                  <th class="p-3">Avg MFE</th>
+                </tr>
+              </thead>
+              <tbody id="unifiedVariantsTableBody" class="divide-y divide-dark-700/50 text-slate-200">
+                <tr><td colspan="9" class="p-6 text-center text-slate-500">Pin runs to compare parameter sets side by side.</td></tr>
               </tbody>
             </table>
           </div>
         </div>
       </div>
-    </div>
-  </main>
-
-  <!-- Extreme TradingView Chart Modal -->
+    </div><!-- /#stratUnifiedWrapper -->  <!-- Extreme TradingView Chart Modal -->
   <div id="extremeChartModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
     <div class="bg-dark-850 border border-dark-700 rounded-3xl max-w-5xl w-full p-6 shadow-2xl space-y-4">
       <div class="flex items-center justify-between border-b border-dark-700/80 pb-3">
@@ -715,6 +811,547 @@
 
     let currentStrat2Tab = 'live';   // 'live' | 'backtest'
 
+    // ==================== UNIFIED STRATEGY PANEL STATE ====================
+    let strategyRegistry = [];        // from /api/strategies
+    let currentStrategy = 'extreme_fvg';
+    let strategyInfoCache = {};       // name -> /api/{strategy}/info payload
+    let unifiedVariants = [];         // pinned backtest runs for A/B comparison
+    let unifiedVariantSeq = 0;
+    let unifiedLastRun = null;        // latest backtest result for pinning
+    let replayWs = null;
+    let replayId = null;
+    let replayWindowStartMs = 0;
+    let replayWindowEndMs = 0;
+
+    async function loadStrategyRegistry() {
+      try {
+        const resp = await fetchWithRetry('/api/strategies', {}, 15000, 2);
+        const data = await resp.json();
+        if (data.status !== 'success') throw new Error('bad payload');
+        strategyRegistry = data.strategies || [];
+        const sel = document.getElementById('strategySelect');
+        sel.innerHTML = strategyRegistry.map(s =>
+          `<option value="${s.name}" ${s.is_active ? 'selected' : ''}>${s.display_name}${s.is_active ? ' · active' : ''}</option>`
+        ).join('');
+        currentStrategy = (strategyRegistry.find(s => s.is_active) || strategyRegistry[0] || {}).name || currentStrategy;
+        sel.value = currentStrategy;
+        updateUnifiedStrategyHeader();
+      } catch (err) {
+        console.debug('Failed to load strategy registry:', err);
+      }
+    }
+
+    function updateUnifiedStrategyHeader() {
+      const entry = strategyRegistry.find(s => s.name === currentStrategy);
+      const badge = document.getElementById('unifiedStrategyBadge');
+      const desc = document.getElementById('unifiedStrategyDesc');
+      if (entry && badge) {
+        badge.innerText = entry.is_active ? 'Active' : 'Shadow / Inactive';
+        badge.className = entry.is_active
+          ? 'px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold'
+          : 'px-2 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 font-bold';
+      }
+      if (desc) {
+        desc.innerText = (entry && entry.description) || '';
+      }
+    }
+
+    async function onUnifiedStrategyChange() {
+      currentStrategy = document.getElementById('strategySelect').value;
+      const entry = strategyRegistry.find(s => s.name === currentStrategy);
+      if (entry && !entry.is_active) {
+        try {
+          const resp = await fetchWithRetry(`/api/${currentStrategy}/activate`, { method: 'POST' }, 15000, 1);
+          const data = await resp.json();
+          showToast(data.message || `Active strategy set to ${entry.display_name}`, 'success');
+          strategyRegistry.forEach(s => { s.is_active = s.name === currentStrategy; });
+        } catch (err) {
+          showToast('Failed to activate strategy', 'error');
+        }
+      }
+      updateUnifiedStrategyHeader();
+      await renderUnifiedStrategyParams();
+    }
+
+    async function fetchStrategyInfo(name) {
+      if (!strategyInfoCache[name]) {
+        const resp = await fetchWithRetry(`/api/${name}/info`, {}, 15000, 2);
+        const data = await resp.json();
+        if (data.status !== 'success') throw new Error('bad payload');
+        strategyInfoCache[name] = data;
+      }
+      return strategyInfoCache[name];
+    }
+
+    function _paramInputHtml(key, val) {
+      const common = 'class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white focus:outline-none focus:border-amber-500"';
+      if (typeof val === 'boolean') {
+        return `<label class="flex items-center gap-2 text-xs font-semibold text-slate-300 cursor-pointer select-none"><input type="checkbox" data-param="${key}" ${val ? 'checked' : ''} class="w-4 h-4 rounded bg-dark-900 border-dark-600 text-amber-500 focus:ring-amber-500/50" /> ${key}</label>`;
+      }
+      if (key.toLowerCase().includes('session') && typeof val === 'string') {
+        const presets = ['ALL', 'NY', 'LONDON', 'LONDON,NY', 'ASIA', 'LONDON_KZ', 'NY_KZ'];
+        const opts = presets.map(p => `<option value="${p}" ${val.toUpperCase() === p ? 'selected' : ''}>${p === 'ALL' ? '24/7 (ALL)' : p}</option>`).join('');
+        const custom = presets.includes(val.toUpperCase()) ? '' : `<option value="CUSTOM" selected>Custom…</option>`;
+        const customInput = presets.includes(val.toUpperCase())
+          ? ''
+          : `<input type="text" data-param="${key}" value="${val}" placeholder="e.g. 13:30-20:00" class="px-2.5 py-1 rounded-lg bg-dark-950 border border-amber-500/50 text-[11px] font-mono text-amber-300 focus:outline-none" />`;
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" data-session-select="1" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">${opts}${custom}</select>${customInput}</div>`;
+      }
+      if (key === 'ltf_timeframe' || key.toLowerCase().includes('timeframe')) {
+        const tfs = ['1m', '5m', '15m', '1h'];
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">${tfs.map(t => `<option value="${t}" ${val === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`;
+      }
+      if (key === 'completion_target') {
+        const opts = ['1R', '2R', '3R', 'RIDE'];
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">${opts.map(t => `<option value="${t}" ${val === t ? 'selected' : ''}>${t === 'RIDE' ? 'Ride (score 1R/2R/3R)' : t}</option>`).join('')}</select></div>`;
+      }
+      if (key === 'tp_mode') {
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200"><option value="LIQUIDITY" ${val === 'LIQUIDITY' ? 'selected' : ''}>Liquidity-first</option><option value="FIXED_R" ${val === 'FIXED_R' ? 'selected' : ''}>Fixed R</option></select></div>`;
+      }
+      if (key === 'gap_band_exclude') {
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><select data-param="${key}" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-200"><option value="0.10,0.20" ${val !== 'none' ? 'selected' : ''}>0.10–0.20%</option><option value="none" ${val === 'none' ? 'selected' : ''}>off</option></select></div>`;
+      }
+      if (typeof val === 'number') {
+        const step = Number.isInteger(val) ? '1' : '0.01';
+        return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><input type="number" data-param="${key}" value="${val}" step="${step}" ${common} /></div>`;
+      }
+      return `<div><label class="block text-[11px] font-semibold text-slate-400 mb-1">${key}</label><input type="text" data-param="${key}" value="${val}" ${common} /></div>`;
+    }
+
+    async function renderUnifiedStrategyParams() {
+      const wrap = document.getElementById('unifiedStrategyParams');
+      wrap.innerHTML = '<div class="text-[11px] text-slate-500 font-mono">Loading strategy params…</div>';
+      try {
+        const info = await fetchStrategyInfo(currentStrategy);
+        const defaults = info.default_params || {};
+        wrap.innerHTML = Object.entries(defaults).map(([k, v]) => _paramInputHtml(k, v)).join('');
+      } catch (err) {
+        wrap.innerHTML = `<div class="text-[11px] text-rose-400 font-mono">Failed to load params: ${err.message}</div>`;
+      }
+    }
+
+    function collectUnifiedParams() {
+      const params = {};
+      document.querySelectorAll('#unifiedStrategyParams [data-param]').forEach(el => {
+        const key = el.dataset.param;
+        if (el.type === 'checkbox') {
+          params[key] = el.checked;
+        } else if (el.tagName === 'SELECT' && el.value === 'CUSTOM') {
+          // custom session value lives in a sibling text input with the same data-param
+        } else if (el.value !== '') {
+          const info = strategyInfoCache[currentStrategy];
+          const decl = info && info.default_params ? info.default_params[key] : null;
+          if (typeof decl === 'number' && !Number.isNaN(Number(el.value))) {
+            params[key] = Number(el.value);
+          } else {
+            params[key] = el.value;
+          }
+        }
+      });
+      return params;
+    }
+
+    function resetUnifiedParams() {
+      renderUnifiedStrategyParams();
+      showToast('Params reset to strategy defaults', 'success');
+    }
+
+    function onUnifiedEngineChange() {
+      const engine = document.getElementById('unifiedBtEngine').value;
+      document.getElementById('unifiedBtSpeedWrap').classList.toggle('hidden', engine !== 'replay');
+    }
+
+    function switchUnifiedTab(tab) {
+      switchStrat2Tab(tab);
+    }
+
+    // ==================== REPLAY RUN CONTROL (WS progress) ====================
+    function connectReplayWs() {
+      if (replayWs && replayWs.readyState <= WebSocket.OPEN) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      replayWs = new WebSocket(`${protocol}//${window.location.host}/ws/replay`);
+      replayWs.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'replay_progress' || msg.type === 'replay_complete' || msg.type === 'replay_error') {
+            renderReplayFrame(msg);
+            if (msg.type === 'replay_complete') {
+              finalizeReplayRun(msg);
+            } else if (msg.type === 'replay_error') {
+              showToast('Replay failed: ' + (msg.error || 'unknown'), 'error');
+            }
+          }
+        } catch (err) { console.debug('Replay WS parse error:', err); }
+      };
+      replayWs.onclose = () => { replayWs = null; };
+    }
+
+    function renderReplayFrame(msg) {
+      const panel = document.getElementById('unifiedReplayProgress');
+      panel.classList.remove('hidden');
+      document.getElementById('replayStatus').innerText = msg.status || '--';
+      document.getElementById('replayCycles').innerText = msg.cycles || 0;
+      const vt = msg.virtual_time_ms;
+      if (vt && replayWindowEndMs > replayWindowStartMs) {
+        document.getElementById('replayVirtualTime').innerText = msg.virtual_time_ist || new Date(vt).toISOString();
+        const pct = Math.max(0, Math.min(100, 100 * (vt - replayWindowStartMs) / (replayWindowEndMs - replayWindowStartMs)));
+        document.getElementById('replayProgressBar').style.width = pct.toFixed(1) + '%';
+      }
+      (msg.events || []).slice(-10).forEach(ev => appendReplayEvent(ev));
+      const paused = msg.status === 'PAUSED';
+      document.getElementById('btnReplayPause').classList.toggle('hidden', paused);
+      document.getElementById('btnReplayResume').classList.toggle('hidden', !paused);
+    }
+
+    function appendReplayEvent(ev) {
+      const feed = document.getElementById('replayEventFeed');
+      if (feed.dataset.seen === String(ev.trade && ev.trade.trade_id) + String(ev.virtual_time_ms)) return;
+      feed.dataset.seen = String(ev.trade && ev.trade.trade_id) + String(ev.virtual_time_ms);
+      const t = ev.trade || {};
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between gap-3 px-2.5 py-1.5 rounded-lg bg-dark-900/70 border border-dark-700/60';
+      row.innerHTML = `<span>${t.symbol || '--'} <span class="${t.direction === 'Bullish' ? 'text-emerald-400' : 'text-rose-400'} font-bold">${(t.direction || '').toUpperCase()}</span> · ${t.state || ''}</span>
+        <span class="text-slate-400">R: ${t.realized_r != null ? (t.realized_r > 0 ? '+' : '') + Number(t.realized_r).toFixed(2) : (t.floating_r != null ? (t.floating_r > 0 ? '+' : '') + Number(t.floating_r).toFixed(2) : '--')}</span>`;
+      feed.prepend(row);
+      while (feed.children.length > 30) feed.removeChild(feed.lastChild);
+    }
+
+    async function pauseReplay() {
+      if (!replayId) return;
+      try { await fetchWithRetry(`/api/replay/${replayId}/pause`, { method: 'POST' }, 10000, 1); } catch (err) { showToast('Pause failed', 'error'); }
+    }
+
+    async function resumeReplay() {
+      if (!replayId) return;
+      try { await fetchWithRetry(`/api/replay/${replayId}/resume`, { method: 'POST' }, 10000, 1); } catch (err) { showToast('Resume failed', 'error'); }
+    }
+
+    async function abortReplay() {
+      if (!replayId) return;
+      try {
+        await fetchWithRetry(`/api/replay/${replayId}/abort`, { method: 'POST' }, 15000, 1);
+        showToast('Replay aborted — partial report kept', 'info');
+        await showReplayReport(replayId);
+      } catch (err) { showToast('Abort failed', 'error'); }
+    }
+
+    function finalizeReplayRun(msg) {
+      const id = msg.replay_id || replayId;
+      if (id) showReplayReport(id);
+    }
+
+    async function showReplayReport(id) {
+      try {
+        const resp = await fetchWithRetry(`/api/replay/${id}/report`, {}, 20000, 2);
+        const data = await resp.json();
+        const rep = data.report || {};
+        const m = rep.metrics || {};
+        document.getElementById('unifiedReplayProgress').classList.add('hidden');
+        renderUnifiedSummary({
+          engine: 'replay',
+          total_trades: m.total_closed_trades ?? (rep.closed_trades || []).length,
+          win_rate: m.win_rate_pct ?? 0,
+          net_r: m.net_realized_r ?? 0,
+          max_drawdown_r: m.max_drawdown_r ?? 0,
+          avg_mfe_r: m.avg_mfe_r ?? 0,
+          trades: (rep.closed_trades || []).map(t => ({
+            direction: t.direction,
+            entry_price: t.entry_price,
+            entry_time: t.entry_filled_at_ist || t.created_at_ist || '',
+            stop_loss: t.stop_loss,
+            realized_r: t.realized_r,
+            mfe_r: t.mfe_r,
+            exit_reason: t.state || t.status_detail || '',
+            htf_anchor: t.htf_anchor || {},
+            ltf_fvg: t.ltf_fvg || {},
+            symbol: t.symbol,
+          })),
+        }, { strategy: data.strategy, days: data.days, ltf: data.ltf_timeframe });
+        showToast(`Replay complete: ${m.total_closed_trades ?? 0} trades, ${m.win_rate_pct ?? 0}% WR`, 'success');
+      } catch (err) {
+        showToast('Failed to fetch replay report', 'error');
+      }
+    }
+
+    // ==================== UNIFIED BACKTEST SUBMIT ====================
+    async function runUnifiedBacktest() {
+      const btn = document.getElementById('btnBacktestExtreme');
+      const summary = document.getElementById('extremeBacktestSummary');
+      const tbody = document.getElementById('extremeTradesTableBody');
+      const engine = document.getElementById('unifiedBtEngine').value;
+      const symbol = document.getElementById('extremeBtSymbol').value.trim();
+      const days = document.getElementById('extremeBtDays').value;
+      const speed = document.getElementById('unifiedBtSpeed').value;
+      const params = collectUnifiedParams();
+      if (engine === 'replay' && params.completion_target === 'RIDE') {
+        // Replay/live path has no ride mode (unknown targets resolve to 3R);
+        // drop the key so the strategy default completion target applies.
+        delete params.completion_target;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting...</span>';
+
+      try {
+        if (engine === 'replay') {
+          summary.innerHTML = '';
+          tbody.innerHTML = '<tr><td colspan="11" class="p-8 text-center text-slate-500">Replay running — live ledger below.</td></tr>';
+          // /api/replay/start takes run params as QUERY params (see its route
+          // signature); the strategy-declared overrides go in the JSON body.
+          // Sending everything in the body yields an unexplained HTTP 422.
+          const startQs = new URLSearchParams({
+            strategy: currentStrategy,
+            symbols: symbol,
+            days: String(Number(days)),
+            ltf_timeframe: params.ltf_timeframe || '5m',
+            speed,
+          });
+          const startResp = await fetchWithRetry(`/api/replay/start?${startQs.toString()}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params || {}),
+          }, 20000, 1);
+          if (!startResp.ok) throw new Error('HTTP ' + startResp.status);
+          const startData = await startResp.json();
+          replayId = startData.replay_id;
+          replayWindowStartMs = Date.now() - Number(days) * 86400000;
+          replayWindowEndMs = Date.now();
+          document.getElementById('replayEventFeed').innerHTML = '';
+          document.getElementById('replayProgressBar').style.width = '0%';
+          connectReplayWs();
+          // Watchable speeds render progress via WS; MAX still gets a completion frame.
+        } else {
+          const qs = new URLSearchParams({ symbol, days, mode: 'analytic', ...params });
+          const resp = await fetchWithRetry(`/api/${currentStrategy}/backtest?${qs.toString()}`, {}, 120000, 1);
+          if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ' + (await resp.text()).slice(0, 200));
+          const data = await resp.json();
+          if (data.engine === 'replay') {
+            // Server ran the replay synchronously (mode=replay via backtest route)
+            renderUnifiedSummary(replayReportToSummary(data), { strategy: data.strategy, days, ltf: data.ltf_timeframe });
+          } else {
+            renderUnifiedSummary(data, { strategy: currentStrategy, days, ltf: params.ltf_timeframe });
+          }
+          showToast('Backtest complete', 'success');
+        }
+      } catch (err) {
+        summary.innerHTML = `<div class="col-span-4 p-4 text-center text-rose-400 text-xs">Error running backtest: ${err.message}</div>`;
+        showToast('Backtest failed', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-play"></i><span>Run Backtest</span>';
+      }
+    }
+
+    function replayReportToSummary(data) {
+      const rep = data.report || {};
+      const m = rep.metrics || {};
+      return {
+        engine: 'replay',
+        total_trades: m.total_closed_trades ?? (rep.closed_trades || []).length,
+        win_rate: m.win_rate_pct ?? 0,
+        net_r: m.net_realized_r ?? 0,
+        max_drawdown_r: m.max_drawdown_r ?? 0,
+        avg_mfe_r: m.avg_mfe_r ?? 0,
+        trades: (rep.closed_trades || []).map(t => ({
+          direction: t.direction,
+          entry_price: t.entry_price,
+          entry_time: t.entry_filled_at_ist || t.created_at_ist || '',
+          stop_loss: t.stop_loss,
+          realized_r: t.realized_r,
+          mfe_r: t.mfe_r,
+          exit_reason: t.state || '',
+          htf_anchor: t.htf_anchor || {},
+          ltf_fvg: t.ltf_fvg || {},
+          symbol: t.symbol,
+        })),
+      };
+    }
+
+    function renderUnifiedSummary(data, meta) {
+      const summary = document.getElementById('extremeBacktestSummary');
+      const tbody = document.getElementById('extremeTradesTableBody');
+      unifiedLastRun = { summary: data, meta: meta || {}, label: buildRunLabel(data, meta) };
+      if (data.engine === 'replay') {
+        const rColor = v => v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+        summary.innerHTML = `
+          <div class="p-4 rounded-xl bg-dark-900 border border-amber-500/30 text-center bg-amber-500/5">
+            <span class="text-[11px] text-amber-400 block font-mono">REPLAY · WIN RATE</span>
+            <span class="text-lg font-black text-white font-mono">${Number(data.win_rate || 0).toFixed(1)}%</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">NET R</span>
+            <span class="text-lg font-black ${rColor(data.net_r || 0)} font-mono">${(data.net_r || 0) > 0 ? '+' : ''}${Number(data.net_r || 0).toFixed(2)}R</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">CLOSED TRADES</span>
+            <span class="text-lg font-black text-white font-mono">${data.total_trades || 0}</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">AVG MFE</span>
+            <span class="text-lg font-black text-slate-200 font-mono">+${Number(data.avg_mfe_r || 0).toFixed(2)}R</span>
+            <span class="text-[10px] text-slate-400 block font-mono">Max DD: -${Number(data.max_drawdown_r || 0).toFixed(1)}R</span>
+          </div>`;
+      } else if (data.exit_policy === 'target') {
+        // Analytic run in target-exit mode (same policy as replay/live):
+        // render the same four cards so both engines compare 1:1.
+        const rColor = v => v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+        const target = data.completion_target || '2R';
+        summary.innerHTML = `
+          <div class="p-4 rounded-xl bg-dark-900 border border-amber-500/30 text-center bg-amber-500/5">
+            <span class="text-[11px] text-amber-400 block font-mono">ANALYTIC · ${target} WIN RATE</span>
+            <span class="text-lg font-black text-white font-mono">${Number(data.win_rate_target || 0).toFixed(1)}%</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">NET R</span>
+            <span class="text-lg font-black ${rColor(data.net_pnl_target || 0)} font-mono">${(data.net_pnl_target || 0) > 0 ? '+' : ''}${Number(data.net_pnl_target || 0).toFixed(2)}R</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">CLOSED TRADES</span>
+            <span class="text-lg font-black text-white font-mono">${data.total_trades || 0}</span>
+          </div>
+          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+            <span class="text-[11px] text-slate-400 block font-mono">AVG MFE</span>
+            <span class="text-lg font-black text-slate-200 font-mono">+${Number(data.avg_mfe_r || 0).toFixed(2)}R</span>
+            <span class="text-[10px] text-slate-400 block font-mono">Max DD: -${Number(data.max_drawdown_r || 0).toFixed(1)}R</span>
+          </div>`;
+      } else {
+        renderExtremeBacktestSummary(data);
+      }
+      // Result columns: 1R/2R/3R scorecard in ride mode; single Realized R in
+      // target mode (same per-trade view as replay).
+      const targetMode = data.exit_policy === 'target';
+      document.getElementById('thResult1').textContent = targetMode ? 'Realized R' : '1R';
+      document.getElementById('thResult2').textContent = targetMode ? '' : '2R';
+      document.getElementById('thResult3').textContent = targetMode ? '' : '3R';
+      renderUnifiedTrades(data, meta);
+    }
+
+    function renderExtremeBacktestSummary(data) {
+      const summary = document.getElementById('extremeBacktestSummary');
+      const filterBadge = ((data.sessions && data.sessions !== 'ALL') || data.session_filter_enabled || data.weekday_filter_enabled || (data.entry_sessions && data.entry_sessions !== 'ALL') || data.entry_session_filter_enabled || data.entry_weekday_filter_enabled)
+        ? `<span class="text-[9px] text-amber-400/90 block mt-0.5">(${data.trades_filtered_out || 0} filtered out)</span>`
+        : '';
+      summary.innerHTML = `
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">1R WIN RATE</span>
+          <span class="text-lg font-black text-white font-mono">${data.win_rate_1r}%</span>
+          <span class="text-[10px] text-emerald-400 block font-mono">${data.net_pnl_1r > 0 ? '+' : ''}${data.net_pnl_1r}R (${data.wins_1r}W / ${data.total_trades - data.wins_1r}L)</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-amber-500/30 text-center bg-amber-500/5">
+          <span class="text-[11px] text-amber-400 block font-mono">2R WIN RATE (DEFAULT)</span>
+          <span class="text-lg font-black text-white font-mono">${data.win_rate_2r}%</span>
+          <span class="text-[10px] text-amber-400 block font-mono">${data.net_pnl_2r > 0 ? '+' : ''}${data.net_pnl_2r}R (${data.wins_2r}W / ${data.total_trades - data.wins_2r}L)</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">3R WIN RATE</span>
+          <span class="text-lg font-black text-white font-mono">${data.win_rate_3r}%</span>
+          <span class="text-[10px] text-indigo-400 block font-mono">${data.net_pnl_3r > 0 ? '+' : ''}${data.net_pnl_3r}R (${data.wins_3r}W / ${data.total_trades - data.wins_3r}L)</span>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
+          <span class="text-[11px] text-slate-400 block font-mono">TOTAL TRADES / MFE</span>
+          <span class="text-lg font-black text-white font-mono">${data.total_trades}</span>
+          <span class="text-[10px] text-slate-400 block font-mono">Avg MFE: +${data.avg_mfe_r}R (DD: -${data.max_drawdown_r}R)</span>
+          ${filterBadge}
+        </div>`;
+    }
+
+    function buildRunLabel(data, meta) {
+      const m = meta || {};
+      const bits = [m.strategy || '--', m.engine || (data.engine || 'analytic'), (m.days ? m.days + 'd' : ''), (m.ltf || '')];
+      const p = (data.effective_params || data.params || {});
+      Object.entries(p).forEach(([k, v]) => { if (k !== 'ltf_timeframe') bits.push(k + '=' + v); });
+      return bits.filter(Boolean).join(' · ');
+    }
+
+    function renderUnifiedTrades(data, meta) {
+      const tbody = document.getElementById('extremeTradesTableBody');
+      const trades = data.trades || [];
+      if (!trades.length) {
+        tbody.innerHTML = '<tr><td colspan="11" class="p-4 text-center text-slate-500">No trades triggered in this period.</td></tr>';
+        return;
+      }
+      const isReplay = data.engine === 'replay';
+      const targetMode = isReplay || data.exit_policy === 'target';
+      tbody.innerHTML = trades.slice().reverse().map(t => {
+        const isBullish = t.direction === 'Bullish';
+        const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
+        const htf = t.htf_anchor || {};
+        const ltfFvg = t.ltf_fvg || {};
+        const resultCell = targetMode
+          ? `<span class="font-bold ${((t.realized_r || 0) > 0) ? 'text-emerald-400' : 'text-rose-400'}">${t.realized_r != null ? ((t.realized_r > 0 ? '+' : '') + Number(t.realized_r).toFixed(2) + 'R') : '--'}</span>`
+          : `
+            <td class="p-3">${t.hit_1r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>'}</td>
+            <td class="p-3 font-bold">${t.hit_2r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>'}</td>
+            <td class="p-3">${t.hit_3r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>'}</td>`;
+        return `
+          <tr class="hover:bg-dark-700/30 transition-colors">
+            <td class="p-3 ${dirColor} font-bold">${t.direction}</td>
+            <td class="p-3 text-slate-300">
+              <span class="block font-semibold">$${formatNumber(htf.bottom)} - $${formatNumber(htf.top)}</span>
+              <span class="text-[10px] text-slate-400 block">Touch: ${htf.first_touch_time_ist || htf.first_touch_time || '--'}</span>
+            </td>
+            <td class="p-3 text-slate-300">
+              <span class="block font-semibold">$${formatNumber(ltfFvg.bottom)} - $${formatNumber(ltfFvg.top)}</span>
+              <span class="text-[10px] text-amber-400 block">Gap: ${ltfFvg.gap_pct != null ? ltfFvg.gap_pct + '%' : '--'}</span>
+            </td>
+            <td class="p-3">
+              <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
+              <span class="text-[10px] text-slate-400 block">${t.entry_time || '--'}</span>
+            </td>
+            <td class="p-3 text-rose-300">
+              <span class="font-bold block">$${formatNumber(t.stop_loss)}</span>
+            </td>
+            ${targetMode ? `<td class="p-3">${resultCell}</td><td></td><td></td>` : resultCell}
+            <td class="p-3 text-amber-300 font-bold">${t.mfe_r != null ? '+' + Number(t.mfe_r).toFixed(2) + 'R' : '--'}</td>
+            <td class="p-3 text-slate-400 text-[10px]">${t.exit_reason || ''}</td>
+            <td class="p-3 text-center">--</td>
+          </tr>`;
+      }).join('');
+    }
+
+    function pinUnifiedVariant() {
+      if (!unifiedLastRun) { showToast('Run a backtest first', 'error'); return; }
+      unifiedVariantSeq += 1;
+      unifiedVariants.push({ n: unifiedVariantSeq, ...unifiedLastRun });
+      renderUnifiedVariants();
+      showToast('Run pinned — change parameters and re-run to compare', 'success');
+    }
+
+    function clearUnifiedVariants() {
+      unifiedVariants = [];
+      renderUnifiedVariants();
+    }
+
+    function renderUnifiedVariants() {
+      const tbody = document.getElementById('unifiedVariantsTableBody');
+      if (!unifiedVariants.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="p-6 text-center text-slate-500">Pin runs to compare parameter sets side by side.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = unifiedVariants.map(v => {
+        const d = v.summary;
+        const pfTxt = (d.profit_factor === Infinity || d.profit_factor === null) ? '∞' : (d.profit_factor != null ? Number(d.profit_factor).toFixed(2) : '--');
+        const rColor = x => x >= 0 ? 'text-emerald-400' : 'text-rose-400';
+        return `
+          <tr class="hover:bg-dark-750/50 transition-colors">
+            <td class="p-3 font-bold text-amber-300">#${v.n}</td>
+            <td class="p-3 text-[10px] text-slate-300">${v.meta.strategy || '--'} · ${v.meta.engine}</td>
+            <td class="p-3 text-[10px] text-slate-300">${v.label}</td>
+            <td class="p-3 text-white font-bold">${d.total_trades}</td>
+            <td class="p-3 font-bold">${Number(d.win_rate || 0).toFixed(1)}%</td>
+            <td class="p-3 font-bold ${rColor(d.net_r || 0)}">${(d.net_r || 0) > 0 ? '+' : ''}${Number(d.net_r || 0).toFixed(1)}R</td>
+            <td class="p-3">${pfTxt}</td>
+            <td class="p-3 text-rose-300">-${Number(d.max_drawdown_r || 0).toFixed(1)}R</td>
+            <td class="p-3 text-amber-300">+${Number(d.avg_mfe_r || 0).toFixed(2)}R</td>
+          </tr>`;
+      }).join('');
+    }
+
+    // Unified boot: registry + params + live status
+    loadStrategyRegistry();
+    renderUnifiedStrategyParams();
+    pollExtremeStatus();
+
     function onHeaderScanClick() {
       loadExtremeSetups();
     }
@@ -723,8 +1360,8 @@
       currentStrat2Tab = tab;
       const live = document.getElementById('s2LiveView');
       const bt = document.getElementById('s2BacktestView');
-      const tLive = document.getElementById('s2InnerTabLive');
-      const tBt = document.getElementById('s2InnerTabBacktest');
+      const tLive = document.getElementById('unifiedInnerTabLive');
+      const tBt = document.getElementById('unifiedInnerTabBacktest');
 
       if (tab === 'live') {
         live.classList.remove('hidden');
@@ -861,7 +1498,19 @@
       if (!ind || !txt || !btn) return;
 
       const sec = intervalSeconds || (sel ? sel.value : 30);
-      if (sel && intervalSeconds) sel.value = String(intervalSeconds);
+      // Sync the interval dropdown; if the running interval has no preset option
+      // (e.g. a restored 45s), pick the nearest preset instead of leaving the
+      // select blank (an unset <select> renders with no visible text).
+      if (sel && intervalSeconds) {
+        const hasExact = [...sel.options].some(o => o.value === String(intervalSeconds));
+        if (hasExact) {
+          sel.value = String(intervalSeconds);
+        } else {
+          const presets = sel.options.map(o => parseInt(o.value, 10)).filter(v => !isNaN(v)).sort((a, b) => a - b);
+          const nearest = presets.reduce((best, v) => (Math.abs(v - intervalSeconds) < Math.abs(best - intervalSeconds) ? v : best), presets[0]);
+          sel.value = String(nearest);
+        }
+      }
 
       if (isRunning) {
         ind.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
@@ -1177,11 +1826,13 @@
       try {
         const state = document.getElementById('liveFilterState')?.value || '';
         const symbol = document.getElementById('liveFilterSymbol')?.value || '';
+        const strategy = document.getElementById('liveFilterStrategy')?.value || '';
         const params = new URLSearchParams();
         params.set('page', String(liveHistPage));
         params.set('per_page', String(liveHistPerPage));
         if (state) params.set('state', state);
         if (symbol) params.set('symbol', symbol);
+        if (strategy) params.set('strategy', strategy);
         const resp = await fetchWithRetry('/api/extreme/live-history?' + params.toString(), {}, 10000, 1);
         if (!resp.ok) return;
         const data = await resp.json();
@@ -1231,6 +1882,9 @@
       tbody.innerHTML = trades.map((t, idx) => {
         const isBull = t.direction === 'Bullish';
         const dirBadge = isBull ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold text-[10px]">LONG</span>' : '<span class="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-[10px]">SHORT</span>';
+        const stratTag = t.strategy && t.strategy !== 'extreme_fvg'
+          ? `<span class="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/30 font-bold text-[10px]" title="Shadow paper trade (${t.strategy}) — no Telegram alerts">SHADOW</span>`
+          : '';
         
         let stateBadge = '';
         const isActive = t.state === 'TRADE_ACTIVE';
@@ -1255,6 +1909,7 @@
               <div class="flex items-center space-x-1.5">
                 <span class="font-bold text-white">${t.symbol}</span>
                 ${dirBadge}
+                ${stratTag}
               </div>
               <span class="text-[10px] text-slate-500 block">${t.ltf_timeframe}</span>
             </td>
@@ -1332,154 +1987,45 @@
       const invalidation = document.getElementById('extremeInvalidation').value;
       const target = document.getElementById('extremeTarget').value;
       const minGap = document.getElementById('extremeMinGap').value;
+      const strat = currentStrategy;
 
       btn.disabled = true;
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Scanning...</span>';
       container.innerHTML = '<div class="col-span-2 p-12 text-center text-slate-400 font-mono text-xs"><i class="fa-solid fa-circle-notch fa-spin text-amber-400 text-lg mb-2"></i><br>Evaluating 4H anchors and unmitigated LTF FVGs...</div>';
 
       try {
-        let sessions = document.getElementById('extremeSessions') ? document.getElementById('extremeSessions').value : 'ALL';
-        if (sessions === 'CUSTOM') {
-          const customEl = document.getElementById('extremeSessionsCustom');
-          sessions = (customEl && customEl.value.trim()) ? customEl.value.trim() : 'ALL';
+        let data;
+        if (strat === 'extreme_fvg') {
+          let sessions = document.getElementById('extremeSessions') ? document.getElementById('extremeSessions').value : 'ALL';
+          if (sessions === 'CUSTOM') {
+            const customEl = document.getElementById('extremeSessionsCustom');
+            sessions = (customEl && customEl.value.trim()) ? customEl.value.trim() : 'ALL';
+          }
+          const url = `/api/extreme/scan?symbols=${encodeURIComponent(symbols)}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=${minGap}&target=${target}&sessions=${encodeURIComponent(sessions)}`;
+          const resp = await fetchWithRetry(url, {}, 35000, 2);
+          data = await resp.json();
+        } else {
+          // Strategy-generic scan: uses the strategy's default params.
+          const url = `/api/${encodeURIComponent(strat)}/scan?symbols=${encodeURIComponent(symbols)}`;
+          const resp = await fetchWithRetry(url, {}, 35000, 2);
+          data = await resp.json();
         }
-        const url = `/api/extreme/scan?symbols=${encodeURIComponent(symbols)}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=${minGap}&target=${target}&sessions=${encodeURIComponent(sessions)}`;
-        const resp = await fetchWithRetry(url, {}, 35000, 2);
-        const data = await resp.json();
 
         timeEl.innerText = `Scanned at ${new Date().toLocaleTimeString('en-US', { hour12: true })} IST`;
         renderExtremeSetups(data.setups);
-        showToast(`Found ${data.setups ? data.setups.length : 0} Extreme setup(s)!`, 'success');
+        showToast(`Found ${data.setups ? data.setups.length : 0} setup(s) for ${strat}!`, 'success');
       } catch (err) {
         container.innerHTML = `<div class="col-span-2 p-6 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center text-rose-400 text-xs">Error scanning setups: ${err.message}</div>`;
-        showToast('Error during extreme scan', 'error');
+        showToast('Error during scan', 'error');
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-bolt"></i><span>Scan Now</span>';
       }
     }
 
+    // Legacy entry point kept for compatibility; the unified submit handles all strategies.
     async function runExtremeBacktest() {
-      const btn = document.getElementById('btnBacktestExtreme');
-      const summary = document.getElementById('extremeBacktestSummary');
-      const tbody = document.getElementById('extremeTradesTableBody');
-      const symbol = document.getElementById('extremeBtSymbol').value.trim();
-      const days = document.getElementById('extremeBtDays').value;
-      const ltf = document.getElementById('extremeBtLtf').value;
-      const invalidation = document.getElementById('extremeBtInval').value;
-      let sessions = document.getElementById('extremeBtSession') ? document.getElementById('extremeBtSession').value : 'ALL';
-      if (sessions === 'CUSTOM') {
-        const customEl = document.getElementById('extremeBtSessionCustom');
-        sessions = (customEl && customEl.value.trim()) ? customEl.value.trim() : 'ALL';
-      }
-      const weekdayFilter = document.getElementById('extremeBtWeekday') ? document.getElementById('extremeBtWeekday').value : 'false';
-      let entrySessions = document.getElementById('extremeBtEntrySession') ? document.getElementById('extremeBtEntrySession').value : 'ALL';
-      if (entrySessions === 'CUSTOM') {
-        const customEl = document.getElementById('extremeBtEntrySessionCustom');
-        entrySessions = (customEl && customEl.value.trim()) ? customEl.value.trim() : 'ALL';
-      }
-      const entryWeekdayFilter = document.getElementById('extremeBtEntryWeekday') ? document.getElementById('extremeBtEntryWeekday').value : 'false';
-
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Backtesting...</span>';
-      summary.innerHTML = '<div class="col-span-4 p-8 text-center text-slate-400 font-mono text-xs"><i class="fa-solid fa-circle-notch fa-spin text-amber-400 text-lg mb-2"></i><br>Replaying historical 4H anchors & extreme LTF FVGs...</div>';
-      tbody.innerHTML = '';
-
-      try {
-        const url = `/api/extreme/backtest?symbol=${encodeURIComponent(symbol)}&days=${days}&ltf=${ltf}&invalidation=${invalidation}&min_gap_pct=0.05&sessions=${encodeURIComponent(sessions)}&weekday_filter=${weekdayFilter}&entry_sessions=${encodeURIComponent(entrySessions)}&entry_weekday_filter=${entryWeekdayFilter}`;
-        const resp = await fetchWithRetry(url, {}, 60000, 2);
-        const data = await resp.json();
-
-        const filterBadge = ((data.sessions && data.sessions !== 'ALL') || data.session_filter_enabled || data.weekday_filter_enabled || (data.entry_sessions && data.entry_sessions !== 'ALL') || data.entry_session_filter_enabled || data.entry_weekday_filter_enabled)
-          ? `<span class="text-[9px] text-amber-400/90 block mt-0.5">(${data.trades_filtered_out || 0} filtered out)</span>`
-          : '';
-
-        summary.innerHTML = `
-          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
-            <span class="text-[11px] text-slate-400 block font-mono">1R WIN RATE</span>
-            <span class="text-lg font-black text-white font-mono">${data.win_rate_1r}%</span>
-            <span class="text-[10px] text-emerald-400 block font-mono">${data.net_pnl_1r > 0 ? '+' : ''}${data.net_pnl_1r}R (${data.wins_1r}W / ${data.total_trades - data.wins_1r}L)</span>
-          </div>
-          <div class="p-4 rounded-xl bg-dark-900 border border-amber-500/30 text-center bg-amber-500/5">
-            <span class="text-[11px] text-amber-400 block font-mono">2R WIN RATE (DEFAULT)</span>
-            <span class="text-lg font-black text-white font-mono">${data.win_rate_2r}%</span>
-            <span class="text-[10px] text-amber-400 block font-mono">${data.net_pnl_2r > 0 ? '+' : ''}${data.net_pnl_2r}R (${data.wins_2r}W / ${data.total_trades - data.wins_2r}L)</span>
-          </div>
-          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
-            <span class="text-[11px] text-slate-400 block font-mono">3R WIN RATE</span>
-            <span class="text-lg font-black text-white font-mono">${data.win_rate_3r}%</span>
-            <span class="text-[10px] text-indigo-400 block font-mono">${data.net_pnl_3r > 0 ? '+' : ''}${data.net_pnl_3r}R (${data.wins_3r}W / ${data.total_trades - data.wins_3r}L)</span>
-          </div>
-          <div class="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
-            <span class="text-[11px] text-slate-400 block font-mono">TOTAL TRADES / MFE</span>
-            <span class="text-lg font-black text-white font-mono">${data.total_trades}</span>
-            <span class="text-[10px] text-slate-400 block font-mono">Avg MFE: +${data.avg_mfe_r}R (DD: -${data.max_drawdown_r}R)</span>
-            ${filterBadge}
-          </div>
-        `;
-
-        if (data.trades && data.trades.length > 0) {
-          let rows = '';
-          data.trades.slice().reverse().forEach(t => {
-            const isBullish = t.direction === 'Bullish';
-            const dirColor = isBullish ? 'text-emerald-400' : 'text-rose-400';
-            const r1 = t.hit_1r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
-            const r2 = t.hit_2r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
-            const r3 = t.hit_3r ? '<span class="text-emerald-400 font-bold">WIN</span>' : '<span class="text-rose-400">LOSS</span>';
-            const htf = t.htf_anchor || {};
-            const ltfFvg = t.ltf_fvg || {};
-
-            rows += `
-              <tr class="hover:bg-dark-700/30 transition-colors">
-                <td class="p-3 ${dirColor} font-bold">${t.direction}</td>
-                <td class="p-3 text-slate-300">
-                  <span class="block font-semibold">$${formatNumber(htf.bottom)} - $${formatNumber(htf.top)}</span>
-                  <span class="text-[10px] text-slate-400 block">Touch: ${htf.first_touch_time || '--'}</span>
-                  <span class="text-[9px] text-slate-500 block">Formed: ${htf.formed_time || '--'}</span>
-                </td>
-                <td class="p-3 text-slate-300">
-                  <span class="block font-semibold">$${formatNumber(ltfFvg.bottom)} - $${formatNumber(ltfFvg.top)}</span>
-                  <span class="text-[10px] text-amber-400 block">Gap: ${ltfFvg.gap_pct}%</span>
-                  <span class="text-[9px] text-slate-500 block">Formed: ${ltfFvg.formed_time || '--'}</span>
-                </td>
-                <td class="p-3">
-                  <span class="text-white font-bold block">$${formatNumber(t.entry_price)}</span>
-                  <span class="text-[10px] text-slate-400 block">${t.entry_time}</span>
-                </td>
-                <td class="p-3 text-rose-300">
-                  <span class="font-bold block">$${formatNumber(t.stop_loss)}</span>
-                  <span class="text-[10px] text-slate-400 block">Risk: $${t.risk_r}</span>
-                </td>
-                <td class="p-3">${r1}</td>
-                <td class="p-3 font-bold">${r2}</td>
-                <td class="p-3">${r3}</td>
-                <td class="p-3 text-amber-300 font-bold">+${t.mfe_r}R</td>
-                <td class="p-3 text-slate-400 text-[10px]">${t.exit_reason}</td>
-                <td class="p-3 text-center">
-                  <button
-                    onclick="openExtremeLiveChart('${t.symbol}', '${t.direction}', '${ltf}', ${t.entry_price}, ${t.stop_loss}, ${t.tp_1r}, ${t.tp_2r}, ${t.tp_3r}, ${htf.bottom || 0}, ${htf.top || 0}, ${ltfFvg.bottom || 0}, ${ltfFvg.top || 0}, ${t.fvg_formed_at || ltfFvg.formed_at || t.fvg_formation_timestamp || 0}, '${htf.first_touch_time || ''}', 'HISTORICAL_${t.exit_reason}', ${t.mfe_r}, ${t.entry_timestamp || 0}, ${t.exit_timestamp || 0})"
-                    class="h-7 w-7 rounded-lg bg-dark-900 hover:bg-dark-700 text-amber-400 hover:text-amber-300 border border-dark-700 inline-flex items-center justify-center transition-colors"
-                    title="View TradingView Chart"
-                  >
-                    <i class="fa-solid fa-chart-line text-xs"></i>
-                  </button>
-                </td>
-              </tr>
-            `;
-          });
-          tbody.innerHTML = rows;
-        } else {
-          tbody.innerHTML = '<tr><td colspan="11" class="p-4 text-center text-slate-500">No trades triggered in this period.</td></tr>';
-        }
-
-        showToast(`Backtest complete: ${data.total_trades} trades simulated`, 'success');
-      } catch (err) {
-        summary.innerHTML = `<div class="col-span-4 p-4 text-center text-rose-400 text-xs">Error running backtest: ${err.message}</div>`;
-        showToast('Backtest failed', 'error');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-play"></i><span>Run Extreme Backtest</span>';
-      }
+      return runUnifiedBacktest();
     }
 
     function openExtremeLiveChart(symbol, direction, ltf, entry, sl, r1, r2, r3, htfBot, htfTop, ltfBot, ltfTop, ltfTs, touchIst, state, floatingR, entryTs, exitTs) {
@@ -1667,7 +2213,10 @@
       }
     }
 
-    pollExtremeStatus();
+    // ========================================================================
+    // UNIFIED STRATEGY PANEL — registry dropdown, type-aware backtest params,
+    // analytic/replay engines, replay WS progress, variant pinning.
+    // ========================================================================
   </script>
 
 

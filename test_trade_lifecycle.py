@@ -53,8 +53,10 @@ def mk_setup(symbol="PAXG", direction="Bullish", formed_at=T0, state="PENDING_RE
     }
 
 
-def _tracker(tmp_path):
-    return ExtremeTradeTracker(storage_path=str(tmp_path / "ledger.json"))
+def _tracker(tmp_path, name="ledger"):
+    # Each tracker gets its own file: two trackers built from the same tmp_path
+    # would otherwise share persisted state ("separate ledger" intent below).
+    return ExtremeTradeTracker(storage_path=str(tmp_path / f"{name}.json"))
 
 
 def _evtypes(events, symbol=None):
@@ -286,7 +288,7 @@ def test_pending_bearish_fill_and_invalidation_paths(tmp_path):
     assert tracker_b.history[0].state == "INVALIDATED"
 
     # 2) fill: separate ledger, candle high 4403 >= entry 4400
-    tracker_c = _tracker(tmp_path)
+    tracker_c = _tracker(tmp_path, name="ledger_c")
     fill = {"PAXG": [mk_c(T0 + FIVE_MIN_MS, 4402, 4403, 4390, 4395)]}
     events_fill = tracker_c.process_live_setups([bear], {"PAXG": 4400.0}, fill)
     assert _evtypes(events_fill) == ["NEW_SETUP", "ENTRY_FILLED"]
@@ -577,10 +579,58 @@ def test_history_record_is_frozen_copy_of_resolved_trade(tmp_path):
     # history records are full TrackedExtremeTrade objects (persisted verbatim)
     assert h.symbol == "PAXG"
 
-    # New cycle with a fresh emission must NOT resurrect the archived trade_id row
-    events = tracker.process_live_setups([mk_setup()], {"PAXG": 4400.0}, {})
+    # New cycle with a fresh emission must NOT resurrect the archived trade_id row.
+    # A resolved trade_id is permanently done (backtest parity with the analytic
+    # engine's entered_fvg_timestamps); OLDER-but-unmitigated FVGs stay eligible
+    # for a retest — there is deliberately no formed-at gate (see next tests).
+    events = tracker.process_live_setups(
+        [mk_setup(formed_at=T0 + 2 * FIVE_MIN_MS)], {"PAXG": 4400.0}, {}
+    )
     assert _evtypes(events) == ["NEW_SETUP"]
     assert len(tracker.history) == 1  # history untouched
+
+
+def test_stale_unmitigated_fvg_can_retest_after_exit(tmp_path):
+    """An FVG formed BEFORE a previous trade's exit stays eligible (no formed-at gate).
+
+    Mirrors the analytic engine: its candidate pool rescan keeps stale-but-
+    unmitigated FVGs eligible after a position closes, so the ledger must not
+    suppress a valid retest purely because formed_at <= last exit timestamp.
+    """
+    tracker = _tracker(tmp_path)
+    # Trade 1 fills (formed_at=T0, entry 4400) and resolves to TP.
+    _active_trade(tracker, tmp_path, completion_target="1R")
+    tp = {"PAXG": [mk_c(T0 + FIVE_MIN_MS, 4405, 4413, 4398, 4412)]}
+    tracker.process_live_setups([], {"PAXG": 4405.0}, tp)
+    assert tracker.history[0].state == "COMPLETED_TP"
+
+    # Trade 2: a DIFFERENT FVG that formed at T0 — strictly before trade 1's
+    # exit at T0+FIVE_MIN_MS. Registration must not be blocked.
+    events = tracker.process_live_setups(
+        [mk_setup(entry=4405.0, risk=12.0, formed_at=T0)], {"PAXG": 4405.0}, {}
+    )
+    assert _evtypes(events) == ["NEW_SETUP"]
+    assert _get(tracker, "PAXG").state == "PENDING_RETRACE"
+
+
+def test_resolved_fvg_never_re_registers(tmp_path):
+    """Same FVG re-emitted after TP/SL resolution is permanently done.
+
+    Backtest parity: the analytic engine adds every filled FVG to
+    ``entered_fvg_timestamps`` so one FVG can never yield two trades — even
+    though the scanner keeps emitting still-unmitigated setups.
+    """
+    tracker = _tracker(tmp_path)
+    _active_trade(tracker, tmp_path, completion_target="1R")
+    tp = {"PAXG": [mk_c(T0 + FIVE_MIN_MS, 4405, 4413, 4398, 4412)]}
+    tracker.process_live_setups([], {"PAXG": 4405.0}, tp)
+    assert len(tracker.history) == 1
+
+    # Identical setup re-emitted after resolution: silent, no new rows.
+    events = tracker.process_live_setups([mk_setup(formed_at=T0)], {"PAXG": 4400.0}, {})
+    assert _evtypes(events) == []
+    assert len(tracker.history) == 1
+    assert len(tracker.active_trades) == 0
 
 
 def test_invalidated_setup_archived_with_reason_string(tmp_path):

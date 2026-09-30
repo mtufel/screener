@@ -37,7 +37,13 @@ async def root(request: Request, accept: Optional[str] = Header(default=None)):
 
     index_html = TEMPLATES_DIR / "index.html"
     if index_html.exists():
-        return HTMLResponse(content=index_html.read_text(encoding="utf-8"))
+        # no-store: the dashboard is edited alongside the server; a cached page
+        # must never outlive a code change (stale pages sent pre-fix request
+        # shapes and produced confusing 422s / empty columns).
+        return HTMLResponse(
+            content=index_html.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
 
     return {"status": "screener running"}
 
@@ -46,46 +52,53 @@ async def root(request: Request, accept: Optional[str] = Header(default=None)):
 async def dashboard():
     index_html = TEMPLATES_DIR / "index.html"
     if index_html.exists():
-        return HTMLResponse(content=index_html.read_text(encoding="utf-8"))
+        return HTMLResponse(
+            content=index_html.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
     return HTMLResponse("<h3>Dashboard template not found.</h3>", status_code=404)
 
 
 # ==============================================================================
 # JSON API ENDPOINTS
 # ==============================================================================
-@router.get("/health", summary="Health Check")
-@router.get("/api/health", summary="API Health Check")
-async def health():
+def _legacy_status_snapshot() -> dict:
+    """Snapshot for /health and /api/status.
+
+    The scan cycle writes its counters under ``extreme_*`` state keys
+    (single-daemon architecture); these endpoints historically read the legacy
+    non-prefixed keys, which stayed 0/empty forever and made the dashboard
+    status misleading. Read the live keys with legacy-key fallbacks.
+    """
     return {
         "status": "healthy" if state.get("extreme_is_running") else "stopped",
         "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
         "timezone": "IST (UTC+5:30)",
         "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
-        "universe_count": state["universe_count"],
-        "total_scans_completed": state["total_scans_completed"],
-        "last_scan_time_ist": state["last_scan_time_ist"],
-        "last_scan_results_count": state["last_scan_results_count"],
-        "activated_count": state["activated_count"],
-        "pending_count": state["pending_count"],
-        "last_scan_setups": state["last_scan_setups"],
+        "universe_count": state.get("universe_count", 0),
+        "total_scans_completed": state.get("extreme_total_cycles", state.get("total_scans_completed", 0)),
+        "last_scan_time_ist": state.get("extreme_last_scan_time_ist") or state.get("last_scan_time_ist"),
+        "last_scan_results_count": state.get("extreme_active_count", 0) + state.get("extreme_pending_count", 0)
+            or state.get("last_scan_results_count", 0),
+        "activated_count": state.get("extreme_active_count", state.get("activated_count", 0)),
+        "pending_count": state.get("extreme_pending_count", state.get("pending_count", 0)),
+        "last_scan_setups": state.get("extreme_setups", state.get("last_scan_setups", [])),
     }
+
+
+@router.get("/health", summary="Health Check")
+@router.get("/api/health", summary="API Health Check")
+async def health():
+    return _legacy_status_snapshot()
 
 
 @router.get("/api/status", summary="Screener Status and Live Setups")
 async def get_status():
-    return {
-        "strategy_2_enabled": state.get("strategy_2_enabled", ENABLE_STRATEGY_2),
-        "is_running": state["extreme_is_running"],
-        "timezone": "IST",
-        "coins_whitelist": state.get("coins_whitelist", COINS_WHITELIST),
-        "universe_count": state["universe_count"],
-        "total_scans_completed": state["total_scans_completed"],
-        "last_scan_time_ist": state["last_scan_time_ist"],
-        "last_scan_results_count": state["last_scan_results_count"],
-        "activated_count": state["activated_count"],
-        "pending_count": state["pending_count"],
-        "last_scan_setups": state["last_scan_setups"],
-    }
+    snap = _legacy_status_snapshot()
+    snap["is_running"] = state["extreme_is_running"]
+    snap["timezone"] = "IST"
+    snap.pop("status", None)
+    return snap
 
 
 @router.get("/api/config", summary="Get Current Strategy Runtime Config")

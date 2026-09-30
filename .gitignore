@@ -35,6 +35,7 @@ static/charts/*.png
 !static/charts/.gitkeep
 data/
 logs/
+.pytrans/
 
 # Local Tooling & Scratch
 .cline/

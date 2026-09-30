@@ -35,6 +35,7 @@ from screener_cycle import _register_services_in_main
 
 from api.system import router as _system_router
 from api.extreme import router as _extreme_router
+from api.replay import router as _replay_router
 
 # ==============================================================================
 # FASTAPI APP DEFINITION (assembled here from the split routers)
@@ -49,6 +50,7 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(_system_router)
 app.include_router(_extreme_router)
+app.include_router(_replay_router)
 app.include_router(_ws_router)
 
 # ------------------------------------------------------------------------------

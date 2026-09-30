@@ -38,8 +38,11 @@ crypto-fvg-screener/
 ├── chart_generator.py          # High-contrast TradingView-style candlestick chart generator
 ├── telegram_client.py          # Telegram alert dispatcher & photo attachments
 ├── screener_cycle.py           # Scan-cycle orchestrator, alert dispatch, daemon loop
-├── dashboard_ws.py             # WebSocket manager + /ws/extreme-live
-├── api/                        # Routers: system.py (health/status/config), extreme.py (scan/backtest/trades)
+├── clock.py                    # Virtual clock (contextvar-based; replay backtests)
+├── replay_provider.py          # As-of historical data provider (no lookahead)
+├── replay_manager.py           # Replay run lifecycle (start/pause/resume/abort/report)
+├── dashboard_ws.py             # WebSocket manager + /ws/extreme-live + /ws/replay
+├── api/                        # Routers: system.py, extreme.py, replay.py
 ├── main.py                     # FastAPI app facade (run with: uvicorn main:app)
 ├── templates/
 │   └── index.html              # Real-time Web Dashboard interface
@@ -166,6 +169,45 @@ DATA_PROVIDER=hyperliquid            # hyperliquid | binance | ccxt
 FALLBACK_DATA_PROVIDER=binance       # Used when the primary provider fails
 ```
 
+### 5. Strategy 3 — Liquidity-Sweep FVG (`liquidity_sweep_fvg`)
+The video-model strategy (4H FVG bias → liquidity sweep → LTF FVG entry → liquidity target) runs as a second registered strategy. Validated knobs (see `strategy3_validation_report.html` and `STRATEGIES.md` §Strategy 3):
+```ini
+EXTREME_REQUIRE_SWEEP=true           # Require a fresh opposing-side pool sweep
+EXTREME_SWEEP_MAX_AGE_H=2            # Sweep must occur within this many hours before FVG formation
+EXTREME_ANCHOR_AGE_GUARD=true        # Skip 4H anchors aged 24–48h at fill (measured dead zone)
+EXTREME_GAP_BAND_EXCLUDE=0.10,0.20   # Reject LTF FVGs whose gap % falls in this band
+EXTREME_TP_MODE=LIQUIDITY            # LIQUIDITY (nearest pool ≥1.5R) or FIXED_R
+EXTREME_MIN_RR_FOR_LIQUIDITY=1.5
+EXTREME_TP_BUFFER_PCT=0.02
+EXTREME_S3_ENTRY_SESSIONS=NY_KZ      # Entry fills restricted to 13:00–16:00 UTC
+```
+Run its backtester: `python backtest_liquidity_sweep_fvg.py --symbol BTC --days 90 --ltf 5m --invalidation close`
+
+### 6. Shadow (Paper) Mode — Run S3 Alongside Strategy 2
+```ini
+EXTREME_SHADOW_STRATEGIES=liquidity_sweep_fvg   # comma-separated registry names; empty = off
+```
+When set, the daemon scans the listed strategies in the **same cycle** as the active strategy. Shadow setups/trades:
+- are tracked in the shared ledger under their own isolation scope — they **never block** the active strategy's setups on the same symbol (and vice versa);
+- appear in the dashboard **Live History** with a violet `SHADOW` badge; filter with the **Strategy** dropdown;
+- are broadcast to the dashboard WebSocket and persisted like normal trades, but **never send Telegram alerts**;
+- use the strategy's validated defaults (`strategies/strategy3_liquidity_sweep.py::default_params`), not the daemon's shared config.
+
+Per-strategy stats: `GET /api/{strategy}/status` → `ledger_summary`, or `python -c "from extreme_trade_tracker import extreme_trade_tracker as t; print(t.get_summary(strategy='liquidity_sweep_fvg'))"`. Compare shadow vs active over ~2 weeks before promoting S3 (`EXTREME_ACTIVE_STRATEGY=liquidity_sweep_fvg`).
+
+Note: removing a name from the list leaves its still-open paper trades frozen in the ledger (visible in history, no longer monitored); re-enable the name to resume tracking them.
+
+### 7. Unified Strategy Dashboard (all registered strategies)
+The dashboard has a single **strategy panel** covering every registered strategy (see `GET /api/strategies`):
+
+- **Strategy dropdown** — lists all registered strategies with the active one flagged; selecting an inactive strategy activates it via `POST /api/{strategy}/activate`.
+- **Live tab** — strategy-aware *Scan Now* (`GET /api/{strategy}/scan`), daemon controls, setups grid, 4H FVG map, live trade log (filterable by strategy), and the `/ws/extreme-live` real-time feed.
+- **Backtest tab** — two engines:
+  - *Analytic (fast)*: the strategy's vector backtest via `GET /api/{strategy}/backtest?mode=analytic` (same numbers as the CLI backtesters).
+  - *Replay (live path)*: runs the actual scan-cycle + trade-ledger execution against historical candles under a virtual clock (`POST /api/replay/start`, or `mode=replay` on the backtest route). Watchable speeds (1×–60 virtual-min/s) stream progress over `/ws/replay`: virtual time, progress bar, and a live ledger event feed; MAX speed runs to completion and renders the report. Pause/Resume/Abort are available mid-run and partial reports are kept.
+- **Strategy params** — rendered automatically from `GET /api/{strategy}/info` `default_params` (bool→checkbox, number→input, session→preset select, timeframe/target/TP-mode→select), so new strategies appear in the UI with zero dashboard changes.
+- **Variant comparison** — pin any run (either engine, any strategy), change parameters, re-run, and A/B the rows.
+
 ---
 
 ## 🚢 Production Deployment
@@ -190,7 +232,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ## 🧪 Testing
 
-Run the full offline test suite (251 tests):
+Run the full offline test suite:
 ```bash
 pytest -q
 ```
