@@ -1,5 +1,5 @@
 """
-Tests for Strategy 3 (Video FVG):
+Tests for Strategy 4 (Video FVG):
   - Engine pure functions (calc_entry_params, find_4h_fvgs, etc.)
   - Adapter registration, defaults, and method call correctness
   - Report / trade dataclass shapes

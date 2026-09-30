@@ -88,6 +88,11 @@ class ExtremeHistoricalTrade:
     htf_first_touch_timestamp: int = 0
     htf_most_recent_touch_timestamp: int = 0
     ltf_gap_pct: float = 0.0
+    # Target-exit mode (completion_target set): actual PnL/exit of the selected
+    # policy — identical to replay/live semantics. None in legacy ride mode.
+    realized_r_target: Optional[float] = None
+    exit_reason_target: Optional[str] = None
+    completion_target: Optional[str] = None
 
     @property
     def entry_time_ist(self) -> str:
@@ -140,6 +145,9 @@ class ExtremeHistoricalTrade:
             "hit_2r": self.hit_2r,
             "hit_3r": self.hit_3r,
             "exit_reason": self.exit_reason,
+            "exit_reason_target": self.exit_reason_target,
+            "realized_r": self.realized_r_target,
+            "completion_target": self.completion_target,
             "mfe_r": round(self.mfe_r, 2),
             "mae_r": round(self.mae_r, 2),
             "duration_min": self.duration_minutes,
@@ -201,6 +209,14 @@ class ExtremeBacktestReport:
     max_gap_pct: float = 0.0
     max_ltf_fvg_age_candles: int = 9999
     trades: List[ExtremeHistoricalTrade] = field(default_factory=list)
+    # Exit policy of THIS run: "target" (every entry closes at the selected
+    # completion_target — comparable with replay/live) or "ride" (legacy:
+    # rides to 3R/SL, scores 1R/2R/3R on identical entries).
+    exit_policy: str = "ride"
+    completion_target: str = ""
+    wins_target: int = 0
+    win_rate_target: float = 0.0
+    net_pnl_target: float = 0.0
 
 
 def simulate_trade_execution(
@@ -212,10 +228,16 @@ def simulate_trade_execution(
     subsequent_candles: List[Candle],
     anchor: TouchedAnchor,
     ltf_fvg: FVG,
+    completion_target: Optional[str] = None,
 ) -> ExtremeHistoricalTrade:
     """
     Simulates a trade forward candle-by-candle from the entry point until SL or TP3 is hit.
     Evaluates independent 1R, 2R, and 3R resolution.
+
+    ``completion_target`` ("1R"/"2R"/"3R") switches to target-exit mode: the
+    position closes at that target exactly like the live daemon (replay path).
+    ``None`` keeps the legacy ride-to-3R/SL model that scores all three
+    policies on identical entries.
     """
     risk_r = abs(entry_price - stop_loss)
     if risk_r <= 0:
@@ -229,6 +251,14 @@ def simulate_trade_execution(
         tp_1r = entry_price - 1.0 * risk_r
         tp_2r = entry_price - 2.0 * risk_r
         tp_3r = entry_price - 3.0 * risk_r
+
+    # Target-exit mode: which multiple closes the position (legacy mode: 3).
+    exit_mult = 3
+    if completion_target:
+        try:
+            exit_mult = max(1, min(3, int(str(completion_target).rstrip("Rr"))))
+        except (ValueError, TypeError):
+            exit_mult = 3
 
     hit_1r = False
     hit_2r = False
@@ -256,9 +286,15 @@ def simulate_trade_execution(
                 hit_1r = True
             if not hit_2r and c.high >= tp_2r:
                 hit_2r = True
-            if c.high >= tp_3r:
+            # Ride exit at 3R only in legacy mode; in target mode a candle
+            # gapping through 3R still closes at the completion target — the
+            # ledger resolves TP at the target and never tracks beyond it.
+            if exit_mult == 3 and c.high >= tp_3r:
                 hit_3r = True
                 exit_reason = "TP_3R"
+                break
+            if exit_mult < 3 and (c.high >= tp_1r if exit_mult == 1 else c.high >= tp_2r):
+                exit_reason = f"TP_{exit_mult}R"
                 break
         else:
             max_fav_price = min(max_fav_price, c.low)
@@ -274,9 +310,12 @@ def simulate_trade_execution(
                 hit_1r = True
             if not hit_2r and c.low <= tp_2r:
                 hit_2r = True
-            if c.low <= tp_3r:
+            if exit_mult == 3 and c.low <= tp_3r:
                 hit_3r = True
                 exit_reason = "TP_3R"
+                break
+            if exit_mult < 3 and (c.low <= tp_1r if exit_mult == 1 else c.low <= tp_2r):
+                exit_reason = f"TP_{exit_mult}R"
                 break
 
     # Calculate MFE & MAE
@@ -293,6 +332,13 @@ def simulate_trade_execution(
     realized_1r = 1.0 if hit_1r else -1.0
     realized_2r = 2.0 if hit_2r else -1.0
     realized_3r = 3.0 if hit_3r else -1.0
+
+    # Target-exit mode: the actual per-trade PnL of the selected policy —
+    # every resolution (TP at target, SL, TIME_EXPIRED) realizes exactly the
+    # target multiple or -1R, identical to the live ledger / replay semantics.
+    # Legacy ride mode leaves it None (scorecard columns are authoritative).
+    realized_target = ({1: realized_1r, 2: realized_2r, 3: realized_3r}[exit_mult]
+                       if completion_target else None)
 
     return ExtremeHistoricalTrade(
         symbol=symbol,
@@ -312,6 +358,9 @@ def simulate_trade_execution(
         realized_r_1r=realized_1r,
         realized_r_2r=realized_2r,
         realized_r_3r=realized_3r,
+        realized_r_target=realized_target,
+        exit_reason_target=(exit_reason if completion_target else None),
+        completion_target=str(completion_target) if completion_target else None,
         mfe_r=mfe_r,
         mae_r=mae_r,
         duration_minutes=duration_min,
@@ -348,9 +397,15 @@ async def run_extreme_backtest(
     require_momentum: bool = False,
     max_gap_pct: float = 0.0,
     max_ltf_fvg_age_candles: int = 9999,
+    completion_target: Optional[str] = None,
 ) -> ExtremeBacktestReport:
     """
     Executes a complete historical backtest over the specified number of days.
+
+    ``completion_target`` ("1R"/"2R"/"3R") selects target-exit mode: every
+    entry closes at that target exactly like the live daemon / replay path,
+    making analytic and replay directly comparable. ``None`` keeps the legacy
+    ride-to-3R/SL model that scores 1R/2R/3R policies on identical entries.
     """
     if session_config is None:
         session_config = SessionFilterConfig.from_legacy(
@@ -687,6 +742,7 @@ async def run_extreme_backtest(
                 subsequent_candles=subsequent,
                 anchor=anchor,
                 ltf_fvg=best_ltf,
+                completion_target=completion_target,
             )
             executed_trades.append(trade)
             entered_fvg_timestamps.add(best_ltf.formed_at)
@@ -704,6 +760,17 @@ async def run_extreme_backtest(
     wins_2r = sum(1 for t in executed_trades if t.hit_2r)
     wins_3r = sum(1 for t in executed_trades if t.hit_3r)
     losses = sum(1 for t in executed_trades if t.exit_reason == "STOPPED_OUT" and not t.hit_1r)
+
+    # Target-policy aggregates (target-exit mode): the actual PnL policy of
+    # the run — realized_r_target is +target on a TP hit, -1R on SL/expiry.
+    if completion_target:
+        wins_target = sum(1 for t in executed_trades if (t.realized_r_target or 0) > 0)
+        win_rate_target = (wins_target / total_trades * 100) if total_trades > 0 else 0.0
+        net_pnl_target = sum(t.realized_r_target or 0.0 for t in executed_trades)
+    else:
+        wins_target = 0
+        win_rate_target = 0.0
+        net_pnl_target = 0.0
 
     win_rate_1r = (wins_1r / total_trades * 100) if total_trades > 0 else 0.0
     win_rate_2r = (wins_2r / total_trades * 100) if total_trades > 0 else 0.0
@@ -770,6 +837,11 @@ async def run_extreme_backtest(
         avg_trade_duration_min=avg_duration,
         avg_mfe_r=avg_mfe,
         trades=executed_trades,
+        exit_policy=("target" if completion_target else "ride"),
+        completion_target=(str(completion_target) if completion_target else ""),
+        wins_target=wins_target,
+        win_rate_target=win_rate_target,
+        net_pnl_target=net_pnl_target,
     )
 
 

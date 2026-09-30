@@ -133,6 +133,10 @@ class TrackedExtremeTrade:
     # params dict at open time. Allows one ledger to serve all strategies.
     strategy: str = "extreme_fvg"
     strategy_params: Dict[str, Any] = field(default_factory=dict)
+    # Isolation scope: "" = active strategy (blocks same-symbol setups from the
+    # active strategy); a shadow-strategy name (e.g. "liquidity_sweep_fvg") =
+    # shadow paper trade that never blocks the active strategy's ledger slots.
+    isolation_scope: str = ""
 
     def __post_init__(self):
         if not self.trade_id:
@@ -151,7 +155,7 @@ class TrackedExtremeTrade:
 class ExtremeTradeTracker:
     def __init__(
         self,
-        storage_path: str = PERSISTENCE_FILE,
+        storage_path: Optional[str] = None,
         session_filter: bool = False,
         weekday_filter: bool = False,
         entry_session_filter: bool = False,
@@ -160,9 +164,25 @@ class ExtremeTradeTracker:
         entry_sessions: Optional[str] = None,
         session_config: Optional[SessionFilterConfig] = None,
     ):
-        self.storage_path = Path(storage_path)
+        # Resolve the persistence file at CALL time (not as a default-arg bound at
+        # class-definition time) so tests can patch extreme_trade_tracker.PERSISTENCE_FILE
+        # and have the patch take effect. ``storage_path=None`` explicitly DISABLES
+        # persistence (in-memory tracker); an empty string falls back to the module
+        # default so legacy positional callers keep working.
+        if storage_path is None:
+            resolved_path: Optional[str] = None
+        elif storage_path == "":
+            resolved_path = PERSISTENCE_FILE
+        else:
+            resolved_path = storage_path
+        self.storage_path = Path(resolved_path) if resolved_path else None
         self.active_trades: Dict[str, TrackedExtremeTrade] = {}
         self.history: List[TrackedExtremeTrade] = []
+        # Redis persistence kill-switch for isolated instances (openspec change
+        # `unified-strategy-ui-replay-backtest`, task 3.2): replay trackers run
+        # with False so save_async/load_async skip the shared Redis namespace
+        # entirely. Default True = live tracker behavior byte-identical.
+        self.redis_persistence_enabled = True
 
         if session_config is not None:
             self.session_config = session_config
@@ -193,6 +213,7 @@ class ExtremeTradeTracker:
     @classmethod
     def from_env(cls) -> "ExtremeTradeTracker":
         return cls(
+            # Resolved at call time so patched PERSISTENCE_FILE is honored.
             storage_path=PERSISTENCE_FILE,
             session_filter=os.getenv("EXTREME_SESSION_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
             weekday_filter=os.getenv("EXTREME_WEEKDAY_FILTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
@@ -202,9 +223,30 @@ class ExtremeTradeTracker:
             entry_sessions=os.getenv("EXTREME_ENTRY_SESSIONS", "ALL"),
         )
 
+    def _dedupe_history(self) -> int:
+        """Collapse duplicate history records sharing a trade_id, keeping the first.
+
+        Ledgers written before the re-registration guard could hold the same closed
+        trade several times (the scanner re-emitted the FVG and the copy was
+        re-resolved once per cycle). Deduping on load makes old files self-heal and
+        keeps summary stats (win rate, net R) truthful.
+        """
+        seen: Set[str] = set()
+        deduped: List[TrackedExtremeTrade] = []
+        for t in self.history:
+            if t.trade_id in seen:
+                continue
+            seen.add(t.trade_id)
+            deduped.append(t)
+        removed = len(self.history) - len(deduped)
+        if removed:
+            self.history = deduped
+            logger.warning("Deduped %d duplicate history record(s) from ledger", removed)
+        return removed
+
     def _load(self):
         try:
-            if self.storage_path.exists():
+            if self.storage_path and self.storage_path.exists():
                 with open(self.storage_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.active_trades = {
@@ -215,6 +257,7 @@ class ExtremeTradeTracker:
                     TrackedExtremeTrade.from_dict(t)
                     for t in data.get("history", [])
                 ]
+                self._dedupe_history()
                 logger.info(
                     "Loaded %d active trades and %d history records from %s",
                     len(self.active_trades),
@@ -233,7 +276,7 @@ class ExtremeTradeTracker:
         """
         try:
             from redis_client import redis_client
-            if redis_client.is_configured():
+            if self.redis_persistence_enabled and redis_client.is_configured():
                 redis_key = redis_client.get_key("extreme_trades")
                 data = await redis_client.get_json(redis_key)
                 if data and isinstance(data, dict):
@@ -245,6 +288,7 @@ class ExtremeTradeTracker:
                         TrackedExtremeTrade.from_dict(t)
                         for t in data.get("history", [])
                     ]
+                    self._dedupe_history()
                     logger.info(
                         "Restored %d active trades and %d history records from Redis ('%s')",
                         len(self.active_trades),
@@ -262,6 +306,8 @@ class ExtremeTradeTracker:
 
     def _save_local(self):
         """Saves trade state synchronously to local JSON file."""
+        if not self.storage_path:
+            return
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.storage_path, "w", encoding="utf-8") as f:
@@ -281,7 +327,7 @@ class ExtremeTradeTracker:
         self._save_local()
         try:
             from redis_client import redis_client
-            if redis_client.is_configured():
+            if self.redis_persistence_enabled and redis_client.is_configured():
                 redis_key = redis_client.get_key("extreme_trades")
                 data = {
                     "active_trades": {k: t.to_dict() for k, t in self.active_trades.items()},
@@ -325,6 +371,37 @@ class ExtremeTradeTracker:
                 return trade
         return None
 
+    def get_active_trade_for_symbol_and_scope(self, symbol: str, isolation_scope: str = "") -> Optional[TrackedExtremeTrade]:
+        """Returns the active open trade for a symbol within one isolation scope.
+
+        ``isolation_scope=""`` (the active strategy) matches only trades whose
+        ``isolation_scope == ""``, so a shadow trade can never lock a symbol
+        against the active strategy. A shadow strategy passes its own name and
+        matches only its own trades, so concurrent shadow strategies stay
+        independent too.
+        """
+        clean_sym = symbol.strip().upper()
+        for trade in self.active_trades.values():
+            if (
+                trade.symbol.strip().upper() == clean_sym
+                and trade.state == "TRADE_ACTIVE"
+                and trade.isolation_scope == isolation_scope
+            ):
+                return trade
+        return None
+
+    def get_pending_trade_for_symbol_and_scope(self, symbol: str, isolation_scope: str = "") -> Optional[TrackedExtremeTrade]:
+        """Pending-retrace variant of ``get_active_trade_for_symbol_and_scope``."""
+        clean_sym = symbol.strip().upper()
+        for trade in self.active_trades.values():
+            if (
+                trade.symbol.strip().upper() == clean_sym
+                and trade.state == "PENDING_RETRACE"
+                and trade.isolation_scope == isolation_scope
+            ):
+                return trade
+        return None
+
     def _resolve_live_session_config(
         self,
         session_config: Optional[SessionFilterConfig],
@@ -358,12 +435,19 @@ class ExtremeTradeTracker:
         now_ts: int,
         now_ist_str: str,
         events: List[Tuple[str, TrackedExtremeTrade]],
+        isolation_scope: str = "",
     ) -> Set[str]:
-        """Registers/refreshes trades from scanner emissions; returns symbols seen this cycle.
+        """Registers/refreshes trades from scanner emissions; returns scope-keys seen this cycle.
+
+        Keys are ``"<SYMBOL>|<isolation_scope>"`` so the absent-setup expiry in the
+        pending monitor only counts emissions from the trade's own scope (a shadow
+        strategy stopping emission must not expire the active strategy's pending
+        trade, and vice versa).
 
         Invariants (why this is structured the way it is):
-        - A symbol with a TRADE_ACTIVE ledger record is locked: entry/SL are immutable,
-          so later scanner emissions for it are ignored.
+        - A symbol with a TRADE_ACTIVE ledger record *in the same scope* is locked:
+          entry/SL are immutable, so later scanner emissions for it are ignored.
+          Other scopes are unaffected (shadow trades never block the active one).
         - An unfilled pending record follows the FRESHEST FVG emission in place (newer
           formed_at wins); anchor/FVG metadata is replaced without duplicate events.
         - Out-of-session fills are never ingested as active; the setup stays pending.
@@ -371,18 +455,43 @@ class ExtremeTradeTracker:
         seen_symbols: Set[str] = set()
         for s in setups:
             sym = s["symbol"].strip().upper()
+            scope_key = f"{sym}|{isolation_scope}"
             curr_px = lookup_mid(current_mids, sym, float(s.get("current_price", s["entry_price"])))
 
-            # If symbol already has an ACTIVE trade in the ledger, its entry price is LOCKED.
-            existing_active = self.get_active_trade_for_symbol(sym)
+            # If this scope already has an ACTIVE trade in the ledger, its entry
+            # price is LOCKED.
+            existing_active = self.get_active_trade_for_symbol_and_scope(sym, isolation_scope)
             if existing_active:
-                seen_symbols.add(sym)
+                seen_symbols.add(scope_key)
                 continue
 
             fvg_formed_at = s.get("target_fvg", {}).get("formed_at", 0)
             entry_px = s["entry_price"]
+            # Legacy trade_id format is preserved for the active strategy; shadow
+            # scopes get a suffix so identical setups across scopes never collide.
             trade_id = f"{sym}:{fvg_formed_at}:{entry_px:.2f}"
-            seen_symbols.add(sym)
+            if isolation_scope:
+                trade_id = f"{trade_id}:{isolation_scope}"
+            seen_symbols.add(scope_key)
+
+            # Invalidation is sticky: once this exact setup resolved to
+            # INVALIDATED, later re-emissions of the same FVG must not
+            # re-register it (the scanner only suppresses the trade while the
+            # mid price stays beyond the boundary; oscillation re-registers).
+            if self._is_invalidated(trade_id):
+                continue
+
+            # Backtest parity (resolution gate): the analytic engine marks every
+            # FVG that fills as entered (``entered_fvg_timestamps``), so the same
+            # FVG can never produce a second trade even if the scanner keeps
+            # emitting it after the position closes. Gate re-emissions of FVGs
+            # that already resolved to TP/SL the same way.
+            # NOTE: there is deliberately NO "formed before the last exit" rule
+            # here. The analytic candidate pool rescan keeps stale-but-unmitigated
+            # FVGs (formed before a previous hold) eligible; a formed-at gate
+            # over-blocks those and suppresses valid retests in live/replay.
+            if self._is_resolved(trade_id):
+                continue
 
             # Check FVG formation session/weekday filters
             dur_ms = TIMEFRAME_MS.get(s.get("ltf_timeframe", "15m"), 15 * 60 * 1000)
@@ -390,7 +499,7 @@ class ExtremeTradeTracker:
             if not session_config.is_fvg_valid(fvg_close_ts):
                 continue
 
-            existing_pending = self.get_pending_trade_for_symbol(sym)
+            existing_pending = self.get_pending_trade_for_symbol_and_scope(sym, isolation_scope)
             if existing_pending is not None and existing_pending.trade_id != trade_id:
                 # Scanner offers a different setup for a symbol with an unfilled pending
                 # record. The pending record must follow the FRESHEST emission (newer
@@ -420,6 +529,7 @@ class ExtremeTradeTracker:
                         ltf_fvg=s.get("target_fvg", {}),
                         strategy=s.get("strategy", "extreme_fvg"),
                         strategy_params=s.get("strategy_params", {}) or {},
+                        isolation_scope=isolation_scope,
                         state="PENDING_RETRACE",
                         status_detail="Waiting for Retrace (refreshed to latest emission)",
                         created_at_ist=setup_created_ist,
@@ -465,6 +575,7 @@ class ExtremeTradeTracker:
                     ltf_fvg=s.get("target_fvg", {}),
                     strategy=s.get("strategy", "extreme_fvg"),
                     strategy_params=s.get("strategy_params", {}) or {},
+                    isolation_scope=isolation_scope,
                     state="TRADE_ACTIVE" if is_active else s.get("state", "PENDING_RETRACE"),
                     status_detail=status_det,
                     created_at_ist=setup_created_ist,
@@ -617,8 +728,10 @@ class ExtremeTradeTracker:
             to_close.append((trade_id, "SETUP_INVALIDATED", trade))
             return
 
-        # Absent-setup expiry: scanner stopped emitting this symbol.
-        if trade.symbol.strip().upper() not in seen_symbols:
+        # Absent-setup expiry: this scope's scanner stopped emitting this symbol.
+        # seen_symbols holds "<SYMBOL>|<isolation_scope>" keys, so a shadow scope
+        # going quiet never expires the active strategy's pending trade.
+        if f"{trade.symbol.strip().upper()}|{trade.isolation_scope}" not in seen_symbols:
             trade.absent_cycles += 1
             if trade.absent_cycles >= PENDING_ABSENT_EXPIRY_CYCLES:
                 _close_trade(
@@ -710,16 +823,25 @@ class ExtremeTradeTracker:
         sessions: Optional[str] = None,
         entry_sessions: Optional[str] = None,
         session_config: Optional[SessionFilterConfig] = None,
+        isolation_scope: str = "",
     ) -> List[Tuple[str, TrackedExtremeTrade]]:
         """
         Ingests live scanner setups, tracks new entries, monitors open positions,
         and resolves TP / SL exits.
+
+        ``isolation_scope`` partitions the ledger: trades recorded under a scope
+        never block same-symbol setups from another scope (``""`` = the active
+        strategy; shadow strategies pass their registry name).
+
         Returns a list of event tuples: (event_type, trade)
         e.g. ("NEW_SETUP", trade), ("ENTRY_FILLED", trade), ("TP_HIT", trade), ("SL_HIT", trade)
         """
         events = []
-        now_ist_str = datetime.now(IST).strftime("%d-%b %I:%M %p IST")
-        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        # Virtual-clock aware: under replay the installed clock supplies "now";
+        # without one this is real time (behavior identical to before).
+        from clock import now_ms as _clock_now_ms
+        now_ist_str = datetime.fromtimestamp(_clock_now_ms() / 1000.0, tz=IST).strftime("%d-%b %I:%M %p IST")
+        now_ts = _clock_now_ms()
         session_config = self._resolve_live_session_config(
             session_config,
             session_filter,
@@ -730,15 +852,27 @@ class ExtremeTradeTracker:
             entry_sessions,
         )
 
-        # 1. Ingest/Update setups from scanner (register new, refresh stale pendings)
+        # 1. Ingest/Update setups from scanner (register new, refresh stale pendings).
+        # Note: ingest only registers setups for THIS scope; the monitor below
+        # manages all open trades regardless of scope.
         seen_symbols = self._ingest_scanner_setups(
             setups, current_mids, session_config, now_ts, now_ist_str, events,
+            isolation_scope=isolation_scope,
         )
 
-        # 2. Monitor all open trades: check both TRADE_ACTIVE (for TP/SL) and PENDING_RETRACE (for invalidation / breach)
+        # 2. Monitor open trades of THIS scope only: check both TRADE_ACTIVE (for TP/SL)
+        # and PENDING_RETRACE (for invalidation / breach). Scoping the monitor prevents
+        # double-processing when the daemon runs one process_live_setups call per
+        # strategy scope per cycle (e.g. absent-expiry counters would double-increment).
+        # Trade safety: fills/resolutions are candle-replay-driven and idempotent, but
+        # ownership stays explicit — each open trade is managed by exactly one scope.
         from hyperliquid_client import SYMBOL_ALIASES
         to_close = []
-        for trade_id, trade in list(self.active_trades.items()):
+        scope_trades = [
+            (tid, tr) for tid, tr in list(self.active_trades.items())
+            if tr.isolation_scope == isolation_scope
+        ]
+        for trade_id, trade in scope_trades:
             raw_sym = SYMBOL_ALIASES.get(trade.symbol.strip().upper(), trade.symbol.strip().upper())
             curr_px = lookup_mid(current_mids, trade.symbol, trade.entry_price)
             risk_r = trade.risk_r if trade.risk_r > 0 else (trade.entry_price * 0.001)
@@ -762,15 +896,53 @@ class ExtremeTradeTracker:
             )
 
 
-        # 3. Archive resolved trades to history
+        # 3. Archive resolved trades to history. Duplicate-suppression key:
+        # (trade_id, state, closed_timestamp) — the scanner keeps re-emitting a
+        # still-unmitigated FVG after its trade closed, and each re-registered
+        # lifecycle replays the same recent candles and re-resolves to the exact
+        # same closure, appending one identical history row per cycle (33
+        # duplicate rows observed). Identical closures are dropped; a genuinely
+        # new lifecycle (different outcome or later close) still archives.
+        archived_keys = {(t.trade_id, t.state, t.closed_timestamp) for t in self.history}
         for trade_id, evt_type, trade in to_close:
-            self.history.insert(0, trade)
             del self.active_trades[trade_id]
+            closure_key = (trade.trade_id, trade.state, trade.closed_timestamp)
+            if closure_key in archived_keys:
+                logger.warning(
+                    "Suppressed duplicate archival for %s (%s at %s already in history)",
+                    trade_id, trade.state, trade.closed_timestamp,
+                )
+                continue
+            archived_keys.add(closure_key)
+            self.history.insert(0, trade)
             events.append((evt_type, trade))
 
         self._save()
         return events
 
+    def _is_invalidated(self, trade_id: str) -> bool:
+        """True if this trade_id already resolved to INVALIDATED.
+
+        Invalidation is single-shot: the live-mid anchor/SL check only sees the
+        price at cycle time, so a pending hovering at the 4H boundary can flip
+        to INVALIDATED on one cycle, get re-emitted by the scanner, and flip
+        again — archiving one row per flip (3 rows for one FVG observed).
+        """
+        return any(t.trade_id == trade_id and t.state == "INVALIDATED" for t in self.history)
+
+    def _is_resolved(self, trade_id: str) -> bool:
+        """True if this trade_id already resolved to COMPLETED_TP or STOPPED_OUT.
+
+        Mirrors the analytic engine's ``entered_fvg_timestamps``: an FVG that
+        filled and resolved is permanently done — the scanner may keep emitting
+        it while it is still technically unmitigated, but re-registering it
+        would double-count the same setup (ledger rows showed TP-then-re-entry
+        on the identical FVG).
+        """
+        return any(
+            t.trade_id == trade_id and t.state in ("COMPLETED_TP", "STOPPED_OUT")
+            for t in self.history
+        )
     def get_summary(self, strategy: Optional[str] = None) -> Dict[str, Any]:
         """Calculates live performance summary statistics.
         When ``strategy`` is given, aggregates only trades with that strategy name.

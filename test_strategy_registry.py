@@ -100,3 +100,69 @@ def test_register_rejects_duplicate_name():
             async def backtest(self, symbol, days, provider, params):
                 return {}
     assert "extreme_fvg" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Strategy 3 (liquidity_sweep_fvg) registration & defaults
+# ---------------------------------------------------------------------------
+
+def test_list_strategy_names_contains_liquidity_sweep_fvg():
+    names = list_strategy_names()
+    assert "liquidity_sweep_fvg" in names
+
+
+def test_registry_snapshot_has_liquidity_sweep_display_name():
+    snap = registry_snapshot()
+    assert snap.get("liquidity_sweep_fvg") == "Liquidity-Sweep FVG"
+
+
+def test_get_strategy_returns_strategy3_instance():
+    strat = get_strategy("liquidity_sweep_fvg")
+    assert strat is not None
+    assert strat.name == "liquidity_sweep_fvg"
+    assert strat.interface_version == 1
+
+
+def test_strategy3_defaults_match_validated_config():
+    strat = get_strategy("liquidity_sweep_fvg")
+    params = strat.resolve_params({})
+    # Gates ON per strategy3_validation_report.html
+    assert params["require_sweep"] is True
+    assert params["sweep_max_age_h"] == 2.0
+    assert params["anchor_age_guard"] is True
+    assert params["gap_band_exclude"] == "0.10,0.20"
+    assert params["entry_sessions"] == "NY_KZ"
+    assert params["tp_mode"] == "LIQUIDITY"
+    assert params["min_rr_for_liquidity"] == 1.5
+    assert params["fallback_target_r"] == 2.0
+
+
+def test_strategy3_runtime_overrides_win():
+    strat = get_strategy("liquidity_sweep_fvg")
+    params = strat.resolve_params({"tp_mode": "FIXED_R", "require_sweep": False})
+    assert params["tp_mode"] == "FIXED_R"
+    assert params["require_sweep"] is False
+    # Untouched defaults survive
+    assert params["sweep_max_age_h"] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4 (video_fvg) registration & defaults
+# ---------------------------------------------------------------------------
+
+def test_list_strategy_names_contains_video_fvg():
+    names = list_strategy_names()
+    assert "video_fvg" in names
+
+
+def test_registry_snapshot_has_video_fvg_display_name():
+    snap = registry_snapshot()
+    assert snap.get("video_fvg") == "Video FVG (4H Anchor)"
+
+
+def test_get_strategy_returns_strategy4_instance():
+    strat = get_strategy("video_fvg")
+    assert strat is not None
+    assert strat.name == "video_fvg"
+    assert strat.interface_version == 1
+

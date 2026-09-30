@@ -1,10 +1,10 @@
 """
-Strategy 3 adapter — wraps the Video FVG engine behind ``BaseStrategy``.
+Strategy 4 adapter — wraps the Video FVG engine behind ``BaseStrategy``.
 
-Thin, non-invasive adapter mirroring ``Strategy2Extreme``: it translates between
-the uniform ``BaseStrategy`` interface and the standalone ``strategy_video_fvg``
-engine (and ``backtest_video_fvg``). Engine modules are imported at call time (not
-import time) so this module stays import-safe for unit tests that patch the engine.
+Thin, non-invasive adapter mirroring ``Strategy2Extreme`` and ``Strategy3LiquiditySweepFVG``:
+it translates between the uniform ``BaseStrategy`` interface and the standalone
+``strategy_video_fvg`` engine (and ``backtest_video_fvg``). Engine modules are imported
+at call time (not import time) so this module stays import-safe for unit tests that patch the engine.
 
 Registry name: ``video_fvg`` — the strategy-parameterized API routes
 (``/api/video_fvg/backtest``, ``/api/video_fvg/status``, ``/api/video_fvg/info``)
@@ -36,15 +36,17 @@ def _build_session_config(params: Dict[str, Any]) -> "SessionFilterConfig":
 
 
 @register
-class Strategy3VideoFVG(BaseStrategy):
+class Strategy4VideoFVG(BaseStrategy):
     """Adapter for the ``get_video_setup_for_symbol`` engine.
 
     Registry name: ``video_fvg``
     Display name:   ``Video FVG (4H Anchor)``
+    Description:    ``4H FVG Bias + HTF Respect Confirmation + First LTF FVG Entry + 3R Target``
     """
 
     name = "video_fvg"
     display_name = "Video FVG (4H Anchor)"
+    description = "4H FVG Bias + HTF Respect Confirmation + First LTF FVG Entry + 3R Target"
 
     # Declarative defaults — mirror the Video FVG production defaults in the
     # design doc: 5m LTF, 0.03% min gap, 50% HTF confirmation body, 3R target.

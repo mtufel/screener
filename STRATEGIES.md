@@ -21,8 +21,21 @@ This document provides complete architectural, mathematical, and algorithmic spe
    - [Step 4: Extreme Ranking & Selection](#step-4-extreme-ranking--selection)
    - [Step 5: Exact Execution Parameters (Entry, SL, Targets)](#step-5-exact-execution-parameters-entry-sl-targets)
    - [Step 6: Immutable Active Trade Ledger & Lifecycle State Machine](#step-6-immutable-active-trade-ledger--lifecycle-state-machine)
-4. [Backtesting Engines & Validation](#-backtesting-engines--validation)
-5. [System Architecture & Resilience](#-system-architecture--resilience)
+4. [Strategy 3: 🌊 Liquidity-Sweep FVG Strategy](#-strategy-3--liquidity-sweep-fvg-strategy)
+   - [Model & Registry Identity](#strategy-3-model--registry-identity)
+   - [Liquidity Module (liquidity.py)](#liquidity-module-liquiditypy)
+   - [Gating Pipeline](#strategy-3-gating-pipeline)
+   - [Liquidity-First Take Profit](#liquidity-first-take-profit)
+   - [Validation Results](#strategy-3-validation-results)
+5. [Strategy 4: 🎯 Video FVG Strategy (4H Anchor)](#-strategy-4--video-fvg-strategy-4h-anchor)
+   - [Model & Registry Identity](#strategy-4-model--registry-identity)
+   - [Step 1: 4H FVG Directional Anchor](#step-1-4h-fvg-directional-anchor)
+   - [Step 2: HTF-Respect Confirmation](#step-2-htf-respect-confirmation)
+   - [Step 3: First LTF FVG Entry Trigger](#step-3-first-ltf-fvg-entry-trigger)
+   - [Step 4: Execution Parameters (Entry, SL, 3R Target)](#step-4-execution-parameters-entry-sl-3r-target)
+   - [Comparison of Strategies 2, 3, and 4](#-comparison-of-strategies-2-3-and-4)
+6. [Backtesting Engines & Validation](#-backtesting-engines--validation)
+7. [System Architecture & Resilience](#-system-architecture--resilience)
 
 ---
 
@@ -180,6 +193,134 @@ From all valid, unmitigated LTF FVGs formed post-touch:
   * Evaluates post-entry closed candle extremes (`candle.high` and `candle.low` where `timestamp >= entry_timestamp`).
   * If `candle.high >= target_tp` (Bullish) or `candle.low <= target_tp` (Bearish) $\rightarrow$ `COMPLETED_TP` ($+2.0R$), moves to history, and frees the symbol for the next setup.
   * If `candle.low <= stop_loss` (Bullish) or `candle.high >= stop_loss` (Bearish) $\rightarrow$ `STOPPED_OUT` ($-1.0R$).
+
+---
+
+## 🌊 Strategy 3: Liquidity-Sweep FVG Strategy
+
+### Strategy 3 Model & Registry Identity
+
+Implements the reference video model ("Every Trader Should Know This 4H FVG Strategy"): **4H FVG for bias → liquidity sweep → LTF FVG entry → target opposing liquidity**. Registered in the pluggable framework (see `strategies/`) as:
+
+* **Registry name**: `liquidity_sweep_fvg` (adapter `strategies/strategy3_liquidity_sweep.py`)
+* **Engine**: `strategy_liquidity_sweep_fvg.py` · **Backtester**: `backtest_liquidity_sweep_fvg.py`
+* Reuses Strategy 2's proven 4H machinery by import (cache, touch anchors, extreme selection); Strategy 2 files are untouched and both strategies remain selectable by name.
+
+### Liquidity Module (liquidity.py)
+
+Pure-function module (style of `session_filter.py`):
+
+* **Swings**: k=2 fractal swing highs/lows; a swing contributes to pools only once its confirmation bar (k bars later) has opened — no lookahead.
+* **Liquidity pools** (`LiquidityPool`): leader-clustered swing extremes within 0.05% of price → `EQUAL_HIGHS`/`EQUAL_LOWS` (≥2 touches) or `MINOR`; plus prior UTC day high/low (`PDH`/`PDL`).
+* **Sweep detection** (`detect_sweep`): wick trades through the level AND candle closes back on the original side (stop-hunt signature).
+* **Freshness** (`has_fresh_sweep`): an opposing-side pool swept by a candle starting within `[to_ts − max_age, to_ts)`.
+* `build_pool_templates` + `pools_from_templates`: one full-series precompute, O(#pools) as-of reconstruction; `find_liquidity_pools` wraps both so live and backtest share a single code path.
+
+### Strategy 3 Gating Pipeline
+
+Candidates from the S2-style post-touch scan must pass, in order (all measured on 90-day backtests, see `strategy3_validation_report.html`):
+
+1. **Gap-band exclusion** (`gap_band_exclude="0.10,0.20"`): reject LTF FVGs whose gap % falls inside the measured losing band.
+2. **Fresh-sweep precondition** (`require_sweep=true`, `sweep_max_age_h=2`): an opposing-side structural pool must be swept within 2h before LTF FVG formation (the video's *sweep → FVG → entry*).
+3. **Entry session** (`entry_sessions="NY_KZ"`): fills only in the NY killzone 13:00–16:00 UTC (weekday-only by default).
+4. **Anchor-age guard** (`anchor_age_guard=true`): skip setups whose 4H anchor age at fill ∈ [24h, 48h) — the measured dead zone (2R WR 20% BTC / 11.8% ETH there).
+
+Survivors are ranked with S2's extreme rule (deepest for bullish, highest for bearish).
+
+### Liquidity-First Take Profit
+
+With `tp_mode="LIQUIDITY"` (default): TP = nearest opposing pool at least `min_rr_for_liquidity` (1.5) R beyond entry, buffered `buffer_pct` (0.02%) in front of the level; falls back to `fallback_target_r` (2R) when no qualifying pool exists. Realized R = distance-to-TP / risk; `tp_mode` and the pool are recorded per trade.
+
+### Strategy 3 Validation Results
+
+90-day, 5m CLOSE, BTC/ETH/SOL (full tables in `strategy3_validation_report.html`):
+
+| Metric | S2 baseline | S3 all gates ON |
+|---|---|---|
+| BTC win rate / net / PF / DD | 37.3% / +10R / 1.72 / −17R | **68.8% / +11.9R / 3.38 / −1R** (16 trades; 21 w/ gap band off) |
+| ETH | 34.7% / +4R | **50.0% / +14.3R / 1.65 / −4R** |
+| SOL | 32.1% / −3R | **52.0% / +17.5R / 1.73 / −5R** |
+
+Per-trade expectancy improves ~3–6×; drawdown drops 3–17×. Live stays on `extreme_fvg` until a shadow run of `liquidity_sweep_fvg` confirms parity.
+
+### Strategy 3 Shadow (Paper) Mode
+
+Set `EXTREME_SHADOW_STRATEGIES=liquidity_sweep_fvg` to run S3 **alongside** the active strategy in the same daemon cycle — no second process needed. Mechanics (see `test_shadow_strategies.py`):
+
+* **Isolation scope**: the ledger partitions trades by scope (`""` = active strategy, registry name = shadow). Active/pending checks are scope-aware, so a shadow trade on BTC never suppresses the active strategy's BTC scan, and the absent-setup expiry counter only sees its own scope's emissions. Shadow trade IDs carry a `:<strategy>` suffix to avoid collisions.
+* **Params**: shadow strategies resolve their own `default_params` (S3's validated gates: NY_KZ entry, sweep ≤2h, gap-band, anchor-age guard, LIQUIDITY TP) — shared daemon config (ltf/target/min_gap) applies only to the active strategy.
+* **Silence**: shadow lifecycle events broadcast to the dashboard and persist to Redis/disk, but never reach Telegram; the dashboard's Live History tags them `SHADOW` with a per-strategy filter.
+* **Promotion**: after ~2 weeks, compare `get_summary(strategy=...)` win rate / net R / drawdown vs the S2 live ledger, then promote via `EXTREME_ACTIVE_STRATEGY=liquidity_sweep_fvg` (and clear `EXTREME_SHADOW_STRATEGIES`).
+
+Adapter note: the S3 engine returns setup **dicts**; `strategies/strategy3_liquidity_sweep.py` normalizes them into the attribute view the daemon payload builder expects (adds `state`, `risk_pct`, `tp_1r/2r/3r`, `entry_timestamp`).
+
+---
+
+## 🎯 Strategy 4: Video FVG Strategy (4H Anchor)
+
+### Strategy 4 Model & Registry Identity
+
+Implements the strict multi-timeframe FVG model where higher-timeframe respect must be confirmed before entering on the first subsequent LTF FVG:
+
+* **Registry name**: `video_fvg` (adapter `strategies/strategy4_video_fvg.py`)
+* **Display name**: `Video FVG (4H Anchor)`
+* **Description**: `4H FVG Bias + HTF Respect Confirmation + First LTF FVG Entry + 3R Target`
+* **Engine**: `strategy_video_fvg.py` · **Backtester**: `backtest_video_fvg.py`
+* **Interface version**: `1`
+* **Default parameters**:
+  * `ltf_timeframe`: `"5m"`
+  * `min_gap_pct`: `0.03`
+  * `completion_target`: `"3R"`
+  * `htf_confirm_body_pct`: `0.5` (50% body-to-range ratio for HTF respect)
+  * `session_filter`: `False` (optional session gating at LTF formation)
+  * `weekday_filter`: `False`
+  * `sessions`: `"ALL"`
+
+### Step 1: 4H FVG Directional Anchor
+* **Anchor Identification**: Selects the **most recently closed 4H FVG** that has not been completely invalidated (unlike S2, which ranks by most-recent-touch, S4 prioritizes the newest formed closed 4H macro imbalance).
+* **Bias Direction**:
+  * Bullish 4H FVG $\rightarrow$ Bullish bias (look for longs only).
+  * Bearish 4H FVG $\rightarrow$ Bearish bias (look for shorts only).
+
+### Step 2: HTF-Respect Confirmation
+* Price must retrace and touch the 4H FVG zone.
+* The HTF candle touching the zone (or a subsequent candle closing in the zone) must exhibit **strong directional respect**:
+  $$\text{Body Ratio} = \frac{|\text{close} - \text{open}|}{\text{high} - \text{low}} \ge \text{htf\_confirm\_body\_pct} \quad (0.50)$$
+* Bullish respect requires a green close (`close > open`); Bearish respect requires a red close (`close < open`).
+* The close timestamp of this confirming candle establishes `htf_confirm_timestamp`. No LTF FVG formed prior to this timestamp is eligible.
+
+### Step 3: First LTF FVG Entry Trigger
+* Once HTF respect is confirmed, the engine scans lower timeframe candles (`5m` default) strictly formed **after** the confirmation close.
+* **First Qualifying FVG**: Selects the **first** LTF FVG in the bias direction that meets `min_gap_pct >= 0.03%`.
+* Earlier or stale FVGs are ignored; only the fresh impulse following HTF confirmation is traded.
+
+### Step 4: Execution Parameters (Entry, SL, 3R Target)
+* **Entry Price**:
+  * **Bullish**: Outer boundary of LTF FVG (`ltf_fvg.bottom`).
+  * **Bearish**: Outer boundary of LTF FVG (`ltf_fvg.top`).
+* **Stop Loss (SL)**:
+  * Extreme wick across the 3 candles `[c1, c2, c3]` of the LTF FVG:
+  * **Bullish**: $\text{SL} = \min(c_1.\text{low}, c_2.\text{low}, c_3.\text{low})$
+  * **Bearish**: $\text{SL} = \max(c_1.\text{high}, c_2.\text{high}, c_3.\text{high})$
+* **Risk ($R$)**:
+  $$R = |\text{Entry Price} - \text{Stop Loss}|$$
+* **Targets**:
+  * **Target 1R**: $\text{Entry} \pm 1.0 \times R$ (telemetry)
+  * **Target 2R**: $\text{Entry} \pm 2.0 \times R$ (telemetry)
+  * **Primary Target 3R ($\star$)**: $\text{Entry} \pm 3.0 \times R$ (completion target)
+
+---
+
+## 📊 Comparison of Strategies 2, 3, and 4
+
+| Feature | Strategy 2 (`extreme_fvg`) | Strategy 3 (`liquidity_sweep_fvg`) | Strategy 4 (`video_fvg`) |
+|---|---|---|---|
+| **Macro Anchor** | 4H FVG with most recent touch | 4H FVG with fresh opposing liquidity sweep | Most recent closed 4H FVG |
+| **Confirmation** | Touch-based anchor activation | 2h fresh liquidity pool sweep | HTF candle body respect ($\ge 50\%$) |
+| **LTF Selection** | Extreme ranking (deepest/highest) | Deepest post-touch passing sweep & gap band | First formed LTF FVG post-HTF confirm |
+| **Gating Filters** | Bias filters (dist, momentum, max gap) | NY KZ, gap-band exclusion, anchor-age guard | HTF body %, min gap %, optional sessions |
+| **Take Profit** | 2R default (1R/2R/3R matrix) | Opposing liquidity pool ($\ge 1.5R$) or 2R | 3R target |
+| **Daemon Role** | Active production baseline | Shadow validation / Liquidity target | Multi-timeframe trend continuation |
 
 ---
 

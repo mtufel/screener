@@ -52,6 +52,7 @@ class Strategy2Extreme(BaseStrategy):
 
     name = "extreme_fvg"
     display_name = "Extreme LTF FVG"
+    description = "4H Touched Anchor + Extreme LTF Outer Boundary + State Machine"
 
     # Declarative defaults — mirror the current production env defaults so
     # runtime reconciliation with an empty runtime_overrides dict yields exactly
@@ -129,6 +130,17 @@ class Strategy2Extreme(BaseStrategy):
 
         session_config = _build_session_config(params)
 
+        # completion_target drives the EXIT POLICY: "1R"/"2R"/"3R" closes every
+        # entry at that target exactly like the live daemon / replay path (so
+        # analytic and replay are directly comparable); "RIDE" (or None) keeps
+        # the legacy ride-to-3R/SL model that scores 1R/2R/3R on identical
+        # entries with longer holds and fewer trades.
+        raw_target = params.get("completion_target")
+        completion_target = (
+            None if str(raw_target).strip().upper() in ("RIDE", "NONE", "ALL", "")
+            else raw_target
+        )
+
         return await run_extreme_backtest(
             symbol=symbol,
             days=days,
@@ -147,4 +159,5 @@ class Strategy2Extreme(BaseStrategy):
             require_momentum=params.get("require_momentum", False),
             max_gap_pct=params.get("max_gap_pct", 0.0),
             max_ltf_fvg_age_candles=params.get("max_ltf_fvg_age_candles", 9999),
+            completion_target=completion_target,
         )
