@@ -204,7 +204,9 @@ From all valid, unmitigated LTF FVGs formed post-touch:
 
 Implements the reference video model ("Every Trader Should Know This 4H FVG Strategy"): **4H FVG for bias → liquidity sweep → LTF FVG entry → target opposing liquidity**. Registered in the pluggable framework (see `strategies/`) as:
 
-> **⚠️ Known divergences from the source** — see [`docs/source-videos.md`](docs/source-videos.md) §4. F-01 (entry-session gate probed FVG *formation* time instead of *fill* time) and F-10 (backtester ignored `tp_mode`) are **fixed**. Still open: **F-02** — the sweep is required but its stop-loss benefit is never used.
+> **⚠️ Known divergences from the source** — see [`docs/source-videos.md`](docs/source-videos.md) §4. F-01 (entry-session gate probed FVG *formation* time), F-06 (sweep pinned to 5m candles) and F-10 (backtester ignored `tp_mode`) are **fixed**. The gate pipeline is now a single shared implementation (`evaluate_formation_gates` / `evaluate_fill_gates` / `select_extreme_gated_fvg`) used by both live and backtest, so the two can no longer drift.
+>
+> Still open: **F-02** — the sweep is required but its stop-loss benefit is never used, which makes the gate measurably inert (F-11).
 
 * **Registry name**: `liquidity_sweep_fvg` (adapter `strategies/strategy3_liquidity_sweep.py`)
 * **Engine**: `strategy_liquidity_sweep_fvg.py` · **Backtester**: `backtest_liquidity_sweep_fvg.py`

@@ -210,13 +210,45 @@ Measured, and it is genuinely symbol-dependent (60d, 5m, close invalidation):
 So a per-symbol session setting is warranted rather than one global value. Asia in particular is
 never tested by the current defaults.
 
-### F-06 · MED · Sweep is always measured on 5m candles
+### F-06 · FIXED · Sweep was always measured on 5m candles
 
-`strategy_liquidity_sweep_fvg.py:109` hardcodes `timeframe="5m"` when building liquidity pools for
-the sweep gate, regardless of the configured `ltf_timeframe`. Video 2 is explicit that the sweep
-must be detected *"on your entry time frame… That's the whole point."*
+`check_fresh_sweep()` hardcoded `timeframe="5m"` when building the liquidity map for the sweep gate,
+ignoring the configured `ltf_timeframe`. Video 2 is explicit that the sweep must be detected
+*"on your entry time frame… That's the whole point."*
 
-Any run with `ltf_timeframe != "5m"` silently gates on the wrong series.
+Any run on `ltf_timeframe != "5m"` silently gated on the wrong candle series.
+
+**Fixed** in `refactor/s3-single-gate-pipeline`: the function now takes `ltf_timeframe` and both
+callers pass their real LTF. Defaults to `"5m"`, so 5m behaviour is unchanged. Non-5m Strategy 3
+reports should be regenerated.
+
+### F-12 · FIXED (partially) · Lookahead in the backtester's pool clustering
+
+Not from the source material — found while consolidating the duplicated gate pipeline.
+
+`build_pool_templates()` derives its cluster tolerance from the mean close of the **last 50 bars it
+is handed** (`liquidity.py:239`). The backtester's private `pools_asof()` helper built templates
+from the **entire** series and then filtered as-of, so the tolerance was computed from bars *after*
+the as-of point.
+
+Measured on BTC 5m over 60 days, at an as-of point 45 days before the window end:
+
+| | Tolerance | Swing clusters |
+|---|---|---|
+| Old (`pools_asof`, full series) | 41.93 | 619 |
+| Correct (as-of view) | 31.83 | **150** |
+
+A tolerance 31.7% too wide merges distinct swing extremes into fewer, broader pools, which changes
+which qualify as `EQUAL_HIGHS`/`EQUAL_LOWS` and therefore which sweeps the gate accepts —
+`NO_FRESH_SWEEP` rejects moved 102 → 73 on BTC.
+
+**Fixed for the gate path** by consolidating on `find_liquidity_pools()`, which truncates candles to
+the as-of time before building templates. `test_pool_construction_has_no_lookahead` pins the
+invariant: appending later bars must not change an as-of pool view.
+
+**Still open:** `pools_asof()` remains in use for take-profit pool resolution
+(`backtest_liquidity_sweep_fvg.py:454`) and carries the same exposure. It should be retired in
+favour of `find_liquidity_pools(..., now_ms=fill_ts)`.
 
 ### F-07 · INFO · `completion_target` default of `2R` deviates from the source, deliberately
 
@@ -317,16 +349,16 @@ Per `CLAUDE.md`, each of these needs its own OpenSpec change off `develop`.
 |---|---|---|
 | — | ~~Backtester honours `tp_mode`~~ — **done** (`fix/s3-backtest-tp-mode-param`) | F-10 |
 | — | ~~Entry-session gate probes fill time~~ — **done** (`fix/s3-entry-session-gate-probe`) | F-01 |
-| 11 | Consolidate the duplicated S3 gate pipeline onto one shared implementation | F-01 root cause |
+| — | ~~Single shared gate pipeline~~ — **done** (`refactor-s3-single-gate-pipeline`) | F-01 root cause, F-06 |
+| 11 | Retire `pools_asof()` for take-profit pools (same lookahead exposure) | F-12 |
 | 2 | Stop loss at the swept pool level for `liquidity_sweep_fvg`; recompute R/targets | F-02 |
 | 3 | Add fee + slippage parameters to both backtesters and the ledger | F-09 |
 | 4 | Select the *first* post-touch LTF FVG; keep extreme rule for the 4H anchor | F-03 |
 | 5 | Respect/displacement filter on the 4H zone | F-04 |
 | 6 | Per-symbol session defaults; add Asia coverage | F-05 |
-| 7 | Thread `ltf_timeframe` through the sweep-pool builder | F-06 |
-| 8 | Out-of-sample re-validation of gap-band and anchor-age windows | F-08 |
-| 9 | Decide whether the sweep gate stays, given it is measurably inert | F-11 |
-| 10 | Per-symbol `tp_mode` (BTC prefers FIXED_R, ETH/SOL prefer LIQUIDITY) | F-10 |
+| 7 | Out-of-sample re-validation of gap-band and anchor-age windows | F-08 |
+| 8 | Decide whether the sweep gate stays, given it is measurably inert | F-11 |
+| 9 | Per-symbol `tp_mode` (BTC prefers FIXED_R, ETH/SOL prefer LIQUIDITY) | F-10 |
 
 ---
 
