@@ -210,6 +210,14 @@ Measured, and it is genuinely symbol-dependent (60d, 5m, close invalidation):
 So a per-symbol session setting is warranted rather than one global value. Asia in particular is
 never tested by the current defaults.
 
+> **Relationship to `strategy_research_findings.md` (on `develop`).** That study measures the
+> session effect **aggregated across symbols** — NY +45.0R vs non-NY −27.0R over 60d — and
+> concludes session bias is the single biggest lever. The table above **qualifies** that for
+> per-symbol application: the aggregate is carried by ETH and SOL, while BTC is *destroyed* by
+> every session filter (PF 2.64 → 1.25 for `NY`). A single global `EXTREME_SESSION_FILTER_ENABLED`
+> would therefore trade BTC's edge for ETH's. The two studies are consistent — session timing
+> matters — but the aggregate hides the sign flip on BTC.
+
 ### F-06 · FIXED · Sweep was always measured on 5m candles
 
 `check_fresh_sweep()` hardcoded `timeframe="5m"` when building the liquidity map for the sweep gate,
