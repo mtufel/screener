@@ -39,7 +39,7 @@ from liquidity import (
     liquidity_take_profit,
     parse_gap_band,
 )
-from session_filter import SessionFilterConfig
+from session_filter import SessionFilterConfig, is_weekday
 from strategy_extreme_fvg import (
     FVG,
     TouchedAnchor,
@@ -94,6 +94,7 @@ def check_fresh_sweep(
     fvg_formed_close_ts_ms: int,
     sweep_max_age_ms: float,
     tol_pct: float = 0.05,
+    ltf_timeframe: str = "5m",
     swings: Optional[List[Any]] = None,
     timestamps: Optional[List[int]] = None,
 ) -> SweepGateResult:
@@ -103,10 +104,14 @@ def check_fresh_sweep(
     Builds the liquidity map as of the FVG formation close (no lookahead:
     swings are filtered to those confirmable by that timestamp), then requires
     an opposing-side pool swept within `sweep_max_age_ms` before formation.
+
+    `ltf_timeframe` selects the series the pools are built from. The source
+    requires the sweep to be detected on the *entry* timeframe, so callers must
+    pass their real LTF rather than relying on the default.
     """
     pools = find_liquidity_pools(
         candles_ltf,
-        timeframe="5m",
+        timeframe=ltf_timeframe,
         tol_pct=tol_pct,
         now_ms=fvg_formed_close_ts_ms,
         swings=swings,
@@ -125,6 +130,127 @@ def check_fresh_sweep(
     if not swept:
         return SweepGateResult(passed=False, reason="NO_FRESH_SWEEP")
     return SweepGateResult(passed=True, reason="OK", pool=pool, sweep_ts=sweep_ts)
+
+
+# ---------------------------------------------------------------------------
+# Shared Strategy 3 gate pipeline — single source of truth
+# ---------------------------------------------------------------------------
+# Both the live scanner (select_gated_ltf_fvg) and the backtester
+# (backtest_liquidity_sweep_fvg) evaluate these functions, so the two paths
+# cannot drift apart. The pipeline duplicated once already caused F-01 (the
+# entry session gated on formation time in live, fill time in backtest) and
+# F-10 (tp_mode honoured live, inert in backtest).
+#
+# The gates split by WHEN they become decidable:
+#
+#   FORMATION phase — settled the moment the FVG closes, per candidate:
+#       gap band, fresh sweep                      -> evaluate_formation_gates()
+#   FILL phase — settled only once a fill timestamp exists:
+#       entry session, entry weekday, anchor age   -> evaluate_fill_gates()
+#
+# The *ordering* difference between callers is intentional and is the one
+# legitimate divergence: a backtest must simulate the fill before the fill
+# gates are decidable, so it selects the extreme candidate first and gates
+# afterwards. Live cannot know a future fill, so it gates what it can and
+# defers the rest to extreme_trade_tracker, which enforces the window at fill.
+
+GATE_GAP_BAND = "GAP_BAND"
+GATE_NO_FRESH_SWEEP = "NO_FRESH_SWEEP"
+GATE_ENTRY_SESSION = "ENTRY_SESSION"
+GATE_ENTRY_WEEKDAY = "ENTRY_WEEKDAY"
+GATE_ANCHOR_AGE = "ANCHOR_AGE"
+
+DEFAULT_SWEEP_MAX_AGE_MS = DEFAULT_SWEEP_MAX_AGE_H * 3_600_000.0
+
+
+def evaluate_formation_gates(
+    fvg: FVG,
+    *,
+    gap_band: Optional[Tuple[float, float]] = None,
+    require_sweep: bool = False,
+    anchor_first_touch_ts: Optional[int] = None,
+    candles_ltf: Optional[List[Candle]] = None,
+    sweep_max_age_ms: float = DEFAULT_SWEEP_MAX_AGE_MS,
+    ltf_timeframe: str = "5m",
+    tol_pct: float = 0.05,
+    swings: Optional[List[Any]] = None,
+    timestamps: Optional[List[int]] = None,
+) -> SweepGateResult:
+    """
+    Phase 1 — the gates that are decidable at FVG formation.
+
+    Runs the gap-band exclusion first, then the fresh-sweep precondition. Both
+    only depend on state at `fvg.close_timestamp`, so live and backtest can
+    evaluate them identically and before any selection happens.
+
+    Returns `SweepGateResult`; on a pass `pool`/`sweep_ts` carry the swept
+    liquidity metadata the caller needs for setup enrichment.
+    """
+    if not check_gap_band(fvg, gap_band):
+        return SweepGateResult(passed=False, reason=GATE_GAP_BAND)
+    if not require_sweep:
+        return SweepGateResult(passed=True, reason="OK")
+    if candles_ltf is None or anchor_first_touch_ts is None:
+        raise ValueError("evaluate_formation_gates: require_sweep needs candles_ltf and anchor_first_touch_ts")
+    return check_fresh_sweep(
+        candles_ltf=candles_ltf,
+        direction=fvg.direction,
+        from_ts_ms=anchor_first_touch_ts,
+        fvg_formed_close_ts_ms=fvg.close_timestamp,
+        sweep_max_age_ms=sweep_max_age_ms,
+        tol_pct=tol_pct,
+        ltf_timeframe=ltf_timeframe,
+        swings=swings,
+        timestamps=timestamps,
+    )
+
+
+def evaluate_fill_gates(
+    fill_ts_ms: int,
+    anchor: TouchedAnchor,
+    *,
+    entry_session_config: Optional[SessionFilterConfig] = None,
+    anchor_age_dead_zone: Optional[Tuple[float, float]] = None,
+) -> Optional[str]:
+    """
+    Phase 2 — the gates that require a fill timestamp.
+
+    Evaluates the entry session, the entry weekday and the anchor-age dead zone
+    at the moment of the fill, per the source: the FVG may form outside the
+    window, but the entry must land inside it.
+
+    `entry_session_config.is_entry_valid()` is the single decision function — it
+    is *not* reimplemented here; this only classifies an existing failure so the
+    reject counter can name it.
+
+    Returns the reject key, or `None` when the fill is allowed.
+    """
+    if entry_session_config is not None and not entry_session_config.is_entry_valid(fill_ts_ms):
+        if entry_session_config.entry_weekdays_only and not is_weekday(fill_ts_ms):
+            return GATE_ENTRY_WEEKDAY
+        return GATE_ENTRY_SESSION
+    if anchor_age_dead_zone is not None and not check_anchor_age(anchor, fill_ts_ms, anchor_age_dead_zone):
+        return GATE_ANCHOR_AGE
+    return None
+
+
+def select_extreme_gated_fvg(
+    survivors: List[Tuple[FVG, Any, Any]],
+    direction: str,
+) -> Optional[Tuple[FVG, Any, Any]]:
+    """
+    The single extreme-selection rule: deepest FVG for bullish, highest for
+    bearish, tie-broken by formation time so both callers pick the same
+    candidate when prices coincide.
+
+    `survivors` is a list of `(fvg, sweep_pool, sweep_ts)` triples, as produced
+    by `evaluate_formation_gates()`; the metadata is carried through untouched.
+    """
+    if not survivors:
+        return None
+    if direction == "Bullish":
+        return min(survivors, key=lambda x: (x[0].bottom, x[0].formed_at))
+    return max(survivors, key=lambda x: (x[0].top, -x[0].formed_at))
 
 
 def select_gated_ltf_fvg(
@@ -146,13 +272,20 @@ def select_gated_ltf_fvg(
     """
     Gated version of S2's discovery + extreme selection.
 
-    Scans unmitigated LTF FVGs post-touch (S2 engine call), then rejects
-    candidates that fail: gap band, entry-session, fresh-sweep, or (when the
-    candidate is already TRADE_ACTIVE) the anchor-age guard evaluated at its
-    actual fill timestamp. Selection keeps S2's extreme rule (deepest for
-    bullish, highest for bearish) among survivors.
+    Scans unmitigated LTF FVGs post-touch (S2 engine call), then applies the
+    shared two-phase gate pipeline (`evaluate_formation_gates` for gap band +
+    fresh sweep, `evaluate_fill_gates` for entry session / weekday / anchor age)
+    and the shared extreme-selection rule (`select_extreme_gated_fvg`). The
+    backtester calls those same functions, so the two paths cannot drift.
 
-    `fill_probe_ts_ms` overrides the anchor-age fill probe (backtests pass the
+    The entry-session gate constrains the FILL, not the FVG formation: a
+    PENDING_RETRACE candidate has not filled yet, so the session is not yet
+    decidable here and the gate is skipped for it — `extreme_trade_tracker`
+    enforces the window at fill, ignoring out-of-session touches rather than
+    deferring them. Pass `fill_probe_ts_ms` to decide pending candidates
+    yourself (backtests/replays that already know the fill time).
+
+    `fill_probe_ts_ms` also overrides the anchor-age fill probe (backtests pass the
     simulated fill time; live uses now).
 
     Returns (selected_fvg_or_None, survivors, gate_reject_counts).
@@ -166,7 +299,7 @@ def select_gated_ltf_fvg(
         min_gap_pct=min_gap_pct,
         completion_target=completion_target,
     )
-    rejects = {"GAP_BAND": 0, "ENTRY_SESSION": 0, "NO_FRESH_SWEEP": 0, "ANCHOR_AGE": 0}
+    rejects = {GATE_GAP_BAND: 0, GATE_ENTRY_SESSION: 0, GATE_NO_FRESH_SWEEP: 0, GATE_ANCHOR_AGE: 0}
     if not unmitigated:
         return (None, [], rejects)
 
@@ -177,49 +310,46 @@ def select_gated_ltf_fvg(
 
     survivors: List[FVG] = []
     for fvg in unmitigated:
-        formed_close_ts = fvg.close_timestamp
-
-        if not check_gap_band(fvg, gap_band):
-            rejects["GAP_BAND"] += 1
+        # Phase 1 — decidable at formation (gap band, fresh sweep).
+        formation = evaluate_formation_gates(
+            fvg,
+            gap_band=gap_band,
+            require_sweep=require_sweep,
+            anchor_first_touch_ts=anchor.first_touch_timestamp,
+            candles_ltf=candles_ltf,
+            sweep_max_age_ms=sweep_max_age_ms,
+            ltf_timeframe=ltf_timeframe,
+            swings=swings,
+            timestamps=timestamps,
+        )
+        if not formation.passed:
+            rejects[formation.reason] = rejects.get(formation.reason, 0) + 1
             continue
 
-        if entry_session_config is not None and not entry_session_config.is_entry_valid(formed_close_ts):
-            rejects["ENTRY_SESSION"] += 1
-            continue
-
-        if require_sweep:
-            gate = check_fresh_sweep(
-                candles_ltf=candles_ltf,
-                direction=anchor.fvg.direction,
-                from_ts_ms=anchor.first_touch_timestamp,
-                fvg_formed_close_ts_ms=formed_close_ts,
-                sweep_max_age_ms=sweep_max_age_ms,
-                swings=swings,
-                timestamps=timestamps,
-            )
-            if not gate.passed:
-                rejects["NO_FRESH_SWEEP"] += 1
-                continue
-
-        # Anchor-age guard: exact fill timestamp when already active, else the
-        # formation close as the earliest possible fill (probe).
+        # Phase 2 — needs a fill timestamp. TRADE_ACTIVE candidates carry the
+        # real one; PENDING_RETRACE candidates do not yet, so the gate is not
+        # decidable and the tracker enforces it downstream at fill.
         if fvg.lifecycle_state == "TRADE_ACTIVE":
-            probe_ts = fvg.entry_timestamp or formed_close_ts
+            fill_probe_ts = fvg.entry_timestamp or fill_probe_ts_ms
         else:
-            probe_ts = fill_probe_ts_ms or formed_close_ts
-        if not check_anchor_age(anchor, probe_ts, anchor_age_dead_zone):
-            rejects["ANCHOR_AGE"] += 1
-            continue
+            fill_probe_ts = fill_probe_ts_ms
+        if fill_probe_ts is not None:
+            reject = evaluate_fill_gates(
+                fill_probe_ts,
+                anchor,
+                entry_session_config=entry_session_config,
+                anchor_age_dead_zone=anchor_age_dead_zone,
+            )
+            if reject is not None:
+                rejects[reject] = rejects.get(reject, 0) + 1
+                continue
 
         survivors.append(fvg)
 
     if not survivors:
         return (None, [], rejects)
 
-    if anchor.fvg.direction == "Bullish":
-        best = min(survivors, key=lambda f: (f.bottom, f.formed_at))
-    else:
-        best = max(survivors, key=lambda f: (f.top, -f.formed_at))
+    best = select_extreme_gated_fvg([(f, None, None) for f in survivors], anchor.fvg.direction)[0]
     return (best, survivors, rejects)
 
 
@@ -365,12 +495,14 @@ async def get_liquidity_sweep_setup_for_symbol(
     sweep_pool = None
     sweep_ts = None
     if require_sweep:
-        gate = check_fresh_sweep(
+        gate = evaluate_formation_gates(
+            best,
+            gap_band=None,          # already applied during selection
+            require_sweep=True,
+            anchor_first_touch_ts=anchor.first_touch_timestamp,
             candles_ltf=candles_ltf,
-            direction=direction,
-            from_ts_ms=anchor.first_touch_timestamp,
-            fvg_formed_close_ts_ms=best.close_timestamp,
             sweep_max_age_ms=sweep_max_age_h * 3_600_000.0,
+            ltf_timeframe=ltf_timeframe,
             swings=swings,
             timestamps=timestamps,
         )

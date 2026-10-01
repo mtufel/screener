@@ -37,8 +37,6 @@ from liquidity import (
     LiquidityPool,
     build_pool_templates,
     detect_swing_points,
-    has_fresh_sweep,
-    liquidity_take_profit,
     parse_gap_band,
     pools_from_templates,
 )
@@ -49,15 +47,21 @@ from strategy_extreme_fvg import (
     TIMEFRAME_MS,
     compute_all_active_4h_fvgs,
 )
+from strategy_liquidity_sweep_fvg import (
+    DEAD_ZONE_DEFAULT,
+    DEFAULT_TP_BUFFER_PCT,
+    apply_liquidity_tp,
+    evaluate_fill_gates,
+    evaluate_formation_gates,
+    select_extreme_gated_fvg,
+)
 from backtest_extreme_fvg import ExtremeHistoricalTrade
-from session_filter import is_weekday
+from session_filter import SessionFilterConfig
 
 load_dotenv()
 
 IST = timezone(timedelta(hours=5, minutes=30))
 logger = logging.getLogger("strategy3-backtester")
-
-DEAD_ZONE_DEFAULT = (24.0, 48.0)
 
 
 @dataclass
@@ -126,13 +130,6 @@ class Strategy3BacktestReport:
 
 def _hour(ts_ms: int) -> int:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).hour
-
-
-def _in_entry_session(ts_ms: int, entry_sessions: Optional[str]) -> bool:
-    if not entry_sessions or entry_sessions.strip().upper() == "ALL":
-        return True
-    from session_filter import is_in_session
-    return is_in_session(ts_ms, entry_sessions)
 
 
 async def run_liquidity_sweep_backtest(
@@ -345,44 +342,35 @@ async def run_liquidity_sweep_backtest(
             fvg_ptr += 1
             continue
 
-        # ---- Strategy 3 gates (gap band → entry session → sweep → age) ----
-        def _passes_gates(f: FVG) -> Tuple[bool, str, Optional[LiquidityPool], Optional[int]]:
-            gap_pct = (f.top - f.bottom) / ((f.top + f.bottom) / 2.0) * 100.0
-            if band is not None and band[0] <= gap_pct < band[1]:
-                return (False, "GAP_BAND", None, None)
-            if require_sweep:
-                swept, pool, sweep_ts = has_fresh_sweep(
-                    candles_ltf,
-                    pools_asof(f.close_timestamp),
-                    direction=f.direction,
-                    from_ts=anchor.first_touch_timestamp,
-                    to_ts=f.close_timestamp,
-                    max_age_ms=sweep_max_age_ms,
-                    timestamps=ltf_timestamps,
-                )
-                if not swept:
-                    return (False, "NO_FRESH_SWEEP", None, None)
-                sweep_meta = (pool, sweep_ts)
-            else:
-                sweep_meta = (None, None)
-            return (True, "OK", sweep_meta[0], sweep_meta[1])
-
+        # ---- Strategy 3 gates: shared two-phase pipeline ----
+        # Phase 1 (gap band, fresh sweep) is decidable per candidate at
+        # formation, so it filters the pool before the extreme selection.
         gated: List[Tuple[FVG, Optional[LiquidityPool], Optional[int]]] = []
         for f in candidate_pool:
-            ok, reason, pool, sweep_ts = _passes_gates(f)
-            if not ok:
-                gate_rejects[reason] += 1
+            formation = evaluate_formation_gates(
+                f,
+                gap_band=band,
+                require_sweep=require_sweep,
+                anchor_first_touch_ts=anchor.first_touch_timestamp,
+                candles_ltf=candles_ltf,
+                sweep_max_age_ms=sweep_max_age_ms,
+                ltf_timeframe=ltf_timeframe,
+                timestamps=ltf_timestamps,
+            )
+            if not formation.passed:
+                gate_rejects[formation.reason] += 1
             else:
-                gated.append((f, pool, sweep_ts))
+                gated.append((f, formation.pool, formation.sweep_ts))
         if not gated:
             fvg_ptr += 1
             continue
 
-        # Extreme selection among survivors.
-        if anchor.fvg.direction == "Bullish":
-            best_ltf, best_pool, best_sweep_ts = min(gated, key=lambda x: (x[0].bottom, x[0].formed_at))
-        else:
-            best_ltf, best_pool, best_sweep_ts = max(gated, key=lambda x: (x[0].top, -x[0].formed_at))
+        # Extreme selection — shared rule, so live and backtest agree on the winner.
+        selected = select_extreme_gated_fvg(gated, anchor.fvg.direction)
+        if selected is None:
+            fvg_ptr += 1
+            continue
+        best_ltf, best_pool, best_sweep_ts = selected
 
         if best_ltf.formed_at in entered_fvg_timestamps:
             fvg_ptr += 1
@@ -434,37 +422,42 @@ async def run_liquidity_sweep_backtest(
 
         fill_ts = candles_ltf[fill_idx].timestamp + ltf_duration_ms  # fill at candle close
 
-        # Entry-session + weekday + anchor-age evaluated at the ACTUAL fill.
-        if entry_sessions is not None and not _in_entry_session(fill_ts, entry_sessions):
-            gate_rejects["ENTRY_SESSION_FILL"] += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
-            fvg_ptr += 1
-            continue
-        if entry_weekday_only and not is_weekday(fill_ts):
-            gate_rejects["ENTRY_WEEKDAY"] += 1
-            entered_fvg_timestamps.add(best_ltf.formed_at)
-            fvg_ptr += 1
-            continue
+        # Entry session + weekday + anchor age, all at the ACTUAL fill.
+        # Shared phase-2 gate: a backtest can only decide these once it has
+        # simulated the fill, which is why selection happens first here while
+        # live defers the same gates to extreme_trade_tracker at fill time.
         anchor_age_h = (fill_ts - anchor.fvg.close_timestamp) / 3_600_000.0
-        if anchor_age_guard:
-            lo, hi = DEAD_ZONE_DEFAULT
-            if lo <= anchor_age_h < hi:
-                gate_rejects["ANCHOR_AGE"] += 1
-                entered_fvg_timestamps.add(best_ltf.formed_at)
-                fvg_ptr += 1
-                continue
+        _fill_reject = evaluate_fill_gates(
+            fill_ts,
+            anchor,
+            entry_session_config=SessionFilterConfig(
+                entry_sessions=entry_sessions or "ALL",
+                entry_weekdays_only=entry_weekday_only,
+            ),
+            anchor_age_dead_zone=DEAD_ZONE_DEFAULT if anchor_age_guard else None,
+        )
+        if _fill_reject is not None:
+            gate_rejects[_fill_reject] += 1
+            entered_fvg_timestamps.add(best_ltf.formed_at)
+            fvg_ptr += 1
+            continue
 
-        # ---- Liquidity-first TP ----
+        # ---- Take-profit resolution ----
+        # Delegates to the live engine's resolver so backtest and live agree on
+        # `tp_mode` by construction. Calling `liquidity_take_profit()` directly
+        # here silently ignored `tp_mode` (always liquidity-first).
         pools_at_fill = pools_asof(fill_ts)
-        tp_price, tp_mode_used, tp_pool = liquidity_take_profit(
+        _tp = apply_liquidity_tp(
             pools=pools_at_fill,
             direction=best_ltf.direction,
             entry_price=entry_price,
             risk_r=risk_r,
-            min_rr=min_rr_for_liquidity,
-            fallback_r=fallback_target_r,
-            buffer_pct=0.02,
+            tp_mode=tp_mode,
+            min_rr_for_liquidity=min_rr_for_liquidity,
+            fallback_target_r=fallback_target_r,
+            buffer_pct=DEFAULT_TP_BUFFER_PCT,
         )
+        tp_price, tp_mode_used, tp_pool = _tp["tp_price"], _tp["tp_mode"], _tp["tp_pool"]
 
         # ---- Forward simulation to TP or SL (SL first on collision bar) ----
         hit = False
