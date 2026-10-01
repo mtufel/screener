@@ -151,11 +151,17 @@ async def run_liquidity_sweep_backtest(
     weekday_filter: bool = False,
     sessions: Optional[str] = None,
     client: Optional[Any] = None,
+    as_of_ms: Optional[int] = None,
 ) -> Strategy3BacktestReport:
-    """Runs the Strategy 3 simulation over `days` of history."""
+    """
+    Runs the Strategy 3 simulation over `days` of history ending at `as_of_ms`
+    (default: now). `as_of_ms` exists so a historical window can be evaluated in
+    isolation -- required for out-of-sample validation, where the test window must
+    not be contaminated by state carried in from the training window.
+    """
     from market_data_provider import market_data_provider as _default_provider
     prov = client or _default_provider
-    now_ms = int(time.time() * 1000)
+    now_ms = int(as_of_ms if as_of_ms is not None else time.time() * 1000)
     start_ms = now_ms - days * 24 * 3600 * 1000
     fetch_from = start_ms - 14 * 24 * 3600 * 1000  # 4H warmup
 
@@ -189,7 +195,13 @@ async def run_liquidity_sweep_backtest(
         return _empty_report()
 
     candles_4h = [Candle.from_dict(c) for c in sorted(raw_4h, key=lambda x: x.get("t", 0))]
-    candles_ltf = [Candle.from_dict(c) for c in sorted(raw_ltf, key=lambda x: x.get("t", 0))]
+    # `fetch_from` reaches 14 days before `start_ms` for 4H warmup. Trim the LTF
+    # series to the requested window so `days` means what it says -- previously
+    # the simulation silently evaluated `days + 14`.
+    candles_ltf = [
+        Candle.from_dict(c) for c in sorted(raw_ltf, key=lambda x: x.get("t", 0))
+        if c.get("t", 0) >= start_ms
+    ]
 
     ltf_duration_ms = TIMEFRAME_MS.get(ltf_timeframe, 5 * 60 * 1000)
     ltf_timestamps = [c.timestamp for c in candles_ltf]

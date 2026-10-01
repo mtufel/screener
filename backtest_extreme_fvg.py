@@ -398,6 +398,7 @@ async def run_extreme_backtest(
     max_gap_pct: float = 0.0,
     max_ltf_fvg_age_candles: int = 9999,
     completion_target: Optional[str] = None,
+    as_of_ms: Optional[int] = None,
 ) -> ExtremeBacktestReport:
     """
     Executes a complete historical backtest over the specified number of days.
@@ -406,6 +407,10 @@ async def run_extreme_backtest(
     entry closes at that target exactly like the live daemon / replay path,
     making analytic and replay directly comparable. ``None`` keeps the legacy
     ride-to-3R/SL model that scores 1R/2R/3R policies on identical entries.
+
+    ``as_of_ms`` (default: now) ends the window, so a historical range can be
+    evaluated in isolation. Required for out-of-sample validation, where the test
+    window must not inherit state carried in from the training window.
     """
     if session_config is None:
         session_config = SessionFilterConfig.from_legacy(
@@ -419,7 +424,7 @@ async def run_extreme_backtest(
     max_ltf_fvg_age_candles = int(max_ltf_fvg_age_candles)
 
     prov = client or market_data_provider
-    now_ms = int(time.time() * 1000)
+    now_ms = int(as_of_ms if as_of_ms is not None else time.time() * 1000)
     start_ms = now_ms - (days * 24 * 3600 * 1000)
 
     # 1. Fetch historical 4H and LTF candles
