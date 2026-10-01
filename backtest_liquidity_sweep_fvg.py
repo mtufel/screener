@@ -38,7 +38,6 @@ from liquidity import (
     build_pool_templates,
     detect_swing_points,
     has_fresh_sweep,
-    liquidity_take_profit,
     parse_gap_band,
     pools_from_templates,
 )
@@ -48,6 +47,10 @@ from strategy_extreme_fvg import (
     HTF_CANDLE_DURATION_MS,
     TIMEFRAME_MS,
     compute_all_active_4h_fvgs,
+)
+from strategy_liquidity_sweep_fvg import (
+    DEFAULT_TP_BUFFER_PCT,
+    apply_liquidity_tp,
 )
 from backtest_extreme_fvg import ExtremeHistoricalTrade
 from session_filter import is_weekday
@@ -454,17 +457,22 @@ async def run_liquidity_sweep_backtest(
                 fvg_ptr += 1
                 continue
 
-        # ---- Liquidity-first TP ----
+        # ---- Take-profit resolution ----
+        # Delegates to the live engine's resolver so backtest and live agree on
+        # `tp_mode` by construction. Calling `liquidity_take_profit()` directly
+        # here silently ignored `tp_mode` (always liquidity-first).
         pools_at_fill = pools_asof(fill_ts)
-        tp_price, tp_mode_used, tp_pool = liquidity_take_profit(
+        _tp = apply_liquidity_tp(
             pools=pools_at_fill,
             direction=best_ltf.direction,
             entry_price=entry_price,
             risk_r=risk_r,
-            min_rr=min_rr_for_liquidity,
-            fallback_r=fallback_target_r,
-            buffer_pct=0.02,
+            tp_mode=tp_mode,
+            min_rr_for_liquidity=min_rr_for_liquidity,
+            fallback_target_r=fallback_target_r,
+            buffer_pct=DEFAULT_TP_BUFFER_PCT,
         )
+        tp_price, tp_mode_used, tp_pool = _tp["tp_price"], _tp["tp_mode"], _tp["tp_pool"]
 
         # ---- Forward simulation to TP or SL (SL first on collision bar) ----
         hit = False

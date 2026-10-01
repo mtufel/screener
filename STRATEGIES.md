@@ -4,6 +4,8 @@ This document provides complete architectural, mathematical, and algorithmic spe
 
 **Runtime note:** Strategy 1 is retired. The live app, daemon, dashboard, and backtester run Strategy 2 (Extreme LTF FVG) only. The Strategy 1 section below is historical reference.
 
+**Source material:** the primary reference videos (Atif Hussain FVG models), their verbatim transcripts, and an audit of where this implementation diverges from them are documented in [`docs/source-videos.md`](docs/source-videos.md). Read that first when changing entry, stop-loss, target, or session rules — several settings here are deliberate, evidence-based deviations from the videos and are flagged as such there.
+
 ---
 
 ## 📑 Table of Contents
@@ -202,6 +204,8 @@ From all valid, unmitigated LTF FVGs formed post-touch:
 
 Implements the reference video model ("Every Trader Should Know This 4H FVG Strategy"): **4H FVG for bias → liquidity sweep → LTF FVG entry → target opposing liquidity**. Registered in the pluggable framework (see `strategies/`) as:
 
+> **⚠️ Known divergences from the source** — see [`docs/source-videos.md`](docs/source-videos.md) §4. Notably F-01 (the entry-session gate probes FVG *formation* time instead of *fill* time) and F-02 (the sweep is required but its stop-loss benefit is never used). Both are candidate OpenSpec changes.
+
 * **Registry name**: `liquidity_sweep_fvg` (adapter `strategies/strategy3_liquidity_sweep.py`)
 * **Engine**: `strategy_liquidity_sweep_fvg.py` · **Backtester**: `backtest_liquidity_sweep_fvg.py`
 * Reuses Strategy 2's proven 4H machinery by import (cache, touch anchors, extreme selection); Strategy 2 files are untouched and both strategies remain selectable by name.
@@ -230,6 +234,12 @@ Survivors are ranked with S2's extreme rule (deepest for bullish, highest for be
 ### Liquidity-First Take Profit
 
 With `tp_mode="LIQUIDITY"` (default): TP = nearest opposing pool at least `min_rr_for_liquidity` (1.5) R beyond entry, buffered `buffer_pct` (0.02%) in front of the level; falls back to `fallback_target_r` (2R) when no qualifying pool exists. Realized R = distance-to-TP / risk; `tp_mode` and the pool are recorded per trade.
+
+With `tp_mode="FIXED_R"`: TP is always `entry ± fallback_target_r * risk_r`; no pool lookup.
+
+> **Measured (90d, 5m, close invalidation):** LIQUIDITY wins on ETH (+8.8R vs +8.0R) and SOL (+16.7R vs +10.0R); **FIXED_R wins on BTC** (+11.0R vs +8.2R, PF 1.73 vs 1.58). Treat `tp_mode` as a per-symbol setting, not a global one.
+>
+> Backtest and live resolve TP through the same `apply_liquidity_tp()` helper, so the two agree by construction. (Before `fix/s3-backtest-tp-mode-param` the backtester ignored `tp_mode` entirely; any report labelled `FIXED_R` from before that change is invalid and must be regenerated — see `docs/source-videos.md` F-10.)
 
 ### Strategy 3 Validation Results
 
