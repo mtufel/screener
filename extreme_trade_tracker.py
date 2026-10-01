@@ -943,7 +943,6 @@ class ExtremeTradeTracker:
             t.trade_id == trade_id and t.state in ("COMPLETED_TP", "STOPPED_OUT")
             for t in self.history
         )
-
     def get_summary(self, strategy: Optional[str] = None) -> Dict[str, Any]:
         """Calculates live performance summary statistics.
         When ``strategy`` is given, aggregates only trades with that strategy name.

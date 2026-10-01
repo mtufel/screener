@@ -154,6 +154,12 @@ def configure_state(main, symbols, ltf="5m"):
     main.state["extreme_weekday_filter"] = False
     main.state["extreme_entry_session_filter"] = False
     main.state["extreme_entry_weekday_filter"] = False
+    # Bias filters pinned OFF for scripted scenarios — see the identical note
+    # in qa_live_sim.configure_state. Product defaults stay research-backed.
+    main.state["extreme_max_gap_pct"] = 0.0
+    main.state["extreme_max_dist_from_4h_pct"] = 0.0
+    main.state["extreme_require_momentum"] = False
+    main.state["extreme_max_ltf_fvg_age_candles"] = 9999
     main.state["data_provider"] = "fake"
     main.state["extreme_is_running"] = True
     main.state["extreme_interval_seconds"] = 30

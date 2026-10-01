@@ -1,0 +1,27 @@
+# Implementation Tasks: Merge develop and register Video FVG as Strategy 4
+
+- [x] 1. Merge upstream `develop` (`origin/develop`) into the branch and resolve all 11 conflicted files:
+  - [x] 1.1 `pyproject.toml`
+  - [x] 1.2 `strategies/base.py`
+  - [x] 1.3 `strategies/strategy2_extreme.py`
+  - [x] 1.4 `strategies/__init__.py`
+  - [x] 1.5 `app_config.py`
+  - [x] 1.6 `extreme_trade_tracker.py`
+  - [x] 1.7 `backtest_extreme_fvg.py`
+  - [x] 1.8 `screener_cycle.py`
+  - [x] 1.9 `api/extreme.py`
+  - [x] 1.10 `templates/index.html`
+  - [x] 1.11 `test_strategy_api_routes.py` and `test_strategy_registry.py`
+- [x] 2. Establish Strategy 4:
+  - [x] 2.1 Rename/create `strategies/strategy4_video_fvg.py` with `Strategy4VideoFVG(BaseStrategy)`.
+  - [x] 2.2 Register `video_fvg` in `strategies/__init__.py`.
+  - [x] 2.3 Set descriptions across `strategy2_extreme`, `strategy3_liquidity_sweep`, and `strategy4_video_fvg`.
+  - [x] 2.4 Update tests in `test_strategy4_video_fvg.py` and `test_strategy_registry.py`.
+- [x] 3. Comprehensive Strategy Documentation:
+  - [x] 3.1 Update `STRATEGIES.md` with Strategy 4 specification (Anchor, HTF respect, LTF trigger, Execution).
+  - [x] 3.2 Add side-by-side comparison table between Strategy 2, Strategy 3, and Strategy 4.
+  - [x] 3.3 Ensure `/api/strategies` and UI dropdown show strategy descriptions.
+- [x] 4. Test Suite Execution & Validation:
+  - [x] 4.1 Run full pytest test suite (`pytest -v`).
+  - [x] 4.2 Verify 100% pass rate (479 passed, 0 failed).
+  - [x] 4.3 Finalize git commit.

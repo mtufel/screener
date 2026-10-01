@@ -27,8 +27,15 @@ This document provides complete architectural, mathematical, and algorithmic spe
    - [Gating Pipeline](#strategy-3-gating-pipeline)
    - [Liquidity-First Take Profit](#liquidity-first-take-profit)
    - [Validation Results](#strategy-3-validation-results)
-5. [Backtesting Engines & Validation](#-backtesting-engines--validation)
-5. [System Architecture & Resilience](#-system-architecture--resilience)
+5. [Strategy 4: 🎯 Video FVG Strategy (4H Anchor)](#-strategy-4--video-fvg-strategy-4h-anchor)
+   - [Model & Registry Identity](#strategy-4-model--registry-identity)
+   - [Step 1: 4H FVG Directional Anchor](#step-1-4h-fvg-directional-anchor)
+   - [Step 2: HTF-Respect Confirmation](#step-2-htf-respect-confirmation)
+   - [Step 3: First LTF FVG Entry Trigger](#step-3-first-ltf-fvg-entry-trigger)
+   - [Step 4: Execution Parameters (Entry, SL, 3R Target)](#step-4-execution-parameters-entry-sl-3r-target)
+   - [Comparison of Strategies 2, 3, and 4](#-comparison-of-strategies-2-3-and-4)
+6. [Backtesting Engines & Validation](#-backtesting-engines--validation)
+7. [System Architecture & Resilience](#-system-architecture--resilience)
 
 ---
 
@@ -136,10 +143,29 @@ flowchart TD
   * Discards candidate FVGs that already completed targets or stopped out.
   * Retains candidates in `PENDING_RETRACE` or `TRADE_ACTIVE`.
 
+### Step 3b: Research-backed Bias Filters (Empirical, 2026-09-26)
+Four opt-in bias filters, derived from marginal backtest analysis in
+`strategy_research_findings.md`, refine candidate LTF FVGs **before** lifecycle/ranking. All
+are applied inside `find_unmitigated_ltf_fvgs` (and mirrored in the backtester's scan loop).
+Defaults are permissive/off so existing behavior is unchanged unless enabled:
+
+| Filter | Param | Default | Rule |
+|---|---|---|---|
+| **Distance from 4H zone** | `max_dist_from_4h_pct` | `2.0` (0 = off) | Reject LTF FVG whose midpoint distance from the active 4H anchor zone exceeds the ceiling. Bullish: $d = \frac{\text{bottom} - \text{anchor.bottom}}{\text{anchor.bottom}} \times 100$. Bearish: $d = \frac{\text{anchor.top} - \text{top}}{\text{anchor.top}} \times 100$. |
+| **Momentum impulse-candle** | `require_momentum` | `false` | When on, reject any FVG whose middle candle `c2` is not a strong directional impulse: body ≥ 50% of range **and** direction matching the FVG (`_is_strong_momentum`). |
+| **Gap ceiling** | `max_gap_pct` | `0.3` (0 = off) | Reject LTF FVGs whose `gap_pct` exceeds this ceiling (respects the existing `min_gap_pct` floor). |
+| **Age ceiling** | `max_ltf_fvg_age_candles` | `9999` (permissive) | Reject LTF FVGs that form more than this many candles after the 4H first touch: $\text{age} = \text{candle}_3 \text{ index} - \text{touch index}$ (via `bisect` on LTF timestamps). |
+
+**Empirical basis** (from `strategy_research_findings.md`): momentum-bucket setups (c2 body
+≥ 50%, in-trade direction) earned **+27R vs −9R** for no-momentum; FVGs far from the 4H zone and
+oversized gaps underperformed. These filters converge candidates toward confluent, high-quality
+imbalances. They are exposed end-to-end: env vars → `app_config` → strategy engine → backtester
+CLI (`--max-dist-from-4h-pct`, `--require-momentum`, `--max-gap-pct`, `--max-ltf-fvg-age`) →
+`api/extreme` (backtest + config) → live daemon → Web dashboard (read-only display).
+
 ### Step 4: Extreme Ranking & Selection
 From all valid, unmitigated LTF FVGs formed post-touch:
-* **Bullish (Long)**: Selects the **Lowest Price FVG** (deepest discount, closest to the 4H anchor support zone).
-  $$\text{Selected FVG} = \arg\min_{f \in \text{FVGs}} (f.\text{bottom})$$
+* **Bullish (Long)**: Selects the **Lowest Price FVG** (deepest discount, closest to the 4H anchor support zone).  $$\text{Selected FVG} = \arg\min_{f \in \text{FVGs}} (f.\text{bottom})$$
 * **Bearish (Short)**: Selects the **Highest Price FVG** (highest premium, closest to the 4H anchor resistance zone).
   $$\text{Selected FVG} = \arg\max_{f \in \text{FVGs}} (f.\text{top})$$
 
@@ -227,6 +253,74 @@ Set `EXTREME_SHADOW_STRATEGIES=liquidity_sweep_fvg` to run S3 **alongside** the 
 * **Promotion**: after ~2 weeks, compare `get_summary(strategy=...)` win rate / net R / drawdown vs the S2 live ledger, then promote via `EXTREME_ACTIVE_STRATEGY=liquidity_sweep_fvg` (and clear `EXTREME_SHADOW_STRATEGIES`).
 
 Adapter note: the S3 engine returns setup **dicts**; `strategies/strategy3_liquidity_sweep.py` normalizes them into the attribute view the daemon payload builder expects (adds `state`, `risk_pct`, `tp_1r/2r/3r`, `entry_timestamp`).
+
+---
+
+## 🎯 Strategy 4: Video FVG Strategy (4H Anchor)
+
+### Strategy 4 Model & Registry Identity
+
+Implements the strict multi-timeframe FVG model where higher-timeframe respect must be confirmed before entering on the first subsequent LTF FVG:
+
+* **Registry name**: `video_fvg` (adapter `strategies/strategy4_video_fvg.py`)
+* **Display name**: `Video FVG (4H Anchor)`
+* **Description**: `4H FVG Bias + HTF Respect Confirmation + First LTF FVG Entry + 3R Target`
+* **Engine**: `strategy_video_fvg.py` · **Backtester**: `backtest_video_fvg.py`
+* **Interface version**: `1`
+* **Default parameters**:
+  * `ltf_timeframe`: `"5m"`
+  * `min_gap_pct`: `0.03`
+  * `completion_target`: `"3R"`
+  * `htf_confirm_body_pct`: `0.5` (50% body-to-range ratio for HTF respect)
+  * `session_filter`: `False` (optional session gating at LTF formation)
+  * `weekday_filter`: `False`
+  * `sessions`: `"ALL"`
+
+### Step 1: 4H FVG Directional Anchor
+* **Anchor Identification**: Selects the **most recently closed 4H FVG** that has not been completely invalidated (unlike S2, which ranks by most-recent-touch, S4 prioritizes the newest formed closed 4H macro imbalance).
+* **Bias Direction**:
+  * Bullish 4H FVG $\rightarrow$ Bullish bias (look for longs only).
+  * Bearish 4H FVG $\rightarrow$ Bearish bias (look for shorts only).
+
+### Step 2: HTF-Respect Confirmation
+* Price must retrace and touch the 4H FVG zone.
+* The HTF candle touching the zone (or a subsequent candle closing in the zone) must exhibit **strong directional respect**:
+  $$\text{Body Ratio} = \frac{|\text{close} - \text{open}|}{\text{high} - \text{low}} \ge \text{htf\_confirm\_body\_pct} \quad (0.50)$$
+* Bullish respect requires a green close (`close > open`); Bearish respect requires a red close (`close < open`).
+* The close timestamp of this confirming candle establishes `htf_confirm_timestamp`. No LTF FVG formed prior to this timestamp is eligible.
+
+### Step 3: First LTF FVG Entry Trigger
+* Once HTF respect is confirmed, the engine scans lower timeframe candles (`5m` default) strictly formed **after** the confirmation close.
+* **First Qualifying FVG**: Selects the **first** LTF FVG in the bias direction that meets `min_gap_pct >= 0.03%`.
+* Earlier or stale FVGs are ignored; only the fresh impulse following HTF confirmation is traded.
+
+### Step 4: Execution Parameters (Entry, SL, 3R Target)
+* **Entry Price**:
+  * **Bullish**: Outer boundary of LTF FVG (`ltf_fvg.bottom`).
+  * **Bearish**: Outer boundary of LTF FVG (`ltf_fvg.top`).
+* **Stop Loss (SL)**:
+  * Extreme wick across the 3 candles `[c1, c2, c3]` of the LTF FVG:
+  * **Bullish**: $\text{SL} = \min(c_1.\text{low}, c_2.\text{low}, c_3.\text{low})$
+  * **Bearish**: $\text{SL} = \max(c_1.\text{high}, c_2.\text{high}, c_3.\text{high})$
+* **Risk ($R$)**:
+  $$R = |\text{Entry Price} - \text{Stop Loss}|$$
+* **Targets**:
+  * **Target 1R**: $\text{Entry} \pm 1.0 \times R$ (telemetry)
+  * **Target 2R**: $\text{Entry} \pm 2.0 \times R$ (telemetry)
+  * **Primary Target 3R ($\star$)**: $\text{Entry} \pm 3.0 \times R$ (completion target)
+
+---
+
+## 📊 Comparison of Strategies 2, 3, and 4
+
+| Feature | Strategy 2 (`extreme_fvg`) | Strategy 3 (`liquidity_sweep_fvg`) | Strategy 4 (`video_fvg`) |
+|---|---|---|---|
+| **Macro Anchor** | 4H FVG with most recent touch | 4H FVG with fresh opposing liquidity sweep | Most recent closed 4H FVG |
+| **Confirmation** | Touch-based anchor activation | 2h fresh liquidity pool sweep | HTF candle body respect ($\ge 50\%$) |
+| **LTF Selection** | Extreme ranking (deepest/highest) | Deepest post-touch passing sweep & gap band | First formed LTF FVG post-HTF confirm |
+| **Gating Filters** | Bias filters (dist, momentum, max gap) | NY KZ, gap-band exclusion, anchor-age guard | HTF body %, min gap %, optional sessions |
+| **Take Profit** | 2R default (1R/2R/3R matrix) | Opposing liquidity pool ($\ge 1.5R$) or 2R | 3R target |
+| **Daemon Role** | Active production baseline | Shadow validation / Liquidity target | Multi-timeframe trend continuation |
 
 ---
 

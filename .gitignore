@@ -46,3 +46,13 @@ scratch/
 *.out
 *.log
 render_logs.json
+
+# Research harnesses (local only)
+# Conclusions from these sweeps are recorded in strategy_research_findings.md,
+# which IS committed -- that file is the record, these are the scratch harnesses.
+analysis/
+enhanced_*.py
+enhanced_*_results.json
+video_strategy_backtest.py
+video_strategy_results.json
+video_transcript.txt

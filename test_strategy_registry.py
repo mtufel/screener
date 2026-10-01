@@ -144,3 +144,25 @@ def test_strategy3_runtime_overrides_win():
     assert params["require_sweep"] is False
     # Untouched defaults survive
     assert params["sweep_max_age_h"] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4 (video_fvg) registration & defaults
+# ---------------------------------------------------------------------------
+
+def test_list_strategy_names_contains_video_fvg():
+    names = list_strategy_names()
+    assert "video_fvg" in names
+
+
+def test_registry_snapshot_has_video_fvg_display_name():
+    snap = registry_snapshot()
+    assert snap.get("video_fvg") == "Video FVG (4H Anchor)"
+
+
+def test_get_strategy_returns_strategy4_instance():
+    strat = get_strategy("video_fvg")
+    assert strat is not None
+    assert strat.name == "video_fvg"
+    assert strat.interface_version == 1
+

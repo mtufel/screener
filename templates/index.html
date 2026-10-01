@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Crypto Extreme LTF FVG Screener & Backtester (IST)</title>
+  <title>Crypto FVG Screener & Backtester (IST)</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- FontAwesome Icons -->
@@ -90,10 +90,10 @@
               FVG SCREENER
             </span>
             <span class="px-2 py-0.5 text-xs font-semibold rounded-md bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-mono">
-              EXTREME LTF
+              <span id="headerStrategyTag">EXTREME LTF</span>
             </span>
           </div>
-          <p class="text-xs text-slate-400">Extreme LTF FVG Engine & Backtester (IST)</p>
+          <p class="text-xs text-slate-400">Multi-Strategy FVG Engine & Backtester (IST)</p>
         </div>
       </div>
 
@@ -140,9 +140,18 @@
         <div class="flex items-center gap-3 flex-wrap">
           <div>
             <label class="block text-[10px] font-semibold text-slate-500 mb-0.5 uppercase tracking-wider">Strategy</label>
-            <select id="strategySelect" onchange="onUnifiedStrategyChange()" class="px-3 py-1.5 rounded-lg bg-dark-800 border border-amber-500/40 text-xs font-bold text-amber-400 focus:outline-none focus:border-amber-500" title="Switch the active strategy for the screener daemon">
+            <select id="strategySelect" onchange="onUnifiedStrategyChange()" class="px-3 py-1.5 rounded-lg bg-dark-800 border border-amber-500/40 text-xs font-bold text-amber-400 focus:outline-none focus:border-amber-500" title="Choose the strategy to view and backtest. Activation for the live daemon is a separate explicit action.">
               <option value="">Loading…</option>
             </select>
+            <button
+              id="btnActivateStrategy"
+              onclick="activateCurrentStrategy()"
+              class="hidden px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-400 text-xs font-bold flex items-center gap-1.5 transition-all"
+              title="Make this the active strategy for the live screener daemon"
+            >
+              <i class="fa-solid fa-power-off text-[10px]"></i>
+              <span>Activate for Live Daemon</span>
+            </button>
           </div>
           <div class="flex items-center space-x-1.5 p-1 rounded-xl bg-dark-800 border border-dark-700">
             <button
@@ -165,7 +174,32 @@
         </div>
         <div class="text-xs text-slate-400 font-mono hidden md:flex items-center space-x-2">
           <span id="unifiedStrategyBadge" class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold">Active</span>
-          <span id="unifiedStrategyDesc">4H Touched Anchor + Extreme LTF Outer Boundary + State Machine</span>
+          <span id="unifiedStrategyDesc">Loading strategy description…</span>
+          <button
+            id="btnToggleExplainer"
+            onclick="toggleStrategyExplainer()"
+            class="ml-auto px-2.5 py-1 rounded-lg bg-dark-800 hover:bg-dark-750 border border-dark-700 text-[11px] font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 transition-all"
+            title="Show detailed working of this strategy"
+          >
+            <i id="explainerChevron" class="fa-solid fa-chevron-down text-[10px] transition-transform"></i>
+            <span>How it works</span>
+          </button>
+        </div>
+
+        <!-- STRATEGY EXPLAINER PANEL -->
+        <div id="strategyExplainer" class="hidden p-5 rounded-2xl bg-dark-900/70 border border-dark-700/80 shadow-inner">
+          <div id="strategyExplainerBody" class="strategy-explainer text-sm text-slate-300 leading-relaxed"></div>
+        </div>
+
+        <!-- Compact explainer for mobile (md:hidden row has no button) -->
+        <div class="md:hidden">
+          <button
+            onclick="toggleStrategyExplainer()"
+            class="w-full px-2.5 py-1.5 rounded-lg bg-dark-800 border border-dark-700 text-[11px] font-semibold text-slate-300 flex items-center justify-center gap-1.5"
+          >
+            <i class="fa-solid fa-book-open text-[10px]"></i>
+            <span>How this strategy works</span>
+          </button>
         </div>
       </div>
 
@@ -270,6 +304,16 @@
                   onchange="saveExtremeConfig('entry_sessions', this.value.trim())"
                   class="hidden px-2.5 py-1 rounded-lg bg-dark-950 border border-amber-500/50 text-[11px] font-mono text-amber-300 focus:outline-none w-full"
                 />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-400 mb-1">Bias Filters <span class="text-slate-600">(read-only)</span></label>
+              <div class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300 flex flex-wrap gap-3">
+                <span title="Max distance of LTF FVG midpoint from 4H anchor zone">Dist 4H: <b id="biasMaxDist4h" class="text-amber-400">—</b>%</span>
+                <span title="Require a strong directional impulse candle (body >= 50% of range)">Momentum: <b id="biasRequireMomentum" class="text-amber-400">—</b></span>
+                <span title="Reject LTF FVGs whose gap_pct exceeds this ceiling">Gap ≤: <b id="biasMaxGap" class="text-amber-400">—</b>%</span>
+                <span title="Reject LTF FVGs forming more than this many candles after the 4H touch">Age ≤: <b id="biasMaxAge" class="text-amber-400">—</b></span>
               </div>
             </div>
 
@@ -386,8 +430,6 @@
               </select>
               <select id="liveFilterStrategy" onchange="onLiveHistFilterChange()" class="px-2 py-1 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-slate-300" title="Filter by strategy">
                 <option value="">All Strategies</option>
-                <option value="extreme_fvg">S2 · Extreme</option>
-                <option value="liquidity_sweep_fvg">S3 · Liquidity Sweep (shadow)</option>
               </select>
               <button
                 onclick="fetchExtremeLiveHistory()"
@@ -444,7 +486,7 @@
                     <th class="py-3 px-4">Status / Outcome</th>
                     <th class="py-3 px-4">Symbol & Dir</th>
                     <th class="py-3 px-4">4H Anchor</th>
-                    <th class="py-3 px-4">Extreme LTF FVG</th>
+                    <th class="py-3 px-4">LTF FVG</th>
                     <th class="py-3 px-4">Entry (Price & Time)</th>
                     <th class="py-3 px-4">Stop Loss</th>
                     <th class="py-3 px-4">Target (TP)</th>
@@ -480,7 +522,7 @@
             <div>
               <h3 class="text-lg font-bold text-white flex items-center space-x-2">
                 <i class="fa-solid fa-bolt text-amber-400"></i>
-                <span>Extreme LTF Strategy Backtester (1R vs 2R vs 3R)</span>
+                <span id="btPanelTitle">Strategy Backtester (1R vs 2R vs 3R)</span>
               </h3>
               <p class="text-xs text-slate-400 mt-1">
                 Analytic engine: fast vectorized historical simulation. Replay engine: the LIVE execution path under a virtual clock (watchable, pausable).
@@ -590,6 +632,31 @@
                   <option value="true">Mon-Fri</option>
                 </select>
               </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Max Dist 4H %</label>
+                <input type="number" id="extremeBtMaxDist" value="0" min="0" max="20" step="0.1"
+                  class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-20 focus:outline-none focus:border-amber-500"
+                  title="0 = disabled" />
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Require Momentum</label>
+                <select id="extremeBtRequireMomentum" class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-semibold text-slate-200">
+                  <option value="false" selected>OFF</option>
+                  <option value="true">ON</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Max Gap %</label>
+                <input type="number" id="extremeBtMaxGap" value="0" min="0" max="5" step="0.05"
+                  class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-20 focus:outline-none focus:border-amber-500"
+                  title="0 = disabled" />
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Max Age</label>
+                <input type="number" id="extremeBtMaxAge" value="9999" min="1" max="9999"
+                  class="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-700 text-xs font-mono text-white w-20 focus:outline-none focus:border-amber-500"
+                  title="LTF candles after 4H touch; 9999 = off" />
+              </div>
               <div class="self-end">
                 <button
                   onclick="runUnifiedBacktest()"
@@ -659,7 +726,7 @@
                 <tr>
                   <th class="p-3">Direction</th>
                   <th class="p-3">4H Anchor Zone</th>
-                  <th class="p-3">Extreme LTF FVG</th>
+                  <th class="p-3">LTF FVG</th>
                   <th class="p-3">Entry (IST)</th>
                   <th class="p-3">Stop Loss</th>
                   <th class="p-3" id="thResult1">1R</th>
@@ -814,6 +881,7 @@
     // ==================== UNIFIED STRATEGY PANEL STATE ====================
     let strategyRegistry = [];        // from /api/strategies
     let currentStrategy = 'extreme_fvg';
+    let pendingStrategy = null;       // dropdown selection awaiting explicit activation
     let strategyInfoCache = {};       // name -> /api/{strategy}/info payload
     let unifiedVariants = [];         // pinned backtest runs for A/B comparison
     let unifiedVariantSeq = 0;
@@ -836,41 +904,155 @@
         currentStrategy = (strategyRegistry.find(s => s.is_active) || strategyRegistry[0] || {}).name || currentStrategy;
         sel.value = currentStrategy;
         updateUnifiedStrategyHeader();
+        populateLiveHistStrategyFilter();
       } catch (err) {
         console.debug('Failed to load strategy registry:', err);
       }
+    }
+
+    function populateLiveHistStrategyFilter() {
+      const sel = document.getElementById('liveFilterStrategy');
+      if (!sel || !strategyRegistry.length) return;
+      const current = sel.value;
+      sel.innerHTML = '<option value="">All Strategies</option>' + strategyRegistry.map((s, i) =>
+        `<option value="${s.name}">S${i + 2} · ${s.display_name}</option>`
+      ).join('');
+      if (current) sel.value = current;
     }
 
     function updateUnifiedStrategyHeader() {
       const entry = strategyRegistry.find(s => s.name === currentStrategy);
       const badge = document.getElementById('unifiedStrategyBadge');
       const desc = document.getElementById('unifiedStrategyDesc');
-      if (entry && badge) {
-        badge.innerText = entry.is_active ? 'Active' : 'Shadow / Inactive';
-        badge.className = entry.is_active
+      const headerTag = document.getElementById('headerStrategyTag');
+      const btTitle = document.getElementById('btPanelTitle');
+      const display = entry ? entry.display_name : 'Strategy';
+      const shortName = display.replace(/\s*\(.*\)\s*/, '').trim();
+      if (badge) {
+        badge.innerText = entry && entry.is_active ? 'Active' : (entry ? 'Shadow / Inactive' : '—');
+        badge.className = entry && entry.is_active
           ? 'px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold'
           : 'px-2 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 font-bold';
       }
       if (desc) {
         desc.innerText = (entry && entry.description) || '';
       }
+      if (headerTag) headerTag.innerText = shortName.toUpperCase();
+      if (btTitle) btTitle.innerText = `${shortName} Backtester (1R vs 2R vs 3R)`;
+      document.title = `${shortName} FVG Screener & Backtester (IST)`;
     }
 
     async function onUnifiedStrategyChange() {
       currentStrategy = document.getElementById('strategySelect').value;
       const entry = strategyRegistry.find(s => s.name === currentStrategy);
-      if (entry && !entry.is_active) {
-        try {
-          const resp = await fetchWithRetry(`/api/${currentStrategy}/activate`, { method: 'POST' }, 15000, 1);
-          const data = await resp.json();
-          showToast(data.message || `Active strategy set to ${entry.display_name}`, 'success');
-          strategyRegistry.forEach(s => { s.is_active = s.name === currentStrategy; });
-        } catch (err) {
-          showToast('Failed to activate strategy', 'error');
-        }
-      }
+      // Selecting a strategy for viewing/backtesting must NOT auto-activate it
+      // for the live daemon. Activation is an explicit operator action.
+      pendingStrategy = (entry && !entry.is_active) ? currentStrategy : null;
+      updateActivationButton();
       updateUnifiedStrategyHeader();
+      renderStrategyExplainer();
       await renderUnifiedStrategyParams();
+    }
+
+    // ==================== STRATEGY EXPLAINER ====================
+    const STRATEGY_EXPLAINERS = {
+      extreme_fvg: `
+        <h4 class="text-amber-400 font-bold text-base mb-2 flex items-center gap-2"><i class="fa-solid fa-bolt"></i>Strategy 2 — Extreme LTF FVG (the production baseline)</h4>
+        <p class="mb-3">A two-timeframe discount/premium system: wait for price to touch a 4H fair value gap, then enter on the <em>deepest</em> fresh lower-timeframe imbalance that forms <em>after</em> that touch — the extreme closest to the macro zone.</p>
+        <ol class="list-decimal ml-5 space-y-1.5 text-[13px]">
+          <li><strong class="text-white">4H anchor:</strong> Tracks every active (non-invalidated) 4H FVG in an incremental cache, picks the one price has most recently touched (prioritizing the zone price is currently inside), and pinpoints the exact <span class="text-amber-300 font-mono">first_touch_timestamp</span>.</li>
+          <li><strong class="text-white">Post-touch LTF scan:</strong> Scans 5m FVGs whose third candle closed strictly after that touch. Gap must be ≥ min gap % (0.05–0.1%); blown-through, completed, or stopped-out FVGs are discarded by a lifecycle state machine (only <span class="font-mono">PENDING_RETRACE</span> / <span class="font-mono">TRADE_ACTIVE</span> survive).</li>
+          <li><strong class="text-white">Bias filters (read-only row above):</strong> distance-from-4H-zone ≤ 2%, gap ceiling ≤ 0.3%, optional momentum impulse requirement (c2 body ≥ 50% of range), optional age ceiling. Research shows the gap ceiling is the valuable one; distance adds nothing on recent data.</li>
+          <li><strong class="text-white">Extreme selection:</strong> Longs take the <em>lowest</em> surviving FVG (deepest discount); shorts take the <em>highest</em>. One setup per symbol at a time.</li>
+          <li><strong class="text-white">Execution:</strong> Entry at the FVG's outer boundary (limit retrace). SL at the extreme wick of the 3 forming candles (min of lows for longs / max of highs for shorts). Targets at 1R / 2R★ / 3R where R = |entry − SL|.</li>
+          <li><strong class="text-white">Ledger:</strong> Once filled, entry/SL are locked in an immutable ledger and resolved from closed candle extremes — SL checked before TP on the same candle (pessimistic, matches backtest).</li>
+        </ol>
+        <p class="mt-3 text-[12px] text-slate-400"><span class="text-emerald-400 font-semibold">Research note (validated on this branch):</span> 180-day backtest shows the edge is long-side only — longs +31R vs shorts −5R (60d). A long-only gate roughly doubles R/trade. Best single filter: max gap 0.3% (only config that cleared zero).</p>`,
+      liquidity_sweep_fvg: `
+        <h4 class="text-sky-400 font-bold text-base mb-2 flex items-center gap-2"><i class="fa-solid fa-water"></i>Strategy 3 — Liquidity-Sweep FVG (shadow validation)</h4>
+        <p class="mb-3">The "4H FVG strategy" from the reference video: 4H FVG for bias → a stop-hunt liquidity sweep must occur → enter on the next LTF FVG → target the opposing liquidity pool instead of a fixed R.</p>
+        <ol class="list-decimal ml-5 space-y-1.5 text-[13px]">
+          <li><strong class="text-white">4H bias:</strong> Same 4H anchor machinery as Strategy 2 (reused by import).</li>
+          <li><strong class="text-white">Liquidity pools:</strong> Builds equal-highs / equal-lows clusters (≥2 touches within 0.05%) from fractal swing points (no lookahead — a swing only counts once its confirmation bar has opened) plus prior-day high/low.</li>
+          <li><strong class="text-white">Fresh-sweep gate:</strong> Before entry, an <em>opposing-side</em> pool must have been swept within the last 2h — wick through the level, close back on the original side (stop-hunt signature). This is the core filter that makes S3 selective.</li>
+          <li><strong class="text-white">More gates:</strong> gap-band exclusion (0.10–0.20% measured losing band), NY killzone entry fills only (13:00–16:00 UTC weekdays), and an anchor-age guard that skips the measured 24–48h anchor dead zone.</li>
+          <li><strong class="text-white">Liquidity-first TP:</strong> Instead of fixed R, TP = nearest opposing pool at least 1.5R away, buffered 0.02% in front of the level; falls back to 2R when no pool qualifies. Realized R is measured to that TP.</li>
+        </ol>
+        <p class="mt-3 text-[12px] text-slate-400"><span class="text-sky-400 font-semibold">Validation (90d BTC/ETH/SOL):</span> win rate roughly doubles vs S2 (e.g. BTC 37%→69%) with 3–17× lower drawdown, but trade count is small (16–21 per symbol per 90d). Runs as a <strong>shadow strategy</strong>: paper-trades alongside the active strategy in the same daemon, isolated in the ledger, never sends Telegram alerts — dashboard tags are <span class="text-violet-300 font-mono">S3</span>. Promote it only after the shadow ledger confirms live parity.</p>`,
+      video_fvg: `
+        <h4 class="text-violet-300 font-bold text-base mb-2 flex items-center gap-2"><i class="fa-solid fa-bullseye"></i>Strategy 4 — Video FVG (4H Anchor) · HTF respect confirmation</h4>
+        <p class="mb-3">The strictest of the three: a 4H FVG is not enough — the 4H candle that touches the zone must <em>respect</em> it with a strong directional close before any entry is allowed. Then only the <em>first</em> fresh 5m FVG is traded.</p>
+        <ol class="list-decimal ml-5 space-y-1.5 text-[13px]">
+          <li><strong class="text-white">4H anchor:</strong> Takes the most recently <em>closed</em>, non-invalidated 4H FVG (newest macro imbalance — unlike S2's most-recent-touch ranking). Its direction is the only direction traded: bullish 4H FVG → longs only; bearish → shorts only.</li>
+          <li><strong class="text-white">HTF-respect confirmation (the key gate):</strong> Price must retrace into the 4H zone, and the touching 4H candle must close with body ≥ <span class="text-violet-300 font-mono">htf_confirm_body_pct</span> (default 50% of its range) in the bias direction — green close for bullish, red for bearish. A weak, wicky touch is rejected. This close stamps <span class="font-mono">htf_confirm_timestamp</span>.</li>
+          <li><strong class="text-white">First-LTF entry:</strong> Scans 5m candles strictly after the confirmation close and takes the <em>first</em> FVG in the bias direction with gap ≥ 0.03% — the fresh impulse off the respected zone, not an older stale one.</li>
+          <li><strong class="text-white">Execution:</strong> Entry at the LTF FVG outer boundary; SL at the 3-candle extreme wick; 1R/2R tracked as telemetry but <strong class="text-amber-300">3R is the completion target</strong> — the ledger only marks a win at +3R.</li>
+          <li><strong class="text-white">Session/weekday gating:</strong> Off by default (24/7); optional NY/London/custom windows on LTF formation.</li>
+        </ol>
+        <p class="mt-3 text-[12px] text-slate-400"><span class="text-violet-300 font-semibold">Character:</span> Fewest trades of the three (the 50% body-respect gate is demanding) but each is a continuation entry off a macro zone the market has demonstrably defended. Just re-registered as Strategy 4 in the develop merge — run the backtester tab for a baseline before promoting it past shadow.</p>`,
+    };
+
+    function renderStrategyExplainer() {
+      const body = document.getElementById('strategyExplainerBody');
+      if (body) body.innerHTML = STRATEGY_EXPLAINERS[currentStrategy] || '<p class="text-slate-400">No explainer available for this strategy.</p>';
+    }
+
+    const EXPLAINER_KEY = 'fvg_strategy_explainer_open';
+
+    function setExplainerOpen(open) {
+      const panel = document.getElementById('strategyExplainer');
+      const chev = document.getElementById('explainerChevron');
+      if (!panel) return;
+      panel.classList.toggle('hidden', !open);
+      if (chev) chev.style.transform = open ? 'rotate(180deg)' : '';
+      try { localStorage.setItem(EXPLAINER_KEY, open ? '1' : '0'); } catch (_) {}
+    }
+
+    function toggleStrategyExplainer() {
+      const panel = document.getElementById('strategyExplainer');
+      if (panel) setExplainerOpen(panel.classList.contains('hidden'));
+    }
+
+    function restoreExplainerState() {
+      let open = false;
+      try { open = localStorage.getItem(EXPLAINER_KEY) === '1'; } catch (_) {}
+      setExplainerOpen(open);
+    }
+
+    function updateActivationButton() {
+      const btn = document.getElementById('btnActivateStrategy');
+      if (!btn) return;
+      const entry = strategyRegistry.find(s => s.name === currentStrategy);
+      if (!entry || entry.is_active || !pendingStrategy) {
+        btn.classList.add('hidden');
+        return;
+      }
+      btn.classList.remove('hidden');
+    }
+
+    async function activateCurrentStrategy() {
+      const entry = strategyRegistry.find(s => s.name === currentStrategy);
+      if (!entry || entry.is_active) return;
+      const btn = document.getElementById('btnActivateStrategy');
+      btn.disabled = true;
+      try {
+        const resp = await fetchWithRetry(`/api/${currentStrategy}/activate`, { method: 'POST' }, 15000, 1);
+        const data = await resp.json();
+        showToast(data.message || `Active strategy set to ${entry.display_name}`, 'success');
+        strategyRegistry.forEach(s => { s.is_active = s.name === currentStrategy; });
+        pendingStrategy = null;
+        const sel = document.getElementById('strategySelect');
+        sel.innerHTML = strategyRegistry.map(s =>
+          `<option value="${s.name}" ${s.is_active ? 'selected' : ''}>${s.display_name}${s.is_active ? ' · active' : ''}</option>`
+        ).join('');
+        sel.value = currentStrategy;
+      } catch (err) {
+        showToast('Failed to activate strategy', 'error');
+      } finally {
+        btn.disabled = false;
+        updateActivationButton();
+        updateUnifiedStrategyHeader();
+      }
     }
 
     async function fetchStrategyInfo(name) {
@@ -1350,6 +1532,8 @@
     // Unified boot: registry + params + live status
     loadStrategyRegistry();
     renderUnifiedStrategyParams();
+    renderStrategyExplainer();
+    restoreExplainerState();
     pollExtremeStatus();
 
     function onHeaderScanClick() {
@@ -1626,6 +1810,27 @@
         }
       }
 
+      // Read-only bias filter display
+      if (data.max_dist_from_4h_pct !== undefined) {
+        const v = data.max_dist_from_4h_pct;
+        const el = document.getElementById('biasMaxDist4h');
+        if (el) el.textContent = v ? v.toFixed(2) : 'OFF';
+      }
+      if (data.require_momentum !== undefined) {
+        const el = document.getElementById('biasRequireMomentum');
+        if (el) el.textContent = data.require_momentum ? 'ON' : 'OFF';
+      }
+      if (data.max_gap_pct !== undefined) {
+        const v = data.max_gap_pct;
+        const el = document.getElementById('biasMaxGap');
+        if (el) el.textContent = v ? v.toFixed(2) : 'OFF';
+      }
+      if (data.max_ltf_fvg_age_candles !== undefined) {
+        const v = data.max_ltf_fvg_age_candles;
+        const el = document.getElementById('biasMaxAge');
+        if (el) el.textContent = (v === null || v >= 9999) ? '∞' : String(v);
+      }
+
       if (data.interval_seconds !== undefined) {
         const el = document.getElementById('extremeDaemonInterval');
         if (el && (!extremeConfigInitialized || activeEl !== el)) {
@@ -1883,7 +2088,7 @@
         const isBull = t.direction === 'Bullish';
         const dirBadge = isBull ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold text-[10px]">LONG</span>' : '<span class="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-[10px]">SHORT</span>';
         const stratTag = t.strategy && t.strategy !== 'extreme_fvg'
-          ? `<span class="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/30 font-bold text-[10px]" title="Shadow paper trade (${t.strategy}) — no Telegram alerts">SHADOW</span>`
+          ? `<span class="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/30 font-bold text-[10px]" title="${t.strategy === currentStrategy ? 'Viewed strategy' : 'Shadow paper trade'} (${t.strategy})">${t.strategy === 'liquidity_sweep_fvg' ? 'S3' : (t.strategy === 'video_fvg' ? 'S4' : t.strategy.slice(0, 8).toUpperCase())}</span>`
           : '';
         
         let stateBadge = '';

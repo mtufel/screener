@@ -28,7 +28,11 @@ from app_config import (
     EXTREME_ENTRY_SESSION_FILTER_ENABLED,
     EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED,
     EXTREME_LTF_TIMEFRAME,
+    EXTREME_MAX_DIST_FROM_4H_PCT,
+    EXTREME_MAX_GAP_PCT,
+    EXTREME_MAX_LTF_FVG_AGE_CANDLES,
     EXTREME_MIN_GAP_PCT,
+    EXTREME_REQUIRE_MOMENTUM,
     EXTREME_SCAN_INTERVAL_SECONDS,
     EXTREME_SESSIONS,
     EXTREME_SESSION_FILTER_ENABLED,
@@ -111,10 +115,10 @@ def _runtime_extreme_config() -> Dict[str, Any]:
     entry_wkday_filter = state.get("extreme_entry_weekday_filter", EXTREME_ENTRY_WEEKDAY_FILTER_ENABLED)
     return {
         "active_strategy": state.get("extreme_active_strategy", EXTREME_ACTIVE_STRATEGY),
-    "shadow_strategies": [
-        s.strip() for s in str(state.get("extreme_shadow_strategies", EXTREME_SHADOW_STRATEGIES) or "").split(",")
-        if s.strip()
-    ],
+        "shadow_strategies": [
+            s.strip() for s in str(state.get("extreme_shadow_strategies", EXTREME_SHADOW_STRATEGIES) or "").split(",")
+            if s.strip()
+        ],
         "coin_list": [c.strip().upper() for c in state.get("coins_whitelist", COINS_WHITELIST).strip().split(",") if c.strip()],
         "ltf": state.get("extreme_ltf", EXTREME_LTF_TIMEFRAME),
         "target": state.get("extreme_target", EXTREME_COMPLETION_TARGET),
@@ -126,6 +130,13 @@ def _runtime_extreme_config() -> Dict[str, Any]:
         "entry_wkday_filter": entry_wkday_filter,
         "sessions_str": sessions_str,
         "entry_sessions_str": entry_sessions_str,
+        # Bias filters (Strategy 2). "0" / False / 9999 disable each filter.
+        "max_dist_from_4h_pct": state.get("extreme_max_dist_from_4h_pct", EXTREME_MAX_DIST_FROM_4H_PCT),
+        "require_momentum": state.get("extreme_require_momentum", EXTREME_REQUIRE_MOMENTUM),
+        "max_gap_pct": state.get("extreme_max_gap_pct", EXTREME_MAX_GAP_PCT),
+        "max_ltf_fvg_age_candles": int(
+            state.get("extreme_max_ltf_fvg_age_candles", EXTREME_MAX_LTF_FVG_AGE_CANDLES)
+        ),
         "session_config": SessionFilterConfig.from_legacy(
             session_filter=sess_filter,
             weekday_filter=wkday_filter,
@@ -174,7 +185,23 @@ def _active_trade_setup_payload(sym: str, trade: Any, curr_px: float) -> Dict[st
 
 
 def _extreme_anchor_payload(anchor: Any) -> Dict[str, Any]:
-    """HTF anchor block shared by both payload builders."""
+    """HTF anchor block shared by both payload builders.
+
+    Accepts either an ``ExtremeAnchor`` dataclass (Strategy 2) or a plain
+    ``Dict`` (Strategy 3 ``VideoFVGSetup.anchor``) and returns a uniform,
+    dashboard/ledger-friendly block in both cases.
+    """
+    if isinstance(anchor, dict):
+        if "direction" in anchor:
+            # Strategy 3 engine dict: normalize into the shared shape.
+            return {
+                "direction": anchor.get("direction"),
+                "bottom": anchor.get("bottom"),
+                "top": anchor.get("top"),
+                "formed_time_ist": _ms_to_ist_str(anchor.get("formed_at")),
+                "confirm_time_ist": _ms_to_ist_str(anchor.get("confirm_ts")),
+            }
+        return dict(anchor)
     return {
         "direction": anchor.fvg.direction,
         "bottom": anchor.fvg.bottom,
@@ -186,7 +213,27 @@ def _extreme_anchor_payload(anchor: Any) -> Dict[str, Any]:
 
 
 def _extreme_target_fvg_payload(ltf_fvg: Any) -> Dict[str, Any]:
-    """Target-FVG block shared by both payload builders."""
+    """Target-FVG block shared by both payload builders.
+
+    Accepts either an Extreme LTF FVG dataclass (Strategy 2) or a plain
+    ``Dict`` (Strategy 3 ``VideoFVGSetup.ltf_fvg``) and returns a uniform,
+    dashboard/ledger-friendly block in both cases.
+    """
+    if isinstance(ltf_fvg, dict):
+        if "direction" in ltf_fvg:
+            width = (ltf_fvg.get("top") or 0) - (ltf_fvg.get("bottom") or 0)
+            mid = ((ltf_fvg.get("top") or 0) + (ltf_fvg.get("bottom") or 0)) / 2.0
+            gap_pct = ((width / mid) * 100.0) if mid > 0 else 0.0
+            return {
+                "direction": ltf_fvg.get("direction"),
+                "bottom": ltf_fvg.get("bottom"),
+                "top": ltf_fvg.get("top"),
+                "width": width,
+                "gap_pct": round(gap_pct, 3),
+                "formed_time_ist": _ms_to_ist_str(ltf_fvg.get("formed_at")),
+                "formed_at": ltf_fvg.get("formed_at"),
+            }
+        return dict(ltf_fvg)
     return {
         "direction": ltf_fvg.direction,
         "bottom": ltf_fvg.bottom,
@@ -196,6 +243,18 @@ def _extreme_target_fvg_payload(ltf_fvg: Any) -> Dict[str, Any]:
         "formed_time_ist": ltf_fvg.formed_time_ist,
         "formed_at": ltf_fvg.formed_at,
     }
+
+
+def _ms_to_ist_str(ts_ms: Optional[int]) -> Optional[str]:
+    """Format a millisecond epoch timestamp as an IST string (or None)."""
+    if not ts_ms:
+        return None
+    try:
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return datetime.fromtimestamp(ts_ms / 1000.0, tz=ist).strftime("%d-%b %I:%M %p IST")
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def _extreme_setup_payload(
@@ -512,6 +571,12 @@ async def execute_extreme_screener_cycle(
         "entry_weekday_filter": cfg["entry_wkday_filter"],
         "sessions": cfg["sessions_str"],
         "entry_sessions": cfg["entry_sessions_str"],
+        # Bias filters (Strategy 2). Forwarded through the strategy's
+        # default_params, so strategies that do not declare them ignore them.
+        "max_dist_from_4h_pct": cfg.get("max_dist_from_4h_pct", 0.0),
+        "require_momentum": cfg.get("require_momentum", False),
+        "max_gap_pct": cfg.get("max_gap_pct", 0.0),
+        "max_ltf_fvg_age_candles": cfg.get("max_ltf_fvg_age_candles", 9999),
     })
 
     setups_out: List[Dict[str, Any]] = []
