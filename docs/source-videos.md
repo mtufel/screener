@@ -107,26 +107,48 @@ mentions the other's approach.
 Severity: **HIGH** = changes realised P&L materially or rejects setups the source endorses;
 **MED** = deviates from stated source rules; **INFO** = deliberate, evidence-based deviation.
 
-### F-01 · HIGH · Entry-session gate is applied to the wrong timestamp
+### F-01 · FIXED · Entry-session gate was applied to the wrong timestamp
 
-`strategy_liquidity_sweep_fvg.py:186`
+`strategy_liquidity_sweep_fvg.py:186` gated candidates with
+`is_entry_valid(formed_close_ts)` — the **LTF FVG formation close** — but the source constrains the
+**fill**: *"It's completely fine for this fair value gap to form outside of the session, but the
+entry has to be during the key time of day."*
 
-```python
-if entry_session_config is not None and not entry_session_config.is_entry_valid(formed_close_ts):
-```
+Three things were wrong:
 
-`formed_close_ts` is the **LTF FVG formation close**, but the filter is named `is_entry_valid`.
-Video 1 is explicit: *"It's completely fine for this fair value gap to form outside of the
-session, but the entry has to be during the key time of day."*
+1. It discarded candidates whose FVG formed out-of-session, even when they would have filled
+   in-session — precisely the case the source endorses.
+2. It contradicted its own sibling gate: the anchor-age guard 25 lines below already probed the
+   fill timestamp.
+3. It contradicted the backtester, which tests `_in_entry_session(fill_ts, ...)`
+   (`backtest_liquidity_sweep_fvg.py:438`). So **every session-filtered S3 backtest number
+   described behaviour the live daemon did not implement.**
 
-The gate therefore rejects exactly the setups the source describes as valid. The sibling
-`ANCHOR_AGE` gate 25 lines below (`strategy_liquidity_sweep_fvg.py:206-209`) correctly probes the
-**fill** timestamp — so the two gates disagree about which timestamp matters.
+`extreme_trade_tracker.py` already enforced the session at fill correctly (`:551`, `:600`, `:659`,
+`:678` — out-of-session touches are ignored, not deferred), so the blast radius was
+**under-trading and mis-alerting, not unauthorised entries**.
 
-- **Impact:** silently removes valid S3 setups; inflates the `ENTRY_SESSION` reject counter
-  (159 in the 90-day validation run).
-- **Fix:** probe `fvg.entry_timestamp` when `lifecycle_state == "TRADE_ACTIVE"`, else fall back to
-  `fill_probe_ts_ms` / formation close exactly as the anchor-age gate does.
+**Fixed** in `fix/s3-entry-session-gate-probe`: the gate now probes `fvg.entry_timestamp` for an
+already-filled candidate and defers to the tracker for one that has not filled yet.
+
+Measured impact on real data (16 as-of snapshots across 45 days, BTC/ETH/SOL,
+`entry_sessions=NY_KZ`) — candidates surviving the gate:
+
+| Symbol | Candidates | Old rejects | New rejects | Old survivors | New survivors | Admitted |
+|---|---|---|---|---|---|---|
+| BTC | 14 | 12 | 6 | 2 | 8 | **+6 (+300%)** |
+| ETH | 19 | 13 | 5 | 6 | 14 | **+8 (+133%)** |
+| SOL | 26 | 19 | 5 | 7 | 21 | **+14 (+200%)** |
+| **Total** | **59** | **44** | **16** | **15** | **43** | **+28 (+187%)** |
+
+The old gate was rejecting **75%** of its own candidates (44 of 59). Note these are *candidates*,
+not filled trades — the tracker still enforces the window at fill and many pending setups will
+expire, so the realised trade-count increase will be smaller than +187%.
+
+> **Root cause, not yet addressed:** the S3 gate pipeline is implemented twice — inline in the
+> backtester and in `select_gated_ltf_fvg()`. `select_gated_ltf_fvg()` has a single caller (the live
+> path) and `fill_probe_ts_ms` is passed by nobody, so the two copies can drift silently again.
+> Consolidating them is the durable fix.
 
 ### F-02 · HIGH · The sweep is required, but its stop-loss benefit is never used
 
@@ -294,7 +316,8 @@ Per `CLAUDE.md`, each of these needs its own OpenSpec change off `develop`.
 | ID | Change | Addresses |
 |---|---|---|
 | — | ~~Backtester honours `tp_mode`~~ — **done** (`fix/s3-backtest-tp-mode-param`) | F-10 |
-| 1 | Probe entry-session gate on fill timestamp, not formation | F-01 |
+| — | ~~Entry-session gate probes fill time~~ — **done** (`fix/s3-entry-session-gate-probe`) | F-01 |
+| 11 | Consolidate the duplicated S3 gate pipeline onto one shared implementation | F-01 root cause |
 | 2 | Stop loss at the swept pool level for `liquidity_sweep_fvg`; recompute R/targets | F-02 |
 | 3 | Add fee + slippage parameters to both backtesters and the ledger | F-09 |
 | 4 | Select the *first* post-touch LTF FVG; keep extreme rule for the 4H anchor | F-03 |

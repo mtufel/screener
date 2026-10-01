@@ -152,7 +152,14 @@ def select_gated_ltf_fvg(
     actual fill timestamp. Selection keeps S2's extreme rule (deepest for
     bullish, highest for bearish) among survivors.
 
-    `fill_probe_ts_ms` overrides the anchor-age fill probe (backtests pass the
+    The entry-session gate constrains the FILL, not the FVG formation: a
+    PENDING_RETRACE candidate has not filled yet, so the session is not yet
+    decidable here and the gate is skipped for it — `extreme_trade_tracker`
+    enforces the window at fill, ignoring out-of-session touches rather than
+    deferring them. Pass `fill_probe_ts_ms` to decide pending candidates
+    yourself (backtests/replays that already know the fill time).
+
+    `fill_probe_ts_ms` also overrides the anchor-age fill probe (backtests pass the
     simulated fill time; live uses now).
 
     Returns (selected_fvg_or_None, survivors, gate_reject_counts).
@@ -183,9 +190,22 @@ def select_gated_ltf_fvg(
             rejects["GAP_BAND"] += 1
             continue
 
-        if entry_session_config is not None and not entry_session_config.is_entry_valid(formed_close_ts):
-            rejects["ENTRY_SESSION"] += 1
-            continue
+        # Entry-session gate. The session constrains the FILL, not the formation:
+        # the source is explicit that the FVG may form outside the window and only
+        # the entry has to land inside it. A TRADE_ACTIVE candidate already carries
+        # its real fill timestamp, so probe that. A PENDING_RETRACE one has not
+        # filled yet, so the session is not yet decidable — skip the gate and let
+        # `extreme_trade_tracker` enforce it at fill (out-of-session touches are
+        # ignored there, not deferred). `fill_probe_ts_ms` lets a caller that already
+        # knows the fill time decide it here instead.
+        if entry_session_config is not None:
+            if fvg.lifecycle_state == "TRADE_ACTIVE":
+                session_probe_ts = fvg.entry_timestamp or fill_probe_ts_ms
+            else:
+                session_probe_ts = fill_probe_ts_ms
+            if session_probe_ts is not None and not entry_session_config.is_entry_valid(session_probe_ts):
+                rejects["ENTRY_SESSION"] += 1
+                continue
 
         if require_sweep:
             gate = check_fresh_sweep(

@@ -43,6 +43,7 @@ logs/
 .opencode/
 .freebuff/
 scratch/
+tmp/
 *.out
 *.log
 render_logs.json
